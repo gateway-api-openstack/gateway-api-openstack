@@ -34,9 +34,9 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
-	gatewaycontroller "github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	gatewaycontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
 func TestHTTPRouteMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {

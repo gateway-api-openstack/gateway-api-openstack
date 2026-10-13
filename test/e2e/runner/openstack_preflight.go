@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/auditexec"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/cloudauth"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/auditexec"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 )
 
 type projectAuthenticator = cloudauth.ProjectIDResolver

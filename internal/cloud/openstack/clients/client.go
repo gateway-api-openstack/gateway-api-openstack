@@ -27,14 +27,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/apierrors"
 	"github.com/gophercloud/gophercloud/v2"
 	gopheropenstack "github.com/gophercloud/gophercloud/v2/openstack"
 	openstackconfig "github.com/gophercloud/gophercloud/v2/openstack/config"
 	"github.com/gophercloud/gophercloud/v2/openstack/config/clouds"
 	tokensv2 "github.com/gophercloud/gophercloud/v2/openstack/identity/v2/tokens"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/apierrors"
 	"golang.org/x/time/rate"
 )
 

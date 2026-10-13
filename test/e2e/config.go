@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 const (

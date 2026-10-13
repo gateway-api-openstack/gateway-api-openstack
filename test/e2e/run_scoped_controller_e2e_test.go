@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/cloudauth"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
 func (s *phase2Suite) verifyRunScopedController(ctx context.Context, deployment *appsv1.Deployment) error {

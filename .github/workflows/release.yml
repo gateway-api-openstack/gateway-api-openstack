@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   draft-release:
+    if: github.repository == 'gateway-api-openstack/gateway-api-openstack'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -23,6 +24,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release tag
         shell: bash

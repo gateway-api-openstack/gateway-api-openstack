@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Security reports
+    url: https://github.com/gateway-api-openstack/gateway-api-openstack/security/policy
+    about: Follow the private reporting instructions without posting vulnerability details in a public issue.
   - name: Gateway API questions
     url: https://gateway-api.sigs.k8s.io/
     about: Check the upstream Gateway API documentation and community resources.

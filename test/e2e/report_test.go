@@ -25,7 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestOverallStatusRequiresBaseline(t *testing.T) {

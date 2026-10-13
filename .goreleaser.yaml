@@ -99,6 +99,9 @@ snapshot:
   version_template: "{{ incpatch .Version }}-devel.{{ .ShortCommit }}"
 
 release:
+  github:
+    owner: gateway-api-openstack
+    name: gateway-api-openstack
   draft: true
   use_existing_draft: true
   mode: keep-existing

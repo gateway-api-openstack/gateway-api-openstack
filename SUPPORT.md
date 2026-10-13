@@ -8,7 +8,7 @@ See the [E2E test guide](docs/testing-openstack-e2e.md) before using that mode.
 
 ## Ask for help
 
-Use a GitHub issue for a reproducible controller problem or a focused question.
+Use the [project issue tracker](https://github.com/gateway-api-openstack/gateway-api-openstack/issues) for a reproducible controller problem or a focused question.
 Include the controller revision, Kubernetes and Gateway API versions, OpenStack and Octavia releases, negotiated microversion, Amphora topology, CNI, kube-proxy mode, and a redacted description of the network path.
 The issue templates list the details that are normally needed.
 

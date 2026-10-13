@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestLoadE2EConfigRequiresExactOptIn(t *testing.T) {

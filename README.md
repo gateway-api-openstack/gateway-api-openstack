@@ -8,6 +8,9 @@ gateway-api-openstack implements Kubernetes [Gateway API](https://gateway-api.si
 It currently supports a limited set of HTTP features.
 Its goal is reliable HTTP and terminated HTTPS support without requiring an in-cluster proxy data plane.
 
+The project lives at [gateway-api-openstack/gateway-api-openstack](https://github.com/gateway-api-openstack/gateway-api-openstack).
+Its Go module is `github.com/gateway-api-openstack/gateway-api-openstack`.
+
 The controller uses Octavia directly and supports only the Amphora provider. It
 reconciles GatewayClass, Gateway, and HTTPRoute resources into Octavia load
 balancers, listeners, pools, members, health monitors, and related Neutron

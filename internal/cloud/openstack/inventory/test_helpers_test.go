@@ -22,9 +22,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 	"github.com/gophercloud/gophercloud/v2"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
 )
 
 func safetyTestIdentity(t *testing.T) openstackidentity.Identity {

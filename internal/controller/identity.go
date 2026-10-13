@@ -19,7 +19,7 @@ package controller
 import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 // GatewayIdentity builds the immutable cloud identity for a Gateway.

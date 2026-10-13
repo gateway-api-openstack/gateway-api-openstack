@@ -21,10 +21,10 @@ package openstack
 import (
 	"context"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/graph"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/inventory"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/inventory"
 )
 
 // ProviderConfig bounds one provider call and controls how soon the

@@ -19,8 +19,8 @@ package probe
 import (
 	"strings"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	cloudopenstack "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 )
 
 const controllerIdentifier = cloudopenstack.Phase0ControllerIdentifier

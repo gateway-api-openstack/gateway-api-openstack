@@ -19,7 +19,7 @@ package probe
 import (
 	"context"
 
-	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
+	cloudopenstack "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 )
 
 // Phase 0 remains a standalone executable, but authentication and service

@@ -1,4 +1,4 @@
-module github.com/jihyun-huh/gateway-api-openstack
+module github.com/gateway-api-openstack/gateway-api-openstack
 
 go 1.26.0
 

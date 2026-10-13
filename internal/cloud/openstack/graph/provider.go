@@ -25,13 +25,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/apierrors"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/clients"
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/neutron"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/apierrors"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/clients"
-	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/neutron"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/octavia"
 )
 
 const (

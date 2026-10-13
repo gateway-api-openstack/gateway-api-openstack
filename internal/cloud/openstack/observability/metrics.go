@@ -24,7 +24,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/clients"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/clients"
 )
 
 const (
