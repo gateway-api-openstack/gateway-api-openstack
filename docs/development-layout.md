@@ -8,68 +8,19 @@ Each package adds imports, exported contracts, and possible dependency cycles, s
 
 ## Upstream patterns
 
-### Kubernetes
+Kubernetes splits controller files by behavior and keeps smaller controllers together when their responsibilities fit.
+Its [coding conventions](https://github.com/kubernetes/community/blob/main/contributors/guide/coding-conventions.md#directory-and-file-conventions) discourage package sprawl and broad utility packages.
 
-Kubernetes usually gives a controller its own package under `pkg/controller` and splits files by behavior.
-The Deployment controller separates synchronization, rollout, rollback, and progress:
+Cluster API's [Cluster reconciler](https://github.com/kubernetes-sigs/cluster-api/blob/main/core/reconcilers/cluster/cluster_controller.go) uses a scope local to each request, named lifecycle phases, and deferred patching.
+Its [dependency mappers](https://github.com/kubernetes-sigs/cluster-api/blob/main/util/util.go) list affected objects within a defined scope and return reconcile requests.
+Keep validation and lifecycle work in reconciliation rather than turning a mapper into another control loop.
 
-```text
-pkg/controller/deployment/
-├── deployment_controller.go
-├── sync.go
-├── rolling.go
-├── recreate.go
-├── rollback.go
-├── progress.go
-├── config/
-└── util/
-```
+CAPO separates [OpenStack service packages](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/tree/78ef68d5853a85e48e6f6bf69a353b3a1d073526/pkg/cloud/services) from [reconciliation scopes](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/pkg/scope/scope.go).
+The [OpenStackCluster reconciler](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/controllers/openstackcluster_controller.go) keeps lifecycle decisions at the controller boundary.
+This repository follows those responsibilities while keeping Kubernetes types outside its OpenStack adapter.
 
-See the pinned [controller tree](https://github.com/kubernetes/kubernetes/tree/b3bc2ac58fa173967f27ade80f28cc5015b8c1c3/pkg/controller) and [Deployment package](https://github.com/kubernetes/kubernetes/tree/b3bc2ac58fa173967f27ade80f28cc5015b8c1c3/pkg/controller/deployment).
-A smaller controller can remain one implementation file and one test file.
-The [coding conventions](https://github.com/kubernetes/community/blob/main/contributors/guide/coding-conventions.md#directory-and-file-conventions) also discourage package sprawl and broad utility packages.
-
-### Cluster API
-
-Cluster API gives core reconcilers their own packages and separates entry points, phases, status, and algorithms within each package.
-Its Cluster reconciler illustrates that division:
-
-```text
-core/reconcilers/cluster/
-├── cluster_controller.go
-├── cluster_controller_phases.go
-├── cluster_controller_status.go
-├── cluster_controller_test.go
-├── cluster_controller_phases_test.go
-└── cluster_controller_status_test.go
-```
-
-See the pinned [reconciler tree](https://github.com/kubernetes-sigs/cluster-api/tree/8eaa89a5d029f1f1a4325fd20caf52455f7e3e5f/core/reconcilers), [Cluster reconciler](https://github.com/kubernetes-sigs/cluster-api/tree/8eaa89a5d029f1f1a4325fd20caf52455f7e3e5f/core/reconcilers/cluster), and [Machine reconciler](https://github.com/kubernetes-sigs/cluster-api/tree/8eaa89a5d029f1f1a4325fd20caf52455f7e3e5f/core/reconcilers/machine).
-The topology controller's [observation, generation, and reconciliation flow](https://github.com/kubernetes-sigs/cluster-api/blob/8eaa89a5d029f1f1a4325fd20caf52455f7e3e5f/core/reconcilers/topology/cluster/cluster_controller.go#L372-L409) informs the separation used by the Gateway graph writer.
-
-### Cluster API Provider OpenStack
-
-CAPO separates authenticated clients, OpenStack services, and reconciliation scopes:
-
-```text
-pkg/
-├── clients/
-├── cloud/services/
-│   ├── compute/
-│   ├── networking/
-│   └── loadbalancer/
-└── scope/
-```
-
-Its networking files follow resources such as ports, routers, Floating IPs, and security groups.
-See the pinned [service packages](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/tree/78ef68d5853a85e48e6f6bf69a353b3a1d073526/pkg/cloud/services) and [networking package](https://github.com/kubernetes-sigs/cluster-api-provider-openstack/tree/78ef68d5853a85e48e6f6bf69a353b3a1d073526/pkg/cloud/services/networking).
-This repository uses those service boundaries while keeping Kubernetes types outside the OpenStack adapter.
-
-### cloud-provider-openstack
-
-The Octavia Ingress Controller separates its Kubernetes controller from an adapter containing Octavia and Neutron operations.
-See the pinned [controller](https://github.com/kubernetes/cloud-provider-openstack/blob/ff04631653b624a75c811a0836f2ba4a0395d04e/pkg/ingress/controller/controller.go) and [OpenStack adapter](https://github.com/kubernetes/cloud-provider-openstack/tree/ff04631653b624a75c811a0836f2ba4a0395d04e/pkg/ingress/controller/openstack).
-The useful boundary is responsibility, not an upstream file-size limit.
+cloud-provider-openstack's Octavia Ingress Controller also separates its [controller](https://github.com/kubernetes/cloud-provider-openstack/blob/ff04631653b624a75c811a0836f2ba4a0395d04e/pkg/ingress/controller/controller.go) from an [OpenStack adapter](https://github.com/kubernetes/cloud-provider-openstack/tree/ff04631653b624a75c811a0836f2ba4a0395d04e/pkg/ingress/controller/openstack).
+Use these projects to guide boundaries, not to impose a file-size limit or duplicate their abstractions.
 
 ## Public configuration API
 
@@ -263,6 +214,18 @@ The root `openstack` package is the facade used by commands and probes.
 It delegates to graph reconciliation, topology resolution, and read-only inventory without leaking SDK types into callers.
 Child packages never import the facade, and Kubernetes types do not enter any OpenStack package.
 
-Writer stage metrics and OpenStack request metrics describe different boundaries.
-Neither substitutes for a measurement of asynchronous convergence or traffic continuity.
-Keep those limits explicit when adding benchmarks, dashboards, or release evidence.
+The [architecture](design/architecture.md#kubernetes-events-and-measurements) defines the boundaries of writer and OpenStack request metrics.
+
+## Test layout
+
+Keep unit tests and benchmarks beside the behavior they exercise.
+HTTPRoute event tests and benchmarks live in `internal/controller/httproute`.
+Keep mapper read measurements separate from tests that follow events through reconciliation.
+
+The tagged tests in `internal/controller/envtest*_test.go` use a real API server and cache for schema validation, binding checkpoints, conflicts, and class configuration isolation.
+Cloud behavior remains fake.
+The [compatibility record](providers/compatibility.md#local-validation) describes what these checks establish.
+
+`test/e2e/` contains the opt-in [OpenStack E2E runner](testing-openstack-e2e.md).
+`test/conformance/` is a separate Go module for the pinned [upstream HTTP diagnostic](testing-conformance.md), with local tests for its setup and cleanup.
+Ordinary verification does not enable either live runner.

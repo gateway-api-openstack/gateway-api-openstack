@@ -130,21 +130,16 @@ features must be rejected explicitly in resource status rather than ignored.
 
 ## Project status
 
-Current milestone: **Phase 3 implementation complete, with release validation pending**.
+The core Phase 3 features are implemented, with validation and release work remaining.
+Local tests cover class configuration, separate class topologies, frozen settings, worker selection, and event bursts through the graph writer.
+The [class configuration reference](docs/reference/class-configuration.md) describes the development API.
 
-Phase 3 adds the typed class configuration API, frozen Gateway settings, a complete Gateway graph writer, and worker NodePort member selection.
-Local unit, race, envtest, model benchmarks, and release packaging checks cover the implementation.
-The [class configuration reference](docs/reference/class-configuration.md) describes the development API and its limits.
+The [earlier OpenStack run](docs/providers/compatibility.md#development-validation) covered the Phase 2 baseline.
+The selected Phase 3 revision still needs live validation and a conformance gap analysis.
+The [opt-in v1.6.1 diagnostic](docs/testing-conformance.md) is ready for one adapted upstream HTTP test, but has not been run against OpenStack.
 
-The earlier [development OpenStack run](docs/providers/compatibility.md#development-validation) covered the Phase 2 HTTP and NodePort baseline.
-It does not validate the new Phase 3 revision.
-The next work is the pinned conformance gap analysis and a new OpenStack run, followed by outside testing with an immutable image and approved scheduled test infrastructure.
-The [remaining validation gates](ROADMAP.md#work-carried-into-phase-3) are still open.
-The project remains pre-alpha, with no supported environment profile or Gateway API conformance claim.
-
-See [the current development priorities](docs/development-priorities.md) for the remaining work and [ROADMAP.md](ROADMAP.md) for the phased plan.
-The [Amphora compatibility evidence](docs/providers/compatibility.md) page records what has and has not been tested.
-The [OpenStack E2E test guide](docs/testing-openstack-e2e.md) explains how to run the checks and record their results.
+See [development priorities](docs/development-priorities.md) for the next work and [ROADMAP.md](ROADMAP.md) for the phase gates.
+Use the [OpenStack E2E guide](docs/testing-openstack-e2e.md) for traffic, recovery, cleanup, and leak checks.
 
 ## Getting started
 
@@ -162,9 +157,6 @@ and its credentials available and follow the
 [operator recovery guide](docs/operator-recovery.md).
 
 ## Community direction
-
-This project is currently an independently maintained, experimental
-open source project.
 
 The near-term upstream goal is to publish an honest Gateway API conformance
 report and become eligible for the Gateway API implementation list. Runtime
