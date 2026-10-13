@@ -19,7 +19,6 @@ package ownershipaudit
 import (
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -35,12 +34,6 @@ func testConfig() Config {
 		ControllerVersion:  "test",
 		OpenStackProjectID: "project-a",
 		ClusterID:          "cluster-a",
-		Provider:           "amphora",
-		VIPSubnetID:        "vip-subnet",
-		MemberSubnetID:     "member-subnet",
-		MemberMode:         controller.MemberModeNodePort,
-		NodeAddressType:    corev1.NodeInternalIP,
-		HealthPath:         "/",
 	}
 }
 

@@ -33,6 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 func TestGatewayClassReconcileAcceptsWithoutOverstatingConformance(t *testing.T) {
@@ -48,6 +51,7 @@ func TestGatewayClassReconcileAcceptsWithoutOverstatingConformance(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: "openstack", Generation: 3},
 		Spec: gatewayv1.GatewayClassSpec{
 			ControllerName: gatewayv1.GatewayController("example.com/gateway-api-openstack"),
+			ParametersRef:  testParametersRef(),
 		},
 		Status: gatewayv1.GatewayClassStatus{Conditions: []metav1.Condition{customCondition}},
 	}
@@ -105,6 +109,7 @@ func TestGatewayClassReconcileRestoresOwnedConditions(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "openstack", Generation: 1},
 		Spec: gatewayv1.GatewayClassSpec{
 			ControllerName: gatewayv1.GatewayController("example.com/gateway-api-openstack"),
+			ParametersRef:  testParametersRef(),
 		},
 	}
 	reconciler, kubeClient := newGatewayClassReconciler(t, gatewayClass)
@@ -626,6 +631,9 @@ func newGatewayClassReconcilerWithCRDs(
 ) (*Reconciler, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
@@ -633,14 +641,16 @@ func newGatewayClassReconcilerWithCRDs(
 		t.Fatal(err)
 	}
 	allObjects := append(append([]client.Object(nil), objects...), definitions...)
+	allObjects = append(allObjects, testClassParameters())
 	kubeClient := rawIndexedFakeClientBuilder(scheme, testConfig()).
 		WithStatusSubresource(&gatewayv1.GatewayClass{}).
 		WithObjects(allObjects...).
 		Build()
 	reconciler := &Reconciler{
-		Client:    kubeClient,
-		APIReader: kubeClient,
-		Config:    Config{ControllerName: gatewayv1.GatewayController("example.com/gateway-api-openstack")},
+		Client:           kubeClient,
+		TopologyResolver: testTopologyResolver{},
+		APIReader:        kubeClient,
+		Config:           Config{ControllerName: gatewayv1.GatewayController("example.com/gateway-api-openstack")},
 	}
 	return reconciler, kubeClient
 }
@@ -704,4 +714,27 @@ func reconcileGatewayClass(t *testing.T, reconciler *Reconciler, name string) {
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
+}
+
+func testParametersRef() *gatewayv1.ParametersReference {
+	return &gatewayv1.ParametersReference{Group: gatewayv1.Group(configv1alpha1.GroupName), Kind: gatewayv1.Kind(configv1alpha1.GatewayClassConfigKind), Name: "default"}
+}
+
+func testClassParameters() *configv1alpha1.OpenStackGatewayClassConfig {
+	return &configv1alpha1.OpenStackGatewayClassConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "parameters-uid", Generation: 1},
+		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
+			VIPSubnet:    configv1alpha1.ResourceReference{ID: "11111111-1111-1111-1111-111111111111"},
+			MemberSubnet: configv1alpha1.ResourceReference{ID: "22222222-2222-2222-2222-222222222222"},
+		},
+	}
+}
+
+type testTopologyResolver struct{ err error }
+
+func (r testTopologyResolver) ResolveTopology(_ context.Context, request cloud.TopologyRequest) (cloud.Topology, error) {
+	if r.err != nil {
+		return cloud.Topology{}, r.err
+	}
+	return cloud.Topology{VIPSubnetID: request.VIPSubnet.ID, MemberSubnetID: request.MemberSubnet.ID}, nil
 }

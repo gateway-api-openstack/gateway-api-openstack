@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -130,6 +131,9 @@ func (r *Reconciler) patchGatewayMetadata(ctx context.Context, scope *gatewaySco
 }
 
 func gatewayOwnedMetadataChanged(config controller.Config, left, right *gatewayv1.Gateway) bool {
+	if !controller.GatewayTopologyMetadataEqual(config, left, right) {
+		return true
+	}
 	if controllerutil.ContainsFinalizer(left, config.GatewayFinalizer()) !=
 		controllerutil.ContainsFinalizer(right, config.GatewayFinalizer()) {
 		return true
@@ -143,6 +147,13 @@ func gatewayOwnedMetadataChanged(config controller.Config, left, right *gatewayv
 }
 
 func copyGatewayOwnedMetadata(config controller.Config, target, desired *gatewayv1.Gateway) {
+	controller.ClearGatewayTopology(config, target)
+	for _, finalizer := range desired.Finalizers {
+		if strings.HasPrefix(finalizer, config.GatewayTopologyFinalizerPrefix()) {
+			controllerutil.AddFinalizer(target, finalizer)
+		}
+	}
+
 	if controllerutil.ContainsFinalizer(desired, config.GatewayFinalizer()) {
 		controllerutil.AddFinalizer(target, config.GatewayFinalizer())
 	} else {
@@ -162,6 +173,7 @@ func copyGatewayOwnedMetadata(config controller.Config, target, desired *gateway
 
 func gatewayBindingAnnotationKeys(config controller.Config) []string {
 	return []string{
+		config.GatewayTopologyAnnotation(),
 		config.GatewayListenerPortAnnotation(),
 		config.GatewayClusterIDAnnotation(),
 		config.GatewayProjectIDAnnotation(),

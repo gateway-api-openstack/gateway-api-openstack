@@ -5,6 +5,7 @@ namespace: openstack-gateway-system
 
 resources:
   - namespace.yaml
+  - ../crd
   - ../rbac
   - ../manager
 
@@ -13,4 +14,4 @@ resources:
 images:
   - name: controller
     newName: example.invalid/openstack-gateway-controller
-    newTag: v0.1.0-dev
+    newTag: v0.3.0-dev

@@ -51,7 +51,7 @@ func TestGatewayRevalidatesFinalizerAfterWaitingForGraph(t *testing.T) {
 	}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).WithObjects(class, gateway).Build()
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{Client: kubeClient, Provider: provider, Coordinator: coordinator, APIReader: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: coordinator, APIReader: kubeClient, Config: config}, provider)
 
 	release, err := graph.Acquire(context.Background(), coordinator, string(gateway.UID))
 	if err != nil {

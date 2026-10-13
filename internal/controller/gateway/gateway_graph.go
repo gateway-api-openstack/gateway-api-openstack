@@ -25,48 +25,33 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
 const openStackResourceNamePrefix = "gateway-api-openstack"
 
-func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayResult, error) {
-	if r.APIReader == nil {
-		return cloud.GatewayResult{}, controller.ErrAPIReaderRequired
+func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayGraphResult, error) {
+	if r.Writer == nil {
+		return cloud.GatewayGraphResult{}, fmt.Errorf("gateway graph writer is required")
 	}
-	release, err := graph.Acquire(ctx, r.Coordinator, string(expected.UID))
+	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{Identity: controller.GatewayIdentity(r.Config, expected), Action: graph.Ensure, Gateway: expected})
 	if err != nil {
-		return cloud.GatewayResult{}, fmt.Errorf("acquire Gateway graph: %w", err)
-	}
-	defer release()
-
-	snapshot, err := r.observeGatewayMutationSnapshot(ctx, expected, gatewayBindingRequired, "")
-	if err != nil {
-		return cloud.GatewayResult{}, err
-	}
-	desired := r.gatewaySpec(snapshot.gateway, snapshot.listener)
-	if err := r.sealGatewayMutationSnapshot(ctx, snapshot); err != nil {
-		return cloud.GatewayResult{}, err
-	}
-
-	result, err := r.Provider.EnsureGateway(ctx, desired)
-	if err != nil {
-		return cloud.GatewayResult{}, err
-	}
-	if err := result.Outcome.Validate(); err != nil {
-		return cloud.GatewayResult{}, fmt.Errorf("validate Gateway provider outcome: %w", err)
+		return result, err
 	}
 	return result, nil
 }
 
-func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listener *gatewayv1.Listener) cloud.GatewaySpec {
+func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, topology classconfig.Resolved) cloud.GatewaySpec {
 	return cloud.GatewaySpec{
 		Identity:          controller.GatewayIdentity(r.Config, gateway),
-		Provider:          r.Config.Provider,
-		VIPSubnetID:       r.Config.VIPSubnetID,
-		ExternalNetworkID: r.Config.ExternalNetworkID,
+		Provider:          "amphora",
+		VIPSubnetID:       topology.Topology.VIPSubnetID,
+		ExternalNetworkID: topology.Topology.ExternalNetworkID,
 		ListenerName:      resourceDisplayName(gateway.Namespace, gateway.Name, string(listener.Name)),
 		ListenerPort:      int(listener.Port),
+		FlavorID:          topology.Topology.FlavorID,
+		AvailabilityZone:  topology.Topology.AvailabilityZone,
 	}
 }
 

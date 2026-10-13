@@ -170,6 +170,7 @@ func (r *Reconciler) applyRouteBinding(route *gatewayv1.HTTPRoute, gateway *gate
 	if route.Annotations == nil {
 		route.Annotations = map[string]string{}
 	}
+	route.Annotations[r.Config.RouteLifecycleAnnotation()] = controller.RouteAttached
 	route.Annotations[r.Config.RouteGatewayNamespaceAnnotation()] = gateway.Namespace
 	route.Annotations[r.Config.RouteGatewayNameAnnotation()] = gateway.Name
 	route.Annotations[r.Config.RouteGatewayUIDAnnotation()] = string(gateway.UID)
@@ -191,6 +192,7 @@ func (r *Reconciler) applyRouteBinding(route *gatewayv1.HTTPRoute, gateway *gate
 func (r *Reconciler) clearRouteBinding(route *gatewayv1.HTTPRoute) {
 	controllerutil.RemoveFinalizer(route, r.Config.RouteFinalizer())
 	r.removeRouteBindingFinalizers(route)
+	delete(route.Annotations, r.Config.RouteLifecycleAnnotation())
 	delete(route.Annotations, r.Config.RouteGatewayNamespaceAnnotation())
 	delete(route.Annotations, r.Config.RouteGatewayNameAnnotation())
 	delete(route.Annotations, r.Config.RouteGatewayUIDAnnotation())

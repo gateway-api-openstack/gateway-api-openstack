@@ -57,18 +57,6 @@ type gatewayDeletionPlan struct {
 	pools     gatewayPoolDeletionPlan
 }
 
-func (p gatewayDeletionPlan) hasRouteResources() bool {
-	return len(p.routes) != 0 || len(p.pools) != 0
-}
-
-func (p gatewayDeletionPlan) firstStep() (gatewayDeletionStep, bool) {
-	steps := p.orderedSteps()
-	if len(steps) == 0 {
-		return gatewayDeletionStep{}, false
-	}
-	return steps[0], true
-}
-
 // orderedSteps flattens the validated subplans in reverse dependency order.
 func (p gatewayDeletionPlan) orderedSteps() []gatewayDeletionStep {
 	steps := make([]gatewayDeletionStep, 0, len(p.routes)+len(p.pools)+len(p.listeners))

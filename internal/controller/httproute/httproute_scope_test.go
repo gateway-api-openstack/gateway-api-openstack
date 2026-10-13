@@ -80,9 +80,9 @@ func TestHTTPRouteDeferredStatusRetryPreservesConcurrentUpdates(t *testing.T) {
 			}
 		},
 	}
-	reconciler := &Reconciler{
+	reconciler := newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: baseClient, Config: cfg,
-	}
+	}, nil)
 	scope := &httpRouteScope{route: route.DeepCopy()}
 	scope.setStatuses([]parentStatusUpdate{{parent: parent, status: programmedRouteStatus()}})
 
@@ -152,10 +152,10 @@ func TestHTTPRouteDetachWaitsForStatusCheckpoint(t *testing.T) {
 	statusErr := errors.New("forced HTTPRoute status patch failure")
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: baseClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: baseClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(route)}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -197,8 +197,23 @@ func TestHTTPRouteDetachWaitsForStatusCheckpoint(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("third Reconcile() error = %v", err)
 	}
+	if len(provider.deletedRoutes) != 0 {
+		t.Fatal("cloud deletion preceded the durable Detaching checkpoint")
+	}
+	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[cfg.RouteLifecycleAnnotation()] != controller.RouteDetaching {
+		t.Fatalf("lifecycle after checkpoint = %q", current.Annotations[cfg.RouteLifecycleAnnotation()])
+	}
+	// A new reconciler must resume from the durable lifecycle without relying
+	// on the request that observed the original invalid route.
+	restarted := newTestReconciler(Reconciler{Client: kubeClient, APIReader: baseClient, Coordinator: &graph.Coordinator{}, Config: cfg}, provider)
+	if _, err := restarted.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("resume detaching route: %v", err)
+	}
 	if len(provider.deletedRoutes) != 1 {
-		t.Fatalf("DeleteRoute calls after status checkpoint = %d, want 1", len(provider.deletedRoutes))
+		t.Fatalf("DeleteRoute calls after durable checkpoints = %d, want 1", len(provider.deletedRoutes))
 	}
 	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 		t.Fatal(err)
@@ -220,13 +235,14 @@ func TestHTTPRouteProviderWarningWaitsForStatusPatch(t *testing.T) {
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}},
 		},
 	}
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	invalidStatus := statusForRouteBuildError(newRouteBuildError(
 		routeErrorUnsupported,
 		"Phase 1 supports exactly one HTTPRoute rule",
 	))
 	updates := []parentStatusUpdate{{parent: parent, status: invalidStatus}}
 	applyRouteParentStatuses(cfg, route, updates)
+	route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
 	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
 		WithObjects(class, gateway, route).
@@ -239,10 +255,10 @@ func TestHTTPRouteProviderWarningWaitsForStatusPatch(t *testing.T) {
 	)
 	provider := &recordingProvider{routeDeleteErr: providerErr}
 	recorder := events.NewFakeRecorder(2)
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: baseClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: baseClient,
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(route)}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -306,7 +322,7 @@ func TestHTTPRouteDetachReplacesPartialProviderFailureCheckpoint(t *testing.T) {
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}},
 		},
 	}
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	providerErr := cloud.NewProviderError(
 		cloud.ErrorCategoryOwnershipConflict,
 		errors.New("ownership conflict"),
@@ -338,10 +354,10 @@ func TestHTTPRouteDetachReplacesPartialProviderFailureCheckpoint(t *testing.T) {
 		WithObjects(class, gateway, route).
 		Build()
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -391,10 +407,10 @@ func TestHTTPRouteDeferredStatusRejectsControllerHandoff(t *testing.T) {
 		Client: kubeClient, className: class.Name, afterFirst: foreignClass,
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -436,10 +452,10 @@ func TestHTTPRouteBindingPatchFailurePreventsProviderMutation(t *testing.T) {
 	patchErr := errors.New("forced HTTPRoute binding patch failure")
 	kubeClient := &patchFailingClient{Client: baseClient, err: patchErr}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: baseClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: baseClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -477,10 +493,10 @@ func TestHTTPRouteCleanupCheckpointFailureSuppressesWarning(t *testing.T) {
 	)
 	provider := &recordingProvider{routeDeleteErr: providerErr}
 	recorder := events.NewFakeRecorder(1)
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: baseClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: baseClient,
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -538,10 +554,10 @@ func TestHTTPRouteReconcilePreservesBindingWhenCanceled(t *testing.T) {
 		}
 		provider := &recordingProvider{}
 		recorder := events.NewFakeRecorder(1)
-		reconciler := &Reconciler{
-			Client: baseClient, APIReader: reader, Provider: provider,
+		reconciler := newTestReconciler(Reconciler{
+			Client: baseClient, APIReader: reader,
 			Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-		}
+		}, provider)
 
 		result, err := reconciler.Reconcile(ctx, ctrl.Request{
 			NamespacedName: client.ObjectKeyFromObject(route),
@@ -569,10 +585,10 @@ func TestHTTPRouteReconcilePreservesBindingWhenCanceled(t *testing.T) {
 		}
 		provider := &recordingProvider{}
 		recorder := events.NewFakeRecorder(1)
-		reconciler := &Reconciler{
-			Client: baseClient, APIReader: reader, Provider: provider,
+		reconciler := newTestReconciler(Reconciler{
+			Client: baseClient, APIReader: reader,
 			Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-		}
+		}, provider)
 
 		result, err := reconciler.Reconcile(ctx, ctrl.Request{
 			NamespacedName: client.ObjectKeyFromObject(route),

@@ -61,7 +61,7 @@ func TestGatewayRequestsForHTTPRoute(t *testing.T) {
 		}}},
 	}
 
-	reconciler := &Reconciler{Config: config}
+	reconciler := newTestReconciler(Reconciler{Config: config}, nil)
 	requests := reconciler.gatewayRequestsForHTTPRoute(context.Background(), route)
 	want := []reconcile.Request{
 		{NamespacedName: types.NamespacedName{Namespace: "default", Name: "edge"}},
@@ -89,7 +89,7 @@ func TestGatewayRequestsForGatewayClass(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).
 		WithObjects(matchingGateway, otherGateway).
 		Build()
-	reconciler := &Reconciler{Client: kubeClient}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient}, nil)
 
 	requests := reconciler.gatewayRequestsForGatewayClass(context.Background(), &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "openstack"},
@@ -118,7 +118,7 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 		WithObjects(gateway).
 		Build()
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{Client: kubeClient, Provider: provider, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: config}, provider)
 
 	expected := gateway.DeepCopy()
 	expected.ResourceVersion = "stale-resource-version"
@@ -151,10 +151,10 @@ func TestGatewayBindingWithoutFinalizerRemainsCleanupResponsibility(t *testing.T
 		WithObjects(gatewayClass, gateway).
 		Build()
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: config,
-	}
+	}, provider)
 
 	if _, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),

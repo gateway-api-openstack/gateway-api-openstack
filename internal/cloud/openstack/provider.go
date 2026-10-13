@@ -52,29 +52,14 @@ var (
 	_ audit.Scanner  = (*Provider)(nil)
 )
 
-// EnsureGateway delegates Gateway graph reconciliation to the graph package.
-func (p *Provider) EnsureGateway(ctx context.Context, spec cloud.GatewaySpec) (cloud.GatewayResult, error) {
-	return p.graph.EnsureGateway(ctx, spec)
+// ReconcileGatewayGraph reconciles one complete, validated Gateway graph.
+func (p *Provider) ReconcileGatewayGraph(ctx context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
+	return p.graph.ReconcileGatewayGraph(ctx, spec)
 }
 
 // GetGateway delegates read-only Gateway discovery to the graph package.
 func (p *Provider) GetGateway(ctx context.Context, identity cloud.Identity) (cloud.GatewayResult, bool, error) {
 	return p.graph.GetGateway(ctx, identity)
-}
-
-// DeleteGateway delegates whole-Gateway cleanup to the graph package.
-func (p *Provider) DeleteGateway(ctx context.Context, identity cloud.Identity) (cloud.Outcome, error) {
-	return p.graph.DeleteGateway(ctx, identity)
-}
-
-// EnsureRoute delegates HTTPRoute graph reconciliation to the graph package.
-func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (cloud.RouteResult, error) {
-	return p.graph.EnsureRoute(ctx, spec)
-}
-
-// DeleteRoute delegates exact HTTPRoute graph cleanup to the graph package.
-func (p *Provider) DeleteRoute(ctx context.Context, identity cloud.Identity) (cloud.Outcome, error) {
-	return p.graph.DeleteRoute(ctx, identity)
 }
 
 // Scan delegates the read-only ownership inventory to the inventory package.

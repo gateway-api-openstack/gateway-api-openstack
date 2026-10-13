@@ -41,6 +41,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 	openstackobservability "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/observability"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
@@ -76,42 +77,28 @@ func run(ctx context.Context) error {
 		return err
 	}
 	var (
-		controllerName    string
-		clusterID         string
-		provider          string
-		vipSubnetID       string
-		externalNetworkID string
-		memberSubnetID    string
-		memberMode        string
-		nodeAddressType   string
-		healthPath        string
-		region            string
-		microversion      string
-		cloudsYAML        string
-		cloudName         string
-		metricsAddress    string
-		healthAddress     string
-		leaderElection    bool
-		allowInsecure     bool
-		operationTimeout  time.Duration
-		pollInterval      time.Duration
-		resyncInterval    time.Duration
-		apiQPS            float64
-		apiBurst          int
+		controllerName   string
+		clusterID        string
+		region           string
+		microversion     string
+		cloudsYAML       string
+		cloudName        string
+		metricsAddress   string
+		healthAddress    string
+		leaderElection   bool
+		allowInsecure    bool
+		operationTimeout time.Duration
+		pollInterval     time.Duration
+		resyncInterval   time.Duration
+		apiQPS           float64
+		apiBurst         int
 	)
 	zapOptions := zap.Options{Development: false}
 	zapOptions.BindFlags(flag.CommandLine)
-	flag.StringVar(&controllerName, "controller-name", envOr("GATEWAY_OPENSTACK_CONTROLLER_NAME", ""), "Gateway API controllerName (required, for example example.net/gateway-api-openstack)")
+	flag.StringVar(&controllerName, "controller-name", envOr("GATEWAY_OPENSTACK_CONTROLLER_NAME", configv1alpha1.GroupName+"/gateway-api-openstack"), "Gateway API controllerName for this installation")
 	flag.StringVar(&clusterID, "cluster-id", envOr("GATEWAY_OPENSTACK_CLUSTER_ID", ""), "stable unique identifier for this Kubernetes cluster (required)")
-	flag.StringVar(&provider, "octavia-provider", envOr("GATEWAY_OPENSTACK_OCTAVIA_PROVIDER", "amphora"), "Octavia provider name")
-	flag.StringVar(&vipSubnetID, "vip-subnet-id", envOr("GATEWAY_OPENSTACK_VIP_SUBNET_ID", ""), "OpenStack subnet used for Octavia VIPs (required)")
-	flag.StringVar(&externalNetworkID, "external-network-id", envOr("GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID", ""), "Neutron external network used to allocate a Floating IP")
-	flag.StringVar(&memberSubnetID, "member-subnet-id", envOr("GATEWAY_OPENSTACK_MEMBER_SUBNET_ID", ""), "OpenStack subnet containing Kubernetes Node addresses")
-	flag.StringVar(&memberMode, "member-mode", envOr("GATEWAY_OPENSTACK_MEMBER_MODE", string(controller.MemberModeNodePort)), "backend member discovery mode; Phase 1 supports NodePort")
-	flag.StringVar(&nodeAddressType, "node-address-type", envOr("GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE", string(corev1.NodeInternalIP)), "Node address type used for Octavia members: InternalIP or ExternalIP")
-	flag.StringVar(&healthPath, "health-path", envOr("GATEWAY_OPENSTACK_HEALTH_PATH", "/"), "HTTP health monitor path")
 	flag.StringVar(&region, "openstack-region", envOr("OS_REGION_NAME", ""), "OpenStack region; defaults to clouds.yaml or OS_REGION_NAME")
-	flag.StringVar(&microversion, "octavia-microversion", "2.5", "Octavia API microversion; Phase 1 requires resource tags")
+	flag.StringVar(&microversion, "octavia-microversion", "2.5", "Octavia API microversion (2.5 or later is required for resource tags)")
 	flag.StringVar(&cloudsYAML, "clouds-yaml", envOr("OS_CLIENT_CONFIG_FILE", ""), "path to clouds.yaml; when empty, standard OS_* variables are used")
 	flag.StringVar(&cloudName, "openstack-cloud", envOr("OS_CLOUD", ""), "clouds.yaml entry selected with --clouds-yaml")
 	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "metrics endpoint bind address")
@@ -142,13 +129,6 @@ func run(ctx context.Context) error {
 		ControllerName:          gatewayv1.GatewayController(controllerName),
 		ControllerVersion:       version,
 		ClusterID:               clusterID,
-		Provider:                provider,
-		VIPSubnetID:             vipSubnetID,
-		ExternalNetworkID:       externalNetworkID,
-		MemberSubnetID:          memberSubnetID,
-		MemberMode:              controller.MemberMode(memberMode),
-		NodeAddressType:         corev1.NodeAddressType(nodeAddressType),
-		HealthPath:              healthPath,
 		OpenStackResyncInterval: resyncInterval,
 	}
 	if err := controllerConfig.Validate(); err != nil {
@@ -160,6 +140,7 @@ func run(ctx context.Context) error {
 	utilruntime.Must(discoveryv1.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(configv1alpha1.AddToScheme(scheme))
 
 	restConfig := ctrl.GetConfigOrDie()
 	if err := requireGatewayAPIs(restConfig); err != nil {
@@ -192,28 +173,34 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("set up controller field indexes: %w", err)
 	}
 	graphCoordinator := &graph.Coordinator{}
+	topologyResolver := openstack.NewTopologyResolver(serviceClients, operationTimeout)
 	eventRecorder := manager.GetEventRecorder("gateway-api-openstack-controller")
-	if err := (&gatewayclass.Reconciler{Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Config: controllerConfig}).SetupWithManager(manager); err != nil {
+	if err := (&gatewayclass.Reconciler{Client: manager.GetClient(), APIReader: manager.GetAPIReader(), Config: controllerConfig, TopologyResolver: topologyResolver, Recorder: eventRecorder}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up GatewayClass controller: %w", err)
 	}
 	gatewayReconciler := &gateway.Reconciler{
-		Client:      manager.GetClient(),
-		Provider:    openStackProvider,
-		Coordinator: graphCoordinator,
-		APIReader:   manager.GetAPIReader(),
-		Recorder:    eventRecorder,
-		Config:      controllerConfig,
-	}
-	if err := gatewayReconciler.SetupWithManager(manager); err != nil {
-		return fmt.Errorf("set up Gateway controller: %w", err)
+		TopologyResolver: topologyResolver,
+		Client:           manager.GetClient(),
+		Coordinator:      graphCoordinator,
+		APIReader:        manager.GetAPIReader(),
+		Recorder:         eventRecorder,
+		Config:           controllerConfig,
 	}
 	routeReconciler := &httproute.Reconciler{
 		Client:      manager.GetClient(),
-		Provider:    openStackProvider,
 		Coordinator: graphCoordinator,
 		APIReader:   manager.GetAPIReader(),
 		Recorder:    eventRecorder,
 		Config:      controllerConfig,
+	}
+	writerMetrics, err := graph.RegisterWriterMetrics(controllermetrics.Registry)
+	if err != nil {
+		return fmt.Errorf("register Gateway graph metrics: %w", err)
+	}
+	writer := &graph.Writer{Observer: writerMetrics, Coordinator: graphCoordinator, Gateway: gatewayReconciler, Routes: routeReconciler, Provider: openStackProvider}
+	gatewayReconciler.Writer, routeReconciler.Writer = writer, writer
+	if err := gatewayReconciler.SetupWithManager(manager); err != nil {
+		return fmt.Errorf("set up Gateway controller: %w", err)
 	}
 	if err := routeReconciler.SetupWithManager(manager); err != nil {
 		return fmt.Errorf("set up HTTPRoute controller: %w", err)
@@ -229,8 +216,8 @@ func run(ctx context.Context) error {
 		"version", version,
 		"controllerName", controllerConfig.ControllerName,
 		"clusterID", controllerConfig.ClusterID,
-		"octaviaProvider", controllerConfig.Provider,
-		"memberMode", controllerConfig.MemberMode,
+		"octaviaProvider", "amphora",
+		"memberMode", "NodePort",
 	)
 	if err := manager.Start(ctx); err != nil {
 		return fmt.Errorf("run controller manager: %w", err)

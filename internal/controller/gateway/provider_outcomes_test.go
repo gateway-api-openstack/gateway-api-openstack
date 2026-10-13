@@ -75,10 +75,10 @@ func TestGatewayProviderFailureCategories(t *testing.T) {
 			providerErr := cloud.NewProviderError(test.category, cause)
 			provider := &recordingProvider{gatewayErr: providerErr}
 			recorder := events.NewFakeRecorder(2)
-			reconciler := Reconciler{
-				Client: kubeClient, APIReader: kubeClient, Provider: provider,
+			reconciler := *newTestReconciler(Reconciler{
+				Client: kubeClient, APIReader: kubeClient,
 				Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-			}
+			}, provider)
 
 			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}})
 			if test.wantError {
@@ -130,10 +130,10 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 		gatewayErr: cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("secret-token")),
 	}
 	recorder := events.NewFakeRecorder(3)
-	reconciler := Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
 
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
@@ -198,11 +198,11 @@ func TestGatewayProviderFailurePreservesProviderAndStatusErrors(t *testing.T) {
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("token=secret-token"))
 	recorder := events.NewFakeRecorder(1)
-	reconciler := Reconciler{
+	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
-		Provider:    &recordingProvider{gatewayErr: providerErr},
+
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, &recordingProvider{gatewayErr: providerErr})
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)})
 	if !errors.Is(err, providerErr) || !errors.Is(err, statusErr) {
@@ -232,11 +232,11 @@ func TestGatewayWarningIsRecordedAfterStatusPatch(t *testing.T) {
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("token=secret-token"))
 	recorder := events.NewFakeRecorder(2)
-	reconciler := Reconciler{
+	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
-		Provider:    &recordingProvider{gatewayErr: providerErr},
+
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, &recordingProvider{gatewayErr: providerErr})
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -279,10 +279,10 @@ func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
 	statusErr := errors.New("forced status patch failure")
 	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
 	provider := &recordingProvider{}
-	reconciler := Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -359,7 +359,7 @@ func TestGatewayProviderFailureObservedGeneration(t *testing.T) {
 				WithStatusSubresource(gateway).
 				WithObjects(gateway).
 				Build()
-			reconciler := Reconciler{Client: kubeClient, Config: cfg}
+			reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Config: cfg}, nil)
 			providerErr := cloud.NewProviderError(test.category, errors.New("provider failure"))
 
 			scope := &gatewayScope{gateway: gateway, original: gateway.DeepCopy()}
@@ -433,13 +433,13 @@ func TestGatewayProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 		Build()
 	providerResult := cloud.GatewayProgressingResult("Octavia load balancer is PENDING_UPDATE", time.Hour)
 	provider := &recordingProvider{gatewayResult: &providerResult}
-	reconciler := Reconciler{
-		Client:      kubeClient,
-		APIReader:   kubeClient,
-		Provider:    provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}})
 	if err != nil {
@@ -499,13 +499,13 @@ func TestGatewayProviderErrorTakesPrecedenceOverProgress(t *testing.T) {
 	providerResult := cloud.GatewayProgressingResult("this progress must be ignored", time.Second)
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("Octavia is unavailable"))
 	provider := &recordingProvider{gatewayResult: &providerResult, gatewayErr: providerErr}
-	reconciler := Reconciler{
-		Client:      kubeClient,
-		APIReader:   kubeClient,
-		Provider:    provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}})
 	if !errors.Is(err, cloud.ErrRetryableService) {
@@ -544,10 +544,10 @@ func TestGatewayProviderFailureDuringFinalizationKeepsBinding(t *testing.T) {
 		WithStatusSubresource(gateway).
 		WithObjects(gateway).
 		Build()
-	reconciler := Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)})
 	if err != nil {

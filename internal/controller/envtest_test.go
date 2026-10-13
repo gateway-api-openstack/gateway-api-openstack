@@ -22,11 +22,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,11 +41,12 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
-	gatewaycontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gatewayclass"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	httproutecontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/httproute"
 )
 
 const envtestWaitTimeout = 15 * time.Second
@@ -60,7 +63,7 @@ func TestControllerEnvtest(t *testing.T) {
 
 	testEnvironment := &envtest.Environment{
 		Scheme:                   scheme,
-		CRDDirectoryPaths:        []string{crdDirectory},
+		CRDDirectoryPaths:        []string{crdDirectory, "../../config/crd"},
 		ErrorIfCRDPathMissing:    true,
 		DownloadBinaryAssets:     false,
 		BinaryAssetsDirectory:    assetsDirectory,
@@ -128,13 +131,16 @@ func TestControllerEnvtest(t *testing.T) {
 
 	// These phases share one API server scenario. Each phase leaves the durable
 	// state that the next phase needs to exercise.
+	testClassConfigurationAPIServer(t, apiClient)
 	gatewayClass := createEnvtestGatewayClass(t, apiClient, cacheClient, config)
 	testGatewayClassStatusSubresource(t, apiClient, cacheClient, config, gatewayClass)
 	testGatewayBindingConflict(t, apiClient, cacheClient, config, namespace.Name, gatewayClass.Name)
 
 	gateway := createEnvtestGateway(t, apiClient, cacheClient, namespace.Name, "edge", gatewayClass.Name)
 	testGatewayBindingCheckpoint(t, apiClient, cacheClient, config, gateway)
+	testGatewayTopologySnapshot(t, apiClient, cacheClient, config, gateway)
 	testCacheFieldIndexes(t, apiClient, cacheClient, gateway)
+	testGraphWriterTriggerEquivalence(t, apiClient, cacheClient, config, gateway)
 	testFinalizersWithNewReconciler(t, apiClient, cacheClient, config, gatewayClass, gateway)
 }
 
@@ -161,10 +167,15 @@ func createEnvtestGatewayClass(
 	config controller.Config,
 ) *gatewayv1.GatewayClass {
 	t.Helper()
+	parameters := envtestClassParameters("openstack-envtest")
+	if err := apiClient.Create(t.Context(), parameters); err != nil {
+		t.Fatalf("create class parameters: %v", err)
+	}
 	gatewayClass := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "openstack-envtest"},
 		Spec: gatewayv1.GatewayClassSpec{
 			ControllerName: config.ControllerName,
+			ParametersRef:  &gatewayv1.ParametersReference{Group: configv1alpha1.GroupName, Kind: configv1alpha1.GatewayClassConfigKind, Name: parameters.Name},
 		},
 	}
 	if err := apiClient.Create(t.Context(), gatewayClass); err != nil {
@@ -200,9 +211,10 @@ func testGatewayClassStatusSubresource(
 	t.Helper()
 	beforeResourceVersion := gatewayClass.ResourceVersion
 	reconciler := &gatewayclass.Reconciler{
-		Client:    cacheClient,
-		APIReader: apiClient,
-		Config:    config,
+		Client:           cacheClient,
+		APIReader:        apiClient,
+		TopologyResolver: &recordingProvider{},
+		Config:           config,
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: gatewayClass.Name}}
 	if _, err := reconciler.Reconcile(t.Context(), request); err != nil {
@@ -289,13 +301,7 @@ func testGatewayBindingConflict(
 		key:       client.ObjectKeyFromObject(gateway),
 		config:    config,
 	}
-	reconciler := &gatewaycontroller.Reconciler{
-		Client:      conflictClient,
-		APIReader:   apiClient,
-		Provider:    provider,
-		Coordinator: &graph.Coordinator{},
-		Config:      config,
-	}
+	reconciler := newEnvtestGatewayReconciler(conflictClient, apiClient, provider, config)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 	_, err := reconciler.Reconcile(t.Context(), request)
 	if !apierrors.IsConflict(err) {
@@ -336,13 +342,7 @@ func testGatewayBindingCheckpoint(
 ) {
 	t.Helper()
 	provider := &recordingProvider{}
-	reconciler := &gatewaycontroller.Reconciler{
-		Client:      cacheClient,
-		APIReader:   apiClient,
-		Provider:    provider,
-		Coordinator: &graph.Coordinator{},
-		Config:      config,
-	}
+	reconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 	result, err := reconciler.Reconcile(t.Context(), request)
 	if err != nil {
@@ -417,7 +417,7 @@ func testFinalizersWithNewReconciler(
 	gateway *gatewayv1.Gateway,
 ) {
 	t.Helper()
-	classReconciler := &gatewayclass.Reconciler{Client: cacheClient, APIReader: apiClient, Config: config}
+	classReconciler := &gatewayclass.Reconciler{Client: cacheClient, APIReader: apiClient, TopologyResolver: &recordingProvider{}, Config: config}
 	classRequest := ctrl.Request{NamespacedName: types.NamespacedName{Name: gatewayClass.Name}}
 	if _, err := classReconciler.Reconcile(t.Context(), classRequest); err != nil {
 		t.Fatalf("add GatewayClass reference finalizer: %v", err)
@@ -443,13 +443,7 @@ func testFinalizersWithNewReconciler(
 	progressing := cloud.ProgressingOutcome("OpenStack cleanup is progressing", time.Second)
 	provider := &recordingProvider{}
 	provider.gatewayDeleteOut = &progressing
-	firstReconciler := &gatewaycontroller.Reconciler{
-		Client:      cacheClient,
-		APIReader:   apiClient,
-		Provider:    provider,
-		Coordinator: &graph.Coordinator{},
-		Config:      config,
-	}
+	firstReconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 	result, err := firstReconciler.Reconcile(t.Context(), request)
 	if err != nil {
@@ -469,13 +463,7 @@ func testFinalizersWithNewReconciler(
 
 	ready := cloud.ReadyOutcome()
 	provider.gatewayDeleteOut = &ready
-	secondReconciler := &gatewaycontroller.Reconciler{
-		Client:      cacheClient,
-		APIReader:   apiClient,
-		Provider:    provider,
-		Coordinator: &graph.Coordinator{},
-		Config:      config,
-	}
+	secondReconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
 	if _, err := secondReconciler.Reconcile(t.Context(), request); err != nil {
 		t.Fatalf("resume Gateway finalization with a new reconciler: %v", err)
 	}
@@ -654,4 +642,196 @@ func objectNames(objects []gatewayv1.Gateway) []string {
 		names = append(names, object.Namespace+"/"+object.Name)
 	}
 	return names
+}
+
+func envtestClassParameters(name string) *configv1alpha1.OpenStackGatewayClassConfig {
+	return &configv1alpha1.OpenStackGatewayClassConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
+			VIPSubnet: configv1alpha1.ResourceReference{ID: "11111111-1111-1111-1111-111111111111"}, MemberSubnet: configv1alpha1.ResourceReference{ID: "22222222-2222-2222-2222-222222222222"},
+		},
+	}
+}
+
+func testClassConfigurationAPIServer(t *testing.T, apiClient client.Client) {
+	t.Helper()
+	parameters := envtestClassParameters("schema-defaults")
+	if err := apiClient.Create(t.Context(), parameters); err != nil {
+		t.Fatalf("create default class parameters: %v", err)
+	}
+	if parameters.Spec.NodeAddressType != "InternalIP" || parameters.Spec.FloatingIP.Mode != configv1alpha1.FloatingIPNone || parameters.Spec.HealthMonitor.Delay == nil || *parameters.Spec.HealthMonitor.Delay != 10 || parameters.Spec.HealthMonitor.Timeout == nil || *parameters.Spec.HealthMonitor.Timeout != 5 {
+		t.Fatalf("API server defaults = %#v", parameters.Spec)
+	}
+	parameters.Spec.VIPSubnet.Name = "ambiguous"
+	if err := apiClient.Update(t.Context(), parameters); !apierrors.IsInvalid(err) {
+		t.Fatalf("mutually exclusive selector error = %v", err)
+	}
+	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(parameters), parameters); err != nil {
+		t.Fatal(err)
+	}
+	timeout := int32(10)
+	parameters.Spec.HealthMonitor.Timeout = &timeout
+	if err := apiClient.Update(t.Context(), parameters); !apierrors.IsInvalid(err) {
+		t.Fatalf("health monitor CEL error = %v", err)
+	}
+	if err := apiClient.Delete(t.Context(), parameters); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testGatewayTopologySnapshot(t *testing.T, apiClient, cacheClient client.Client, config controller.Config, gateway *gatewayv1.Gateway) {
+	t.Helper()
+	before, err := controller.StoredGatewayTopology(config, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters := &configv1alpha1.OpenStackGatewayClassConfig{}
+	if err := apiClient.Get(t.Context(), client.ObjectKey{Name: before.ParametersName}, parameters); err != nil {
+		t.Fatal(err)
+	}
+	parameters.Spec.VIPSubnet.ID = "33333333-3333-3333-3333-333333333333"
+	if err := apiClient.Update(t.Context(), parameters); err != nil {
+		t.Fatal(err)
+	}
+	if err := apiClient.Delete(t.Context(), parameters); err != nil {
+		t.Fatal(err)
+	}
+	classReconciler := &gatewayclass.Reconciler{Client: cacheClient, APIReader: apiClient, Config: config, TopologyResolver: &recordingProvider{}}
+	classRequest := ctrl.Request{NamespacedName: types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}}
+	currentClass := &gatewayv1.GatewayClass{}
+	for range 2 {
+		if _, err := classReconciler.Reconcile(t.Context(), classRequest); err != nil {
+			t.Fatal(err)
+		}
+		if err := apiClient.Get(t.Context(), classRequest.NamespacedName, currentClass); err != nil {
+			t.Fatal(err)
+		}
+		waitForGatewayClassResourceVersion(t, cacheClient, currentClass.Name, currentClass.ResourceVersion)
+	}
+	accepted := meta.FindStatusCondition(currentClass.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
+	if accepted == nil || accepted.Status != metav1.ConditionFalse || accepted.Reason != string(gatewayv1.GatewayClassReasonInvalidParameters) {
+		t.Fatalf("missing parameters condition=%#v", accepted)
+	}
+	provider := &recordingProvider{}
+	reconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}); err != nil {
+		t.Fatalf("reconcile after class parameters changed and disappeared: %v", err)
+	}
+	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].VIPSubnetID != before.Topology.VIPSubnetID {
+		t.Fatalf("Gateway did not use persisted topology: %#v", provider.gatewaySpecs)
+	}
+	current := &gatewayv1.Gateway{}
+	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), current); err != nil {
+		t.Fatal(err)
+	}
+	after, err := controller.StoredGatewayTopology(config, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("topology changed from %#v to %#v", before, after)
+	}
+	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(current), current.ResourceVersion, false)
+	*gateway = *current
+}
+
+func testGraphWriterTriggerEquivalence(t *testing.T, apiClient, cacheClient client.Client, config controller.Config, gateway *gatewayv1.Gateway) {
+	t.Helper()
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: gateway.Namespace, Name: "backend"}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: []corev1.ServicePort{{Name: "http", Protocol: corev1.ProtocolTCP, Port: 80, NodePort: 31080}}}}
+	if err := apiClient.Create(t.Context(), service); err != nil {
+		t.Fatal(err)
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "envtest-worker"}}
+	if err := apiClient.Create(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	node.Status.Addresses = []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.11"}}
+	node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "EnvtestReady", LastTransitionTime: metav1.Now()}}
+	if err := apiClient.Status().Update(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	ready := true
+	endpointSlice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: gateway.Namespace, Name: "backend-endpoints", Labels: map[string]string{discoveryv1.LabelServiceName: service.Name}}, AddressType: discoveryv1.AddressTypeIPv4, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.1.0.10"}, NodeName: &node.Name, Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
+	if err := apiClient.Create(t.Context(), endpointSlice); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []client.Object{service, node, endpointSlice} {
+		waitForEnvtest(t, func(ctx context.Context) (bool, error) {
+			cached := object.DeepCopyObject().(client.Object)
+			err := cacheClient.Get(ctx, client.ObjectKeyFromObject(object), cached)
+			return err == nil && cached.GetResourceVersion() == object.GetResourceVersion(), client.IgnoreNotFound(err)
+		})
+	}
+	route := &gatewayv1.HTTPRoute{}
+	routeKey := client.ObjectKey{Namespace: gateway.Namespace, Name: "api"}
+	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
+		t.Fatal(err)
+	}
+	provider := &recordingProvider{}
+	gatewayReconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
+	writer := gatewayReconciler.Writer.(*graph.Writer)
+	routeReconciler := writer.Routes.(*httproutecontroller.Reconciler)
+	routeRequest := ctrl.Request{NamespacedName: routeKey}
+	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
+		t.Fatalf("bind real HTTPRoute: %v", err)
+	}
+	if len(provider.graphSpecs) != 0 {
+		t.Fatal("route binding mutated the cloud before persistence")
+	}
+	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
+		t.Fatal(err)
+	}
+	if route.Annotations[config.RouteLifecycleAnnotation()] != controller.RouteAttached {
+		t.Fatalf("route lifecycle=%q", route.Annotations[config.RouteLifecycleAnnotation()])
+	}
+	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
+		cached := &gatewayv1.HTTPRoute{}
+		err := cacheClient.Get(ctx, routeKey, cached)
+		return err == nil && cached.ResourceVersion == route.ResourceVersion, client.IgnoreNotFound(err)
+	})
+	if _, err := gatewayReconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}); err != nil {
+		t.Fatalf("Gateway-triggered complete graph: %v", err)
+	}
+	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), gateway); err != nil {
+		t.Fatal(err)
+	}
+	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(gateway), gateway.ResourceVersion, false)
+	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
+		t.Fatalf("HTTPRoute-triggered complete graph: %v", err)
+	}
+	if len(provider.graphSpecs) != 2 || !reflect.DeepEqual(provider.graphSpecs[0], provider.graphSpecs[1]) {
+		t.Fatalf("writer triggers produced different graphs: %#v", provider.graphSpecs)
+	}
+	if len(provider.graphSpecs[0].Routes) != 1 || provider.graphSpecs[0].Gateway.Disposition != cloud.GraphEnsure || provider.graphSpecs[0].Routes[0].Disposition != cloud.GraphEnsure {
+		t.Fatalf("writer did not build complete graph: %#v", provider.graphSpecs[0])
+	}
+	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
+		t.Fatal(err)
+	}
+	if err := apiClient.Delete(t.Context(), route); err != nil {
+		t.Fatal(err)
+	}
+	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
+		cached := &gatewayv1.HTTPRoute{}
+		err := cacheClient.Get(ctx, routeKey, cached)
+		return err == nil && !cached.DeletionTimestamp.IsZero(), client.IgnoreNotFound(err)
+	})
+	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
+		t.Fatalf("checkpoint route deletion: %v", err)
+	}
+	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
+		t.Fatal(err)
+	}
+	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
+		cached := &gatewayv1.HTTPRoute{}
+		err := cacheClient.Get(ctx, routeKey, cached)
+		return err == nil && cached.ResourceVersion == route.ResourceVersion, client.IgnoreNotFound(err)
+	})
+	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
+		t.Fatalf("finalize bound route: %v", err)
+	}
+	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
+		err := apiClient.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})
+		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
+	})
 }

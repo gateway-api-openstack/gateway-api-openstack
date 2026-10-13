@@ -17,7 +17,6 @@ limitations under the License.
 package graph
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -43,107 +42,11 @@ type desiredRule struct {
 }
 
 type desiredRoute struct {
-	identity   Identity
-	spec       cloud.RouteSpec
-	members    []cloud.Member
-	healthPath string
-	policies   []desiredPolicy
-}
-
-// EnsureRoute observes and validates the complete route graph, then executes
-// at most one Octavia mutation. A later reconciliation observes the result.
-func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (result cloud.RouteResult, retErr error) {
-	defer func() {
-		retErr = classifyOpenStackError(retErr)
-	}()
-
-	ctx, cancel := p.operationContext(ctx)
-	defer cancel()
-
-	desired, err := p.buildDesiredRoute(spec)
-	if err != nil {
-		return cloud.RouteResult{}, err
-	}
-
-	gateway, found, err := p.observeRouteGateway(ctx, desired.identity, &desired.spec.GatewayRequirements, true)
-	if err != nil {
-		return cloud.RouteResult{}, fmt.Errorf("observe Gateway for HTTPRoute: %w", err)
-	}
-	if !found {
-		return cloud.RouteProgressingResult("Controller-owned Octavia load balancer has not been created", p.pollInterval), nil
-	}
-	if gateway.outcome.State == cloud.OutcomeProgressing {
-		return cloud.RouteResult{Outcome: gateway.outcome}, nil
-	}
-	if desired.spec.Gateway.LoadBalancerID != "" && desired.spec.Gateway.LoadBalancerID != gateway.state.LoadBalancerID ||
-		desired.spec.Gateway.ListenerID != "" && desired.spec.Gateway.ListenerID != gateway.state.ListenerID {
-		return cloud.RouteResult{}, fmt.Errorf("%w: route Gateway IDs do not match the controller-owned load balancer and listener", cloud.ErrOwnershipConflict)
-	}
-	desired.spec.Gateway = gateway.state
-
-	actual, err := p.observeRouteGraph(ctx, desired.identity, gateway.state)
-	if err != nil {
-		return cloud.RouteResult{}, err
-	}
-	plan, state, err := buildRouteEnsurePlan(desired, actual)
-	if err != nil {
-		return cloud.RouteResult{}, err
-	}
-	if len(plan) == 0 {
-		outcome, repaired, err := p.repairRouteGatewayAdminState(
-			ctx,
-			desired.identity,
-			desired.spec.GatewayRequirements,
-			gateway,
-		)
-		if err != nil {
-			return cloud.RouteResult{}, err
-		}
-		if repaired {
-			return cloud.RouteResult{State: state, Outcome: outcome}, nil
-		}
-		return cloud.RouteReadyResult(state), nil
-	}
-	if err := p.executeRouteMutation(ctx, desired, plan[0]); err != nil {
-		return cloud.RouteResult{}, err
-	}
-	return cloud.RouteResult{
-		State:   state,
-		Outcome: p.progressingOutcome(plan[0].message()),
-	}, nil
-}
-
-func (p *Provider) repairRouteGatewayAdminState(
-	ctx context.Context,
-	identity Identity,
-	gatewayRequirements cloud.GatewayRequirements,
-	gateway routeGatewayObservation,
-) (cloud.Outcome, bool, error) {
-	if gateway.listenerAdminStateUp && gateway.loadBalancerAdminStateUp {
-		return cloud.Outcome{}, false, nil
-	}
-	floatingIPReady, err := p.gatewayFloatingIPReadyForTraffic(
-		ctx,
-		identity,
-		gateway.state.VIPPortID,
-		gatewayRequirements.ExternalNetworkID,
-	)
-	if err != nil {
-		return cloud.Outcome{}, false, err
-	}
-	if !floatingIPReady {
-		return p.progressingOutcome("Waiting for Gateway Floating IP reconciliation before restoring traffic"), true, nil
-	}
-	if !gateway.listenerAdminStateUp {
-		if err := p.enableListener(ctx, gateway.state.ListenerID); err != nil {
-			return cloud.Outcome{}, false, err
-		}
-		return p.progressingOutcome("Enabled Octavia listener after validating the HTTPRoute graph"), true, nil
-	}
-	if err := p.enableLoadBalancer(ctx, gateway.state.LoadBalancerID); err != nil {
-		return cloud.Outcome{}, false, err
-	}
-	return p.progressingOutcome("Enabled Octavia load balancer after validating the HTTPRoute graph"), true, nil
+	identity      Identity
+	spec          cloud.RouteSpec
+	members       []cloud.Member
+	healthMonitor cloud.HealthMonitorConfig
+	policies      []desiredPolicy
 }
 
 func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error) {
@@ -208,19 +111,35 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 		members = append(members, membersByKey[key])
 	}
 
-	healthPath := spec.HealthPath
-	if healthPath == "" {
-		healthPath = "/"
+	monitor := spec.HealthMonitor
+	if monitor.Path == "" {
+		monitor.Path = "/"
 	}
-	if !strings.HasPrefix(healthPath, "/") {
-		return invalid(fmt.Errorf("health check path %q must start with /", healthPath))
+	if monitor.Delay == 0 {
+		monitor.Delay = routeMonitorDelay
+	}
+	if monitor.Timeout == 0 {
+		monitor.Timeout = routeMonitorTimeout
+	}
+	if monitor.MaxRetries == 0 {
+		monitor.MaxRetries = routeMonitorMaxRetries
+	}
+	if monitor.MaxRetriesDown == 0 {
+		monitor.MaxRetriesDown = routeMonitorMaxRetriesDown
+	}
+	if !strings.HasPrefix(monitor.Path, "/") {
+		return invalid(fmt.Errorf("health check path %q must start with /", monitor.Path))
+	}
+	if monitor.Delay < 1 || monitor.Timeout < 1 || monitor.Timeout >= monitor.Delay ||
+		monitor.MaxRetries < 1 || monitor.MaxRetries > 10 || monitor.MaxRetriesDown < 1 || monitor.MaxRetriesDown > 10 {
+		return invalid(errors.New("health monitor requires positive intervals, timeout below delay, and retry counts within 1-10"))
 	}
 	return desiredRoute{
-		identity:   identity,
-		spec:       spec,
-		members:    members,
-		healthPath: healthPath,
-		policies:   policiesFor(spec),
+		identity:      identity,
+		spec:          spec,
+		members:       members,
+		healthMonitor: monitor,
+		policies:      policiesFor(spec),
 	}, nil
 }
 

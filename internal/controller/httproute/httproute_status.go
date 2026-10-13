@@ -181,7 +181,7 @@ func (r *Reconciler) handleRouteProviderFailure(
 ) (ctrl.Result, error) {
 	policy, ok := controller.ProviderFailurePolicyFor(providerErr)
 	if !ok {
-		return ctrl.Result{}, providerErr
+		return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The HTTPRoute graph could not be reconciled"}, providerErr)
 	}
 	route := scope.route
 	status := providerFailureRouteStatus(policy, referencesEvaluated)
@@ -205,7 +205,7 @@ func (r *Reconciler) handleRouteFinalizationFailure(
 ) (ctrl.Result, error) {
 	policy, ok := controller.ProviderFailurePolicyFor(providerErr)
 	if !ok {
-		return ctrl.Result{}, providerErr
+		return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The HTTPRoute graph could not be removed"}, providerErr)
 	}
 	route := scope.route
 	policy = controller.ProviderCleanupFailurePolicy(policy, "HTTPRoute")

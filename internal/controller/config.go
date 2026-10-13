@@ -26,22 +26,12 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-// MemberMode selects how Kubernetes backends become Octavia members.
-type MemberMode string
-
-const (
-	// MemberModeNodePort sends Octavia traffic to ready Kubernetes Nodes and a
-	// Service NodePort. It is the only backend mode supported in Phase 1.
-	MemberModeNodePort MemberMode = "NodePort"
-
-	// DefaultOpenStackResyncInterval controls how often a converged resource is
-	// observed when no Kubernetes event has changed its desired state.
-	DefaultOpenStackResyncInterval = 10 * time.Minute
-)
+// DefaultOpenStackResyncInterval controls how often a converged resource is
+// observed when no Kubernetes event has changed its desired state.
+const DefaultOpenStackResyncInterval = 10 * time.Minute
 
 var gatewayControllerNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/[A-Za-z0-9/\-._~%!$&'()*+,;=:]+$`)
 
@@ -55,20 +45,6 @@ type Config struct {
 	OpenStackProjectID string
 	// ClusterID is the stable cluster identity stored on managed resources.
 	ClusterID string
-	// Provider is the Octavia provider selected for managed load balancers.
-	Provider string
-	// VIPSubnetID is the subnet used for Octavia virtual IPs.
-	VIPSubnetID string
-	// ExternalNetworkID is the optional network used for Floating IPs.
-	ExternalNetworkID string
-	// MemberSubnetID is the subnet associated with Octavia members.
-	MemberSubnetID string
-	// MemberMode selects how Service backends become Octavia members.
-	MemberMode MemberMode
-	// NodeAddressType selects the Node address used by NodePort members.
-	NodeAddressType corev1.NodeAddressType
-	// HealthPath is the HTTP path used by Octavia health monitors.
-	HealthPath string
 	// OpenStackResyncInterval controls periodic observation after convergence.
 	OpenStackResyncInterval time.Duration
 }
@@ -78,30 +54,8 @@ func (c Config) Validate() error {
 	if !IsValidControllerName(c.ControllerName) {
 		return fmt.Errorf("controller name %q must be a domain prefixed path", c.ControllerName)
 	}
-	for _, field := range []struct {
-		name  string
-		value string
-	}{
-		{name: "cluster ID", value: c.ClusterID},
-		{name: "octavia provider", value: c.Provider},
-		{name: "VIP subnet ID", value: c.VIPSubnetID},
-		{name: "member subnet ID", value: c.MemberSubnetID},
-	} {
-		if strings.TrimSpace(field.value) == "" {
-			return fmt.Errorf("%s must not be empty", field.name)
-		}
-	}
-	if c.Provider != "amphora" {
-		return fmt.Errorf("octavia provider %q is unsupported in Phase 1; only amphora has been verified", c.Provider)
-	}
-	if c.MemberMode != MemberModeNodePort {
-		return fmt.Errorf("member mode %q is unsupported in Phase 1; use %s", c.MemberMode, MemberModeNodePort)
-	}
-	if c.NodeAddressType != corev1.NodeInternalIP && c.NodeAddressType != corev1.NodeExternalIP {
-		return fmt.Errorf("node address type must be InternalIP or ExternalIP")
-	}
-	if !strings.HasPrefix(c.HealthPath, "/") {
-		return fmt.Errorf("health path must begin with '/'")
+	if strings.TrimSpace(c.ClusterID) == "" {
+		return fmt.Errorf("cluster ID must not be empty")
 	}
 	if c.OpenStackResyncInterval <= 0 {
 		return fmt.Errorf("OpenStack resync interval must be greater than zero")

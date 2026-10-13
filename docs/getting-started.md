@@ -207,8 +207,8 @@ For the basic example, delete in this order:
 kubectl -n gateway-api-openstack-demo delete httproute basic
 kubectl -n gateway-api-openstack-demo delete gateway edge
 kubectl delete gatewayclass openstack
+kubectl delete openstackgatewayclassconfig openstack
 kubectl delete -f examples/basic.yaml --ignore-not-found
-kubectl delete -k config/default
 ```
 
 Each of the first three commands waits for deletion by default.
@@ -218,5 +218,25 @@ Do not remove controller finalizers manually because doing so bypasses ownership
 Follow the [operator recovery guide](operator-recovery.md) for the complete procedure.
 
 Before uninstalling a shared controller, repeat the HTTPRoute, Gateway, and GatewayClass deletion sequence for every class using its exact controller name.
-The final `kubectl delete -k` removes the dedicated `openstack-gateway-system` namespace and its credential Secret.
-It does not remove the cluster-scoped Gateway API CRDs, which may be shared by other controllers.
+Remove a parameter object only after no class needs it.
+Keep the original controller and credentials available throughout this process.
+
+The base uninstall also deletes the OpenStackGatewayClassConfig CRD, which removes every instance of that API throughout the cluster.
+Check for remaining configuration objects:
+
+```sh
+kubectl get openstackgatewayclassconfigs.gateway-api-openstack.github.io
+```
+
+Only after the list is empty and no other installation needs the CRD, uninstall the base manifests:
+
+```sh
+kubectl delete -k config/default
+```
+
+If another installation uses this API, remove only the resources owned by this installation and retain the shared CRD and any shared RBAC resources.
+The base uninstall removes the dedicated `openstack-gateway-system` namespace and its credential Secret.
+It does not remove the upstream Gateway API CRDs.
+
+Changing the development API group, controller name, cluster ID, or authenticated project requires cleanup with the original installation followed by recreation.
+There is no automatic migration or adoption path from Phase 2 or between controller identities.

@@ -56,7 +56,7 @@ func TestHTTPRouteRequestsForGatewayUseParentAndStoredBinding(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).
 		WithObjects(gateway, direct, bound, status, unrelated).
 		Build()
-	reconciler := &Reconciler{Client: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: config}, nil)
 
 	got := reconciler.enqueueHTTPRoutesForGateway(context.Background(), gateway)
 	want := []reconcile.Request{
@@ -76,7 +76,7 @@ func TestHTTPRouteRequestsForServiceKeepDirectRouteWhenPeerLookupFails(t *testin
 		WithObjects(direct).
 		Build()
 	kubeClient := &failNthListClient{Client: baseClient, failAt: 2, err: errors.New("cache unavailable")}
-	reconciler := &Reconciler{Client: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: config}, nil)
 
 	got := reconciler.enqueueHTTPRoutesForServiceKey(context.Background(), types.NamespacedName{
 		Namespace: "default",
@@ -97,7 +97,7 @@ func TestHTTPRouteRequestsForServiceIncludeOnlyGatewayContenders(t *testing.T) {
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).
 		WithObjects(direct, peer, unrelated).
 		Build()
-	reconciler := &Reconciler{Client: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: config}, nil)
 
 	got := reconciler.enqueueHTTPRoutesForServiceKey(context.Background(), types.NamespacedName{
 		Namespace: "default",

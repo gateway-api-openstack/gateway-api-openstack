@@ -66,6 +66,7 @@ func TestSetupIndexes(t *testing.T) {
 
 	wantTypes := map[string]client.Object{
 		IndexGatewayClassByController:   &gatewayv1.GatewayClass{},
+		IndexGatewayClassByParameters:   &gatewayv1.GatewayClass{},
 		IndexGatewayByClass:             &gatewayv1.Gateway{},
 		IndexHTTPRouteByParentGateway:   &gatewayv1.HTTPRoute{},
 		IndexHTTPRouteByStatusGateway:   &gatewayv1.HTTPRoute{},

@@ -38,7 +38,7 @@ func TestEnsureGatewayRepairsDisabledLoadBalancerFirst(t *testing.T) {
 		"id": "listener-1", "protocol": "HTTP", "protocol_port": 80,
 		"admin_state_up": true, "tags": listenerTags,
 	}})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(emptyFloatingIPHandler(t, requests)),
 		ProjectID:    "project-a",
@@ -66,7 +66,7 @@ func TestEnsureGatewayDoesNotEnableLoadBalancerWithInvalidListener(t *testing.T)
 		"id": "listener-1", "protocol": "TCP", "protocol_port": 80,
 		"admin_state_up": true, "tags": listenerTags,
 	}})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -101,7 +101,7 @@ func TestEnsureGatewayDoesNotEnableLoadBalancerWithForeignFloatingIP(t *testing.
 		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 		http.Error(w, "unexpected request", http.StatusNotFound)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
@@ -134,7 +134,7 @@ func TestEnsureGatewayDoesNotRepairBeforeGraphValidation(t *testing.T) {
 			foreignGraph.ServeHTTP(w, request)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -157,24 +157,16 @@ func TestEnsureGatewayDefersAdministrativeRepairToBoundRoute(t *testing.T) {
 	}{
 		{
 			name: "load balancer", loadBalancerAdmin: false, listenerAdmin: true,
-			wantMessage: "Waiting for HTTPRoute validation before enabling the Octavia load balancer",
+			wantMessage: "Waiting for the Gateway infrastructure",
 		},
 		{
 			name: "listener", loadBalancerAdmin: true, listenerAdmin: false,
-			wantMessage: "Waiting for HTTPRoute validation before enabling the Octavia listener",
+			wantMessage: "Waiting for the Gateway infrastructure",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			identity := safetyTestIdentity(t)
-			gatewayValue := identity.Value()
-			gatewayValue.RouteNamespace = ""
-			gatewayValue.RouteName = ""
-			gatewayValue.RouteUID = ""
-			gatewayIdentity, err := NewIdentity(gatewayValue)
-			if err != nil {
-				t.Fatalf("NewIdentity() error = %v", err)
-			}
 			loadBalancerTags := safetyGatewayTags(t, identity, roleLoadBalancer)
 			listenerTags := safetyGatewayTags(t, identity, roleListener)
 			poolTags := safetyRouteTags(t, identity, rolePool)
@@ -200,13 +192,13 @@ func TestEnsureGatewayDefersAdministrativeRepairToBoundRoute(t *testing.T) {
 					baseHandler.ServeHTTP(w, request)
 				}
 			})
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(handler),
 				Network:      safetyServiceClient(emptyFloatingIPHandler(t, requests)),
 				ProjectID:    "project-a",
 			}, ProviderConfig{PollInterval: 7 * time.Second})
 
-			result, err := provider.EnsureGateway(context.Background(), gatewayTransitionSpec(gatewayIdentity))
+			result, err := provider.EnsureGateway(context.Background(), gatewayTransitionSpec(identity))
 			if err != nil {
 				t.Fatalf("EnsureGateway() error = %v", err)
 			}
@@ -240,7 +232,7 @@ func TestGetGatewayWaitsForAdministrativelyDisabledResources(t *testing.T) {
 				"id": "listener-1", "protocol": "HTTP", "protocol_port": 80,
 				"admin_state_up": test.listenerAdmin, "tags": listenerTags,
 			}})
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(handler),
 				ProjectID:    "project-a",
 			}, ProviderConfig{PollInterval: 7 * time.Second})
@@ -269,7 +261,7 @@ func TestEnsureGatewayRepairsDisabledListenerFirst(t *testing.T) {
 		"id": "listener-1", "protocol": "HTTP", "protocol_port": 80,
 		"admin_state_up": false, "tags": listenerTags,
 	}})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(emptyFloatingIPHandler(t, requests)),
 		ProjectID:    "project-a",
@@ -294,7 +286,7 @@ func TestEnsureGatewayRecreatesDeletedListener(t *testing.T) {
 	listenerTags := safetyGatewayTags(t, identity, roleListener)
 	requests := &gatewayTransitionRequests{}
 	loadBalancerHandler := gatewayDriftHandler(t, requests, loadBalancerTags, listenerTags, true, nil)
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(emptyFloatingIPHandler(t, requests)),
 		ProjectID:    "project-a",
@@ -331,7 +323,7 @@ func TestEnsureGatewayCreatesOneResourcePerTransition(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 7 * time.Second})
@@ -358,6 +350,8 @@ func TestEnsureGatewayPendingReturnsWithoutMutation(t *testing.T) {
 	loadBalancerHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests.record(request)
 		switch request.URL.Path {
+		case "/lbaas/listeners":
+			safetyWriteJSON(t, w, map[string]any{"listeners": []any{}})
 		case "/lbaas/loadbalancers":
 			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{gatewayTransitionLoadBalancer(tags, "PENDING_UPDATE")}})
 		case "/lbaas/loadbalancers/load-balancer-1":
@@ -367,7 +361,7 @@ func TestEnsureGatewayPendingReturnsWithoutMutation(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: time.Hour})
@@ -405,7 +399,7 @@ func TestEnsureGatewayErrorStatusReturnsTypedFailure(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -439,7 +433,7 @@ func TestDeleteGatewayPendingReturnsWithoutMutation(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 11 * time.Second})
@@ -483,7 +477,7 @@ func TestDeleteGatewayExecutesOnlyFirstValidatedStep(t *testing.T) {
 		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 		http.Error(w, "unexpected request", http.StatusNotFound)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",

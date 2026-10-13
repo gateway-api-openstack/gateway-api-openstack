@@ -141,20 +141,25 @@ func (r *Reconciler) buildRouteSpecWithReader(
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	members, err := r.nodePortMembersWithReader(ctx, reader, &service, servicePort.NodePort)
+	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
+	if err != nil {
+		return cloud.RouteSpec{}, err
+	}
+	members, err := nodePortMembersFromReader(ctx, reader, &service, servicePort.NodePort, topology.NodeAddressType)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
 	return cloud.RouteSpec{
 		Identity: controller.RouteIdentity(r.Config, gateway, route),
 		GatewayRequirements: cloud.GatewayRequirements{
-			Provider:          r.Config.Provider,
-			VIPSubnetID:       r.Config.VIPSubnetID,
-			ExternalNetworkID: r.Config.ExternalNetworkID,
+			Provider:          "amphora",
+			VIPSubnetID:       topology.Topology.VIPSubnetID,
+			ExternalNetworkID: topology.Topology.ExternalNetworkID,
 			ListenerPort:      int(gateway.Spec.Listeners[0].Port),
+			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
 		},
-		MemberSubnetID: r.Config.MemberSubnetID,
-		HealthPath:     r.Config.HealthPath,
+		MemberSubnetID: topology.Topology.MemberSubnetID,
+		HealthMonitor:  topology.HealthMonitor,
 		Hostname:       hostname,
 		PathType:       pathType,
 		PathValue:      pathValue,

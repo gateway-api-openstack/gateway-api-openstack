@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +31,8 @@ import (
 const (
 	// IndexGatewayClassByController indexes GatewayClasses by controller name.
 	IndexGatewayClassByController = "spec.controllerName"
+	// IndexGatewayClassByParameters indexes exact supported class parameter references.
+	IndexGatewayClassByParameters = "spec.openStackParameters"
 	// IndexGatewayByClass indexes Gateways by GatewayClass name.
 	IndexGatewayByClass = "spec.gatewayClassName"
 	// IndexHTTPRouteByParentGateway indexes HTTPRoutes by parent Gateway key.
@@ -69,6 +72,7 @@ func SetupIndexes(ctx context.Context, indexer client.FieldIndexer, config Confi
 
 func controllerFieldIndexes(config Config) []controllerFieldIndex {
 	return []controllerFieldIndex{
+		{object: &gatewayv1.GatewayClass{}, field: IndexGatewayClassByParameters, extract: gatewayClassParametersKeys},
 		{
 			object: &gatewayv1.GatewayClass{},
 			field:  IndexGatewayClassByController,
@@ -292,4 +296,16 @@ func sortedIndexKeys(keys map[string]struct{}) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func gatewayClassParametersKeys(object client.Object) []string {
+	class, ok := object.(*gatewayv1.GatewayClass)
+	if !ok || class.Spec.ParametersRef == nil {
+		return nil
+	}
+	ref := class.Spec.ParametersRef
+	if ref.Group != gatewayv1.Group(configv1alpha1.GroupName) || ref.Kind != gatewayv1.Kind(configv1alpha1.GatewayClassConfigKind) || ref.Namespace != nil || ref.Name == "" {
+		return nil
+	}
+	return []string{ref.Name}
 }

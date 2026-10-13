@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,8 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 )
 
 type gatewayBindingRequirement int
@@ -47,6 +50,7 @@ type gatewayMutationSnapshot struct {
 	gatewayClass *gatewayv1.GatewayClass
 	listener     *gatewayv1.Listener
 	binding      gatewayBindingRequirement
+	topology     classconfig.Resolved
 }
 
 // observeGatewayMutationSnapshot builds the model used by one mutation
@@ -79,7 +83,7 @@ func (r *Reconciler) observeGatewayMutationSnapshot(
 	); err != nil {
 		return nil, errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
 	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName || gatewayClass.Spec.ParametersRef != nil {
+	if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
 		return nil, errGatewayChanged
 	}
 	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
@@ -105,8 +109,21 @@ func (r *Reconciler) observeGatewayMutationSnapshot(
 		return nil, errGatewayChanged
 	}
 
+	var topology classconfig.Resolved
+	var err error
+	if controller.HasGatewayTopologyBinding(r.Config, &gateway) {
+		topology, err = controller.StoredGatewayTopology(r.Config, &gateway)
+	} else if binding == gatewayBindingRequired {
+		return nil, fmt.Errorf("%w: Gateway topology binding is required", cloud.ErrOwnershipConflict)
+	} else {
+		topology, err = classconfig.Resolve(ctx, r.APIReader, r.TopologyResolver, &gatewayClass)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return &gatewayMutationSnapshot{
 		gateway:      &gateway,
+		topology:     topology,
 		gatewayClass: &gatewayClass,
 		listener:     listener,
 		binding:      binding,
@@ -154,11 +171,23 @@ func (r *Reconciler) sealGatewayMutationSnapshot(
 	); err != nil {
 		return errors.Join(errGatewayChanged, client.IgnoreNotFound(err))
 	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName || gatewayClass.Spec.ParametersRef != nil {
+	if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
 		return errGatewayChanged
 	}
 	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
 		return controller.ErrUnsupportedGatewayAPIVersion
+	}
+	if snapshot.binding == gatewayBindingOptional && !controller.HasGatewayTopologyBinding(r.Config, snapshot.gateway) {
+		if !reflect.DeepEqual(gatewayClass.Spec.ParametersRef, snapshot.gatewayClass.Spec.ParametersRef) {
+			return errGatewayChanged
+		}
+		var parameters configv1alpha1.OpenStackGatewayClassConfig
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: snapshot.topology.ParametersName}, &parameters); err != nil {
+			return err
+		}
+		if parameters.UID != snapshot.topology.ParametersUID || parameters.Generation != snapshot.topology.ParametersGeneration || !parameters.DeletionTimestamp.IsZero() {
+			return errGatewayChanged
+		}
 	}
 	return nil
 }
@@ -170,7 +199,6 @@ const (
 	gatewayPhaseCleanupUnmanaged
 	gatewayPhaseUnsupportedVersion
 	gatewayPhaseInvalidBinding
-	gatewayPhaseUnsupportedParameters
 	gatewayPhaseInvalidSpec
 	gatewayPhaseReplaceGraph
 	gatewayPhaseBind
@@ -201,9 +229,6 @@ func (r *Reconciler) decideGatewayPhase(scope *gatewayScope) gatewayPhaseDecisio
 	if err := controller.ValidateGatewayBinding(r.Config, gateway); err != nil {
 		return gatewayPhaseDecision{phase: gatewayPhaseInvalidBinding, validation: err}
 	}
-	if scope.gatewayClass != nil && scope.gatewayClass.Spec.ParametersRef != nil {
-		return gatewayPhaseDecision{phase: gatewayPhaseUnsupportedParameters}
-	}
 
 	listener, err := Validate(gateway)
 	if err != nil {
@@ -232,15 +257,17 @@ func (r *Reconciler) gatewayBindingComplete(gateway *gatewayv1.Gateway) bool {
 type gatewayCleanupDisposition string
 
 const (
-	gatewayCleanupDelete gatewayCleanupDisposition = "Delete"
-	gatewayCleanupHold   gatewayCleanupDisposition = "Hold"
+	gatewayCleanupDelete  gatewayCleanupDisposition = "Delete"
+	gatewayCleanupRebuild gatewayCleanupDisposition = "Rebuild"
+	gatewayCleanupHold    gatewayCleanupDisposition = "Hold"
 )
 
 // gatewayCleanupSnapshot records the live binding and the cleanup authority
 // derived from the current Gateway and GatewayClass lifecycle.
 type gatewayCleanupSnapshot struct {
-	identity    cloud.Identity
-	disposition gatewayCleanupDisposition
+	identity     cloud.Identity
+	disposition  gatewayCleanupDisposition
+	listenerPort string
 }
 
 func (r *Reconciler) observeGatewayCleanupSnapshot(
@@ -295,15 +322,15 @@ func (r *Reconciler) observeGatewayCleanupSnapshot(
 	if err := controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader); err != nil {
 		return nil, err
 	}
-	if gatewayClass.Spec.ParametersRef != nil {
-		return snapshot, nil
-	}
 	listener, validationErr := Validate(&gateway)
 	if validationErr != nil {
+		snapshot.disposition = gatewayCleanupRebuild
 		return snapshot, nil
 	}
 	storedListenerPort := gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
 	if storedListenerPort != "" && storedListenerPort != strconv.Itoa(int(listener.Port)) {
+		snapshot.disposition = gatewayCleanupRebuild
+		snapshot.listenerPort = strconv.Itoa(int(listener.Port))
 		return snapshot, nil
 	}
 

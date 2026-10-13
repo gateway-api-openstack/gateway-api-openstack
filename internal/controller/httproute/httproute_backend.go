@@ -19,8 +19,6 @@ package httproute
 import (
 	"context"
 	"fmt"
-	"net"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -49,16 +47,7 @@ func nodePortForBackend(service *corev1.Service, port int32) (*corev1.ServicePor
 	return nil, newRouteBuildError(routeErrorPending, "backend Service %s does not expose port %d", service.Name, port)
 }
 
-func (r *Reconciler) nodePortMembers(ctx context.Context, service *corev1.Service, nodePort int32) ([]cloud.Member, error) {
-	return r.nodePortMembersWithReader(ctx, r.Client, service, nodePort)
-}
-
-func (r *Reconciler) nodePortMembersWithReader(
-	ctx context.Context,
-	reader client.Reader,
-	service *corev1.Service,
-	nodePort int32,
-) ([]cloud.Member, error) {
+func nodePortMembersFromReader(ctx context.Context, reader client.Reader, service *corev1.Service, nodePort int32, addressType corev1.NodeAddressType) ([]cloud.Member, error) {
 	var slices discoveryv1.EndpointSliceList
 	if err := reader.List(
 		ctx,
@@ -68,89 +57,13 @@ func (r *Reconciler) nodePortMembersWithReader(
 	); err != nil {
 		return nil, fmt.Errorf("list backend EndpointSlices: %w", err)
 	}
-	readyEndpoint := false
-	localNodes := map[string]struct{}{}
-	for _, slice := range slices.Items {
-		for _, endpoint := range slice.Endpoints {
-			if !endpointReady(endpoint.Conditions) {
-				continue
-			}
-			readyEndpoint = true
-			if endpoint.NodeName != nil {
-				localNodes[*endpoint.NodeName] = struct{}{}
-			}
-		}
+	localNodes, err := readyBackendNodes(service, slices.Items)
+	if err != nil {
+		return nil, err
 	}
-	if !readyEndpoint {
-		return nil, newRouteBuildError(routeErrorPending, "backend Service %s has no ready endpoints", service.Name)
-	}
-	if service.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal && len(localNodes) == 0 {
-		return nil, newRouteBuildError(routeErrorPending, "backend Service %s uses externalTrafficPolicy Local but ready endpoints do not identify their Nodes", service.Name)
-	}
-
 	var nodes corev1.NodeList
 	if err := reader.List(ctx, &nodes); err != nil {
 		return nil, fmt.Errorf("list backend Nodes: %w", err)
 	}
-	members := make([]cloud.Member, 0, len(nodes.Items))
-	seen := map[string]struct{}{}
-	for index := range nodes.Items {
-		node := &nodes.Items[index]
-		if !readyNode(node) {
-			continue
-		}
-		if service.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
-			if _, ok := localNodes[node.Name]; !ok {
-				continue
-			}
-		}
-		address := nodeAddress(node, r.Config.NodeAddressType)
-		if address == "" {
-			continue
-		}
-		key := net.JoinHostPort(address, fmt.Sprintf("%d", nodePort))
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		members = append(members, cloud.Member{Address: address, Port: int(nodePort)})
-	}
-	if len(members) == 0 {
-		return nil, newRouteBuildError(routeErrorPending, "backend Service %s has no ready Nodes with a %s address", service.Name, r.Config.NodeAddressType)
-	}
-	sort.Slice(members, func(i, j int) bool {
-		if members[i].Address == members[j].Address {
-			return members[i].Port < members[j].Port
-		}
-		return members[i].Address < members[j].Address
-	})
-	return members, nil
-}
-
-func endpointReady(conditions discoveryv1.EndpointConditions) bool {
-	if conditions.Terminating != nil && *conditions.Terminating {
-		return false
-	}
-	return conditions.Ready == nil || *conditions.Ready
-}
-
-func readyNode(node *corev1.Node) bool {
-	if !node.DeletionTimestamp.IsZero() || node.Spec.Unschedulable {
-		return false
-	}
-	for _, condition := range node.Status.Conditions {
-		if condition.Type == corev1.NodeReady {
-			return condition.Status == corev1.ConditionTrue
-		}
-	}
-	return false
-}
-
-func nodeAddress(node *corev1.Node, addressType corev1.NodeAddressType) string {
-	for _, address := range node.Status.Addresses {
-		if address.Type == addressType && net.ParseIP(address.Address) != nil {
-			return address.Address
-		}
-	}
-	return ""
+	return nodePortMembersForNodes(service, nodePort, addressType, localNodes, nodes.Items)
 }

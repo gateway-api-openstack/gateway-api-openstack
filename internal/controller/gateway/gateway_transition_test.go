@@ -58,13 +58,13 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 		Build()
 	progressing := cloud.ProgressingOutcome("Deleting controller-owned listener", time.Hour)
 	provider := &recordingProvider{gatewayDeleteOut: &progressing}
-	reconciler := Reconciler{
-		Client:      kubeClient,
-		APIReader:   kubeClient,
-		Provider:    provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
 
 	result, err := reconciler.Reconcile(context.Background(), request)

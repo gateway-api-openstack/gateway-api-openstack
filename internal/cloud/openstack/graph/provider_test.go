@@ -35,7 +35,7 @@ func TestProviderIdentityRequiresAuthenticatedProject(t *testing.T) {
 		GatewayName:        "edge",
 		GatewayUID:         "gateway-uid",
 	}
-	provider := NewProvider(ServiceClients{ProjectID: "project-a"}, ProviderConfig{})
+	provider := newTestProvider(t, ServiceClients{ProjectID: "project-a"}, ProviderConfig{})
 	if _, err := provider.identity(value); err != nil {
 		t.Fatalf("identity() error = %v", err)
 	}
@@ -54,7 +54,7 @@ func TestEnsureGatewayClassifiesGophercloudFailure(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
