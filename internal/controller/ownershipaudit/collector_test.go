@@ -225,11 +225,6 @@ func TestCollectOwnershipSnapshotDiscardsPartialList(t *testing.T) {
 
 func TestCollectOwnershipSnapshotValidatesOnlyAuditConfiguration(t *testing.T) {
 	cfg := testConfig()
-	cfg.Provider = ""
-	cfg.VIPSubnetID = ""
-	cfg.MemberSubnetID = ""
-	cfg.MemberMode = ""
-	cfg.HealthPath = ""
 	cfg.OpenStackResyncInterval = 0
 	reader := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 

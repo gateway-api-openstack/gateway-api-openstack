@@ -35,7 +35,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
-var errHTTPRouteChanged = errors.New("HTTPRoute changed during reconciliation")
+var errHTTPRouteChanged = controller.ErrGraphInputChanged
 
 type cachedRouteDisposition int
 
@@ -62,8 +62,8 @@ type cachedRouteDecision struct {
 type Reconciler struct {
 	// Client reads and patches cached Kubernetes objects.
 	client.Client
-	// Provider reconciles the provider-neutral OpenStack resource graph.
-	Provider cloud.Provider
+	// Writer rebuilds and reconciles the complete Gateway graph.
+	Writer graph.Reconciler
 	// Coordinator serializes graph mutation by Gateway UID.
 	Coordinator *graph.Coordinator
 	// APIReader performs safety-sensitive live reads.
@@ -118,6 +118,10 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, scope *httpRouteScope)
 }
 
 func (r *Reconciler) reconcileNormal(ctx context.Context, scope *httpRouteScope) (ctrl.Result, error) {
+	if scope.route.Annotations[r.Config.RouteLifecycleAnnotation()] == controller.RouteDetaching {
+		return r.finalizeRoute(ctx, scope)
+	}
+
 	decision, err := r.buildCachedRouteDecision(ctx, scope.route)
 	if err != nil {
 		return ctrl.Result{}, err

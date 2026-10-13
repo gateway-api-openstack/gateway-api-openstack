@@ -7,6 +7,14 @@ metadata:
     app.kubernetes.io/part-of: gateway-api-openstack
 rules:
   - apiGroups:
+      - gateway-api-openstack.github.io
+    resources:
+      - openstackgatewayclassconfigs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
       - apiextensions.k8s.io
     resources:
       - customresourcedefinitions

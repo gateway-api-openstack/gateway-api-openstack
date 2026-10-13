@@ -21,3 +21,6 @@ import "errors"
 // ErrAPIReaderRequired reports that a safety-sensitive live read cannot use
 // the shared cache.
 var ErrAPIReaderRequired = errors.New("uncached API reader is required")
+
+// ErrGraphInputChanged reports that a live mutation fence rejected stale inputs.
+var ErrGraphInputChanged = errors.New("gateway graph inputs changed during reconciliation")

@@ -19,6 +19,7 @@ package httproute
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -210,26 +211,44 @@ func (r *Reconciler) deleteRoute(
 	if r.APIReader == nil {
 		return cloud.Outcome{}, controller.ErrAPIReaderRequired
 	}
+	if r.Writer == nil {
+		return cloud.Outcome{}, fmt.Errorf("gateway graph writer is required")
+	}
+	if expected.Annotations[r.Config.RouteLifecycleAnnotation()] != controller.RouteDetaching {
+		if err := r.checkpointRouteDetaching(ctx, expected, identity); err != nil {
+			return cloud.Outcome{}, err
+		}
+		return cloud.ProgressingOutcome("HTTPRoute cleanup checkpoint was stored", time.Second), nil
+	}
+	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{Identity: identity, Action: graph.DeleteRoute, Route: expected})
+	return result.Outcome, err
+}
+
+func (r *Reconciler) checkpointRouteDetaching(ctx context.Context, expected *gatewayv1.HTTPRoute, identity cloud.Identity) error {
 	release, err := graph.Acquire(ctx, r.Coordinator, identity.GatewayUID)
 	if err != nil {
-		return cloud.Outcome{}, fmt.Errorf("acquire Gateway graph: %w", err)
+		return fmt.Errorf("acquire Gateway graph: %w", err)
 	}
 	defer release()
-
 	snapshot, err := r.buildRouteCleanupSnapshot(ctx, expected, identity)
 	if err != nil {
-		return cloud.Outcome{}, err
+		return err
 	}
-	switch snapshot.disposition {
-	case routeCleanupStillDesired:
-		return cloud.Outcome{}, errHTTPRouteChanged
-	case routeCleanupRequired:
-	default:
-		return cloud.Outcome{}, fmt.Errorf("invalid HTTPRoute cleanup snapshot disposition %d", snapshot.disposition)
+	if snapshot.disposition != routeCleanupRequired {
+		return errHTTPRouteChanged
 	}
 	if err := r.sealRouteCleanupSnapshot(ctx, snapshot); err != nil {
-		return cloud.Outcome{}, err
+		return err
 	}
-
-	return r.Provider.DeleteRoute(ctx, snapshot.identity)
+	base := snapshot.route.DeepCopy()
+	desired := snapshot.route.DeepCopy()
+	if desired.Annotations == nil {
+		desired.Annotations = make(map[string]string)
+	}
+	desired.Annotations[r.Config.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	if err := r.Patch(ctx, desired, controller.OptimisticMergeFrom(base)); err != nil {
+		return err
+	}
+	*expected = *desired
+	return nil
 }

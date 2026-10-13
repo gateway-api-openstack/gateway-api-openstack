@@ -29,6 +29,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
@@ -36,23 +37,26 @@ import (
 type Reconciler struct {
 	// Client reads and patches cached Kubernetes objects.
 	client.Client
-	// Provider reconciles the provider-neutral OpenStack resource graph.
-	Provider cloud.Provider
+	// Writer rebuilds and reconciles the complete Gateway graph.
+	Writer graph.Reconciler
 	// Coordinator serializes graph mutation by Gateway UID.
 	Coordinator *graph.Coordinator
 	// APIReader performs safety-sensitive live reads.
 	APIReader client.Reader
 	// Recorder publishes Kubernetes Events.
 	Recorder events.EventRecorder
+	// TopologyResolver resolves class infrastructure before the initial binding.
+	TopologyResolver cloud.TopologyResolver
 	// Config contains immutable controller configuration.
 	Config controller.Config
 }
 
 var (
-	errGatewayChanged = errors.New("gateway changed during reconciliation")
+	errGatewayChanged = controller.ErrGraphInputChanged
 )
 
 // Reconcile evaluates one Gateway and converges the graph owned by it.
+// +kubebuilder:rbac:groups=gateway-api-openstack.github.io,resources=openstackgatewayclassconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
@@ -104,7 +108,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, scope *gatewayScope) (
 	case gatewayPhaseInvalidBinding:
 		r.setGatewayFailureReason(scope.gateway, gatewayv1.GatewayReasonInvalidParameters, decision.validation.Error())
 		return ctrl.Result{}, nil
-	case gatewayPhaseUnsupportedParameters, gatewayPhaseInvalidSpec:
+	case gatewayPhaseInvalidSpec:
 		return r.reconcileRejectedGateway(ctx, scope, decision)
 	case gatewayPhaseReplaceGraph:
 		return r.reconcileGatewayReplacement(ctx, scope, decision)
@@ -130,18 +134,7 @@ func (r *Reconciler) reconcileRejectedGateway(
 	scope *gatewayScope,
 	decision gatewayPhaseDecision,
 ) (ctrl.Result, error) {
-	switch decision.phase {
-	case gatewayPhaseUnsupportedParameters:
-		r.setGatewayFailureReason(
-			scope.gateway,
-			gatewayv1.GatewayReasonInvalidParameters,
-			"GatewayClass parametersRef is not supported in Phase 1",
-		)
-	case gatewayPhaseInvalidSpec:
-		r.setGatewayFailure(scope.gateway, decision.validation)
-	default:
-		return ctrl.Result{}, fmt.Errorf("phase %d does not describe a rejected Gateway", decision.phase)
-	}
+	r.setGatewayFailure(scope.gateway, decision.validation)
 	return r.cleanupGatewayAfterStatusCheckpoint(ctx, scope)
 }
 
@@ -173,8 +166,17 @@ func (r *Reconciler) reconcileGatewayBinding(
 	decision gatewayPhaseDecision,
 ) (ctrl.Result, error) {
 	if err := r.bindGateway(ctx, scope.gateway, decision.listenerPort); err != nil {
+		var invalid *classconfig.InvalidParametersError
+		if errors.As(err, &invalid) {
+			r.setGatewayFailureReason(scope.gateway, gatewayv1.GatewayReasonInvalidParameters, invalid.Error())
+			return ctrl.Result{}, nil
+		}
+
 		if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
 			return r.setGatewayUnsupportedVersion(ctx, scope)
+		}
+		if _, classified := controller.ProviderFailurePolicyFor(err); classified {
+			return r.handleGatewayProviderFailure(ctx, scope, decision.listener, err)
 		}
 		return ctrl.Result{}, err
 	}
@@ -187,7 +189,7 @@ func (r *Reconciler) reconcileGatewayGraph(
 	scope *gatewayScope,
 	decision gatewayPhaseDecision,
 ) (ctrl.Result, error) {
-	gatewayResult, err := r.ensureGateway(ctx, scope.gateway)
+	graphResult, err := r.ensureGateway(ctx, scope.gateway)
 	if err != nil {
 		if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
 			return r.setGatewayUnsupportedVersion(ctx, scope)
@@ -195,7 +197,18 @@ func (r *Reconciler) reconcileGatewayGraph(
 		if errors.Is(err, errGatewayChanged) {
 			return ctrl.Result{}, err
 		}
+		var componentError *cloud.GraphError
+		if errors.As(err, &componentError) && componentError.Identity.RouteUID != "" {
+			if policy, classified := controller.ProviderFailurePolicyFor(err); classified {
+				return controller.ProviderFailureResult(policy, err, string(scope.gateway.UID))
+			}
+			return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The HTTPRoute graph could not be reconciled"}, err)
+		}
 		return r.handleGatewayProviderFailure(ctx, scope, decision.listener, err)
+	}
+	gatewayResult := graphResult.Gateway
+	if err := gatewayResult.Outcome.Validate(); err != nil {
+		return ctrl.Result{}, fmt.Errorf("validate Gateway component outcome: %w", err)
 	}
 	if gatewayResult.Outcome.State == cloud.OutcomeProgressing {
 		message := controller.ProviderProgressMessage(gatewayResult.Outcome, "Octavia resources for the Gateway are still progressing")
@@ -208,6 +221,9 @@ func (r *Reconciler) reconcileGatewayGraph(
 	log.FromContext(ctx).V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
 	if err := r.setGatewayProgrammed(ctx, scope.gateway, decision.listener, gatewayState); err != nil {
 		return ctrl.Result{}, err
+	}
+	if graphResult.Outcome.State == cloud.OutcomeProgressing {
+		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(graphResult.Outcome, scope.gateway.UID)}, nil
 	}
 	return ctrl.Result{RequeueAfter: controller.OpenStackResyncAfter(r.Config.OpenStackResyncInterval, scope.gateway.UID)}, nil
 }

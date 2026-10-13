@@ -26,9 +26,23 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
-// ValidateGatewayBinding verifies the durable controller identity stored on a
-// Gateway without performing Kubernetes or cloud I/O.
+// ValidateGatewayBinding verifies the complete durable binding before lifecycle work.
 func ValidateGatewayBinding(config Config, gateway *gatewayv1.Gateway) error {
+	if err := ValidateGatewayIdentityBinding(config, gateway); err != nil {
+		return err
+	}
+	if GatewayHasControllerBinding(config, gateway) {
+		if _, err := StoredGatewayTopology(config, gateway); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateGatewayIdentityBinding validates only the immutable ownership tuple.
+// The advisory audit does not need provisioning parameters to inventory identity.
+// This check alone never authorizes graph mutation or finalizer removal.
+func ValidateGatewayIdentityBinding(config Config, gateway *gatewayv1.Gateway) error {
 	bindingValues := []string{
 		gateway.Annotations[config.GatewayListenerPortAnnotation()],
 		gateway.Annotations[config.GatewayClusterIDAnnotation()],
@@ -40,7 +54,7 @@ func ValidateGatewayBinding(config Config, gateway *gatewayv1.Gateway) error {
 			populatedBindingCount++
 		}
 	}
-	if populatedBindingCount != len(bindingValues) && (populatedBindingCount != 0 || controllerutil.ContainsFinalizer(gateway, config.GatewayFinalizer())) {
+	if populatedBindingCount != len(bindingValues) && (populatedBindingCount != 0 || controllerutil.ContainsFinalizer(gateway, config.GatewayFinalizer()) || HasGatewayTopologyBinding(config, gateway)) {
 		return fmt.Errorf("gateway %s/%s has an incomplete stored OpenStack resource binding; restore the original annotations before reconciling", gateway.Namespace, gateway.Name)
 	}
 	if stored := gateway.Annotations[config.GatewayClusterIDAnnotation()]; stored != "" && stored != config.ClusterID {
@@ -55,7 +69,7 @@ func ValidateGatewayBinding(config Config, gateway *gatewayv1.Gateway) error {
 // GatewayHasControllerBinding reports whether the Gateway contains any part
 // of this controller's durable binding.
 func GatewayHasControllerBinding(config Config, gateway *gatewayv1.Gateway) bool {
-	if controllerutil.ContainsFinalizer(gateway, config.GatewayFinalizer()) {
+	if controllerutil.ContainsFinalizer(gateway, config.GatewayFinalizer()) || HasGatewayTopologyBinding(config, gateway) {
 		return true
 	}
 	for _, key := range []string{
@@ -73,6 +87,9 @@ func GatewayHasControllerBinding(config Config, gateway *gatewayv1.Gateway) bool
 // GatewayBindingMetadataEqual compares only Gateway metadata owned by this
 // controller.
 func GatewayBindingMetadataEqual(config Config, left, right *gatewayv1.Gateway) bool {
+	if !GatewayTopologyMetadataEqual(config, left, right) {
+		return false
+	}
 	if controllerutil.ContainsFinalizer(left, config.GatewayFinalizer()) !=
 		controllerutil.ContainsFinalizer(right, config.GatewayFinalizer()) {
 		return false

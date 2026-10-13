@@ -203,12 +203,16 @@ func EndpointSlicePredicate() predicate.Predicate {
 }
 
 // NodePredicate selects changes to the Node state used for NodePort members.
+// An empty address type watches both supported class address types.
 func NodePredicate(addressType corev1.NodeAddressType) predicate.Predicate {
 	return updatePredicate(func(oldObject, newObject client.Object) bool {
 		oldNode, oldOK := oldObject.(*corev1.Node)
 		newNode, newOK := newObject.(*corev1.Node)
 		if !oldOK || !newOK {
 			return true
+		}
+		if addressType == "" {
+			return nodeBackendStateFor(oldNode, corev1.NodeInternalIP) != nodeBackendStateFor(newNode, corev1.NodeInternalIP) || nodeBackendStateFor(oldNode, corev1.NodeExternalIP) != nodeBackendStateFor(newNode, corev1.NodeExternalIP)
 		}
 		return nodeBackendStateFor(oldNode, addressType) != nodeBackendStateFor(newNode, addressType)
 	})
@@ -233,6 +237,9 @@ func containsString(values []string, expected string) bool {
 }
 
 func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gateway) bool {
+	if !GatewayTopologyMetadataEqual(config, oldGateway, newGateway) {
+		return true
+	}
 	if finalizerPresenceChanged(oldGateway, newGateway, config.GatewayFinalizer()) {
 		return true
 	}
@@ -250,6 +257,7 @@ func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gate
 
 func routeBindingChanged(config Config, oldRoute, newRoute *gatewayv1.HTTPRoute) bool {
 	for _, key := range []string{
+		config.RouteLifecycleAnnotation(),
 		config.RouteGatewayNamespaceAnnotation(),
 		config.RouteGatewayNameAnnotation(),
 		config.RouteGatewayUIDAnnotation(),
@@ -377,6 +385,7 @@ func endpointSliceBackendState(endpointSlice *discoveryv1.EndpointSlice) endpoin
 
 type nodeBackendState struct {
 	address       string
+	excluded      bool
 	ready         corev1.ConditionStatus
 	readyPresent  bool
 	unschedulable bool
@@ -386,6 +395,7 @@ type nodeBackendState struct {
 func nodeBackendStateFor(node *corev1.Node, addressType corev1.NodeAddressType) nodeBackendState {
 	state := nodeBackendState{
 		address:       nodeAddress(node, addressType),
+		excluded:      NodePortNodeExcluded(node),
 		unschedulable: node.Spec.Unschedulable,
 		deleting:      !node.DeletionTimestamp.IsZero(),
 	}

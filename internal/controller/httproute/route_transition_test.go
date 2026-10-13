@@ -43,13 +43,13 @@ func TestHTTPRouteDeletionProgressRetainsFinalizersAndBinding(t *testing.T) {
 	provider := &routeTransitionProvider{
 		deleteOutcome: cloud.ProgressingOutcome("Deleting controller-owned L7 rule", time.Hour),
 	}
-	reconciler := Reconciler{
-		Client:      kubeClient,
-		APIReader:   kubeClient,
-		Provider:    provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -91,13 +91,13 @@ func TestHTTPRouteDeletionRemovesBindingOnlyAfterProviderIsReady(t *testing.T) {
 		cloud.ProgressingOutcome("Deleting controller-owned L7 rule", time.Second),
 		cloud.ReadyOutcome(),
 	}}
-	reconciler := Reconciler{
-		Client:      kubeClient,
-		APIReader:   kubeClient,
-		Provider:    provider,
+	reconciler := *newTestReconciler(Reconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name}}
 
 	first, err := reconciler.Reconcile(context.Background(), request)
@@ -175,6 +175,7 @@ func (p *routeTransitionProvider) DeleteRoute(_ context.Context, identity cloud.
 func deletingBoundRoute(cfg Config) (*gatewayv1.HTTPRoute, map[string]string) {
 	now := metav1.Now()
 	annotations := map[string]string{
+		cfg.RouteLifecycleAnnotation():        controller.RouteDetaching,
 		cfg.RouteGatewayNamespaceAnnotation(): "default",
 		cfg.RouteGatewayNameAnnotation():      "edge",
 		cfg.RouteGatewayUIDAnnotation():       "gateway-uid",

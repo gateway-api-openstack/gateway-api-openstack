@@ -33,9 +33,9 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
-// cleanupGateway converges a previously valid Gateway to no OpenStack
-// resources before dropping this controller's finalizer. DeleteGateway is
-// identity-safe and idempotent, so it is also safe when creation never began.
+// cleanupGateway confirms the owned graph is absent before releasing its binding
+// or preparing a replacement. A managed Gateway retains its frozen topology for
+// its lifetime, including periods when its spec cannot be provisioned.
 func (r *Reconciler) cleanupGateway(ctx context.Context, scope *gatewayScope) (ctrl.Result, error) {
 	expectedResourceVersion := scope.gateway.ResourceVersion
 	var gateway gatewayv1.Gateway
@@ -55,12 +55,7 @@ func (r *Reconciler) cleanupGateway(ctx context.Context, scope *gatewayScope) (c
 	if err := scope.refresh(&gateway); err != nil {
 		return ctrl.Result{}, err
 	}
-	hasFinalizer := controllerutil.ContainsFinalizer(scope.gateway, r.Config.GatewayFinalizer())
-	_, hasListenerPortBinding := scope.gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
-	_, hasClusterIDBinding := scope.gateway.Annotations[r.Config.GatewayClusterIDAnnotation()]
-	_, hasProjectIDBinding := scope.gateway.Annotations[r.Config.GatewayProjectIDAnnotation()]
-	hasBinding := hasListenerPortBinding || hasClusterIDBinding || hasProjectIDBinding
-	if !hasFinalizer && !hasBinding {
+	if !controller.GatewayHasControllerBinding(r.Config, scope.gateway) {
 		return ctrl.Result{}, nil
 	}
 	if err := controller.ValidateGatewayBinding(r.Config, scope.gateway); err != nil {
@@ -83,6 +78,26 @@ func (r *Reconciler) cleanupGateway(ctx context.Context, scope *gatewayScope) (c
 	if outcome.State == cloud.OutcomeProgressing {
 		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(outcome, scope.gateway.UID)}, nil
 	}
+	// Recheck the lifecycle after cloud observation. A concurrent spec or class
+	// change must not erase the snapshot or authorize a new listener binding.
+	snapshot, err := r.observeGatewayCleanupSnapshot(ctx, scope.gateway)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if snapshot.disposition == gatewayCleanupHold {
+		return ctrl.Result{}, errGatewayChanged
+	}
+	if snapshot.disposition == gatewayCleanupRebuild {
+		if snapshot.listenerPort == "" {
+			return ctrl.Result{}, nil
+		}
+		scope.gateway.Annotations[r.Config.GatewayListenerPortAnnotation()] = snapshot.listenerPort
+		if err := r.patchGatewayMetadata(ctx, scope); err != nil {
+			return ctrl.Result{}, fmt.Errorf("checkpoint Gateway graph replacement: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	controller.ClearGatewayTopology(r.Config, scope.gateway)
 	controllerutil.RemoveFinalizer(scope.gateway, r.Config.GatewayFinalizer())
 	delete(scope.gateway.Annotations, r.Config.GatewayListenerPortAnnotation())
 	delete(scope.gateway.Annotations, r.Config.GatewayClusterIDAnnotation())
@@ -101,21 +116,9 @@ func (r *Reconciler) cleanupGateway(ctx context.Context, scope *gatewayScope) (c
 }
 
 func (r *Reconciler) deleteGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.Outcome, error) {
-	if r.APIReader == nil {
-		return cloud.Outcome{}, controller.ErrAPIReaderRequired
+	if r.Writer == nil {
+		return cloud.Outcome{}, fmt.Errorf("gateway graph writer is required")
 	}
-	release, err := graph.Acquire(ctx, r.Coordinator, string(expected.UID))
-	if err != nil {
-		return cloud.Outcome{}, fmt.Errorf("acquire Gateway graph: %w", err)
-	}
-	defer release()
-
-	snapshot, err := r.observeGatewayCleanupSnapshot(ctx, expected)
-	if err != nil {
-		return cloud.Outcome{}, err
-	}
-	if snapshot.disposition != gatewayCleanupDelete {
-		return cloud.Outcome{}, errGatewayChanged
-	}
-	return r.Provider.DeleteGateway(ctx, snapshot.identity)
+	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{Identity: controller.StoredGatewayIdentity(r.Config, expected), Action: graph.DeleteGateway, Gateway: expected})
+	return result.Outcome, err
 }

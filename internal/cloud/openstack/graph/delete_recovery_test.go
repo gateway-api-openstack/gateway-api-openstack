@@ -84,7 +84,7 @@ func TestDeleteGatewayRevalidatesLoadBalancerAfterGet(t *testing.T) {
 					http.Error(w, "unexpected request", http.StatusNotFound)
 				}
 			})
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(handler),
 				ProjectID:    "project-a",
 			}, ProviderConfig{})
@@ -116,7 +116,7 @@ func TestDeleteGatewayValidatesEverySubplanBeforeMutation(t *testing.T) {
 			graphHandler.ServeHTTP(w, request)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -152,7 +152,7 @@ func TestBuildGatewayDeletionPlanValidatesProjectsAndParents(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(deletionValidationHandler(t, identity, test.target, test.mutate)),
 				ProjectID:    "project-a",
 			}, ProviderConfig{})

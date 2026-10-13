@@ -49,20 +49,20 @@ func TestHTTPRouteMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithObjects(gatewayClass, gateway, route, service, endpointSlice, node).
 		Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client:      cachedClient,
-		APIReader:   liveReader,
-		Provider:    provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client:    cachedClient,
+		APIReader: liveReader,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 
 	_, err := reconciler.ensureRouteGraph(context.Background(), route.DeepCopy(), gateway.DeepCopy())
 	if !errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
@@ -83,7 +83,7 @@ func TestHTTPRouteReconcileChecksLiveVersionBeforeDetach(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	route.Spec.ParentRefs = append(route.Spec.ParentRefs, gatewayv1.ParentReference{Name: "edge"})
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -91,10 +91,10 @@ func TestHTTPRouteReconcileChecksLiveVersionBeforeDetach(t *testing.T) {
 		Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	request := ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -136,7 +136,7 @@ func TestUnsupportedGatewayAPIVersionFreezesBoundGraph(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	routeBinder := &Reconciler{Config: cfg}
+	routeBinder := newTestReconciler(Reconciler{Config: cfg}, nil)
 	routeBinder.applyRouteBinding(route, gateway)
 	route.Status.Parents = []gatewayv1.RouteParentStatus{{
 		ParentRef:      route.Spec.ParentRefs[0],
@@ -152,14 +152,14 @@ func TestUnsupportedGatewayAPIVersionFreezesBoundGraph(t *testing.T) {
 		WithObjects(gatewayClass, gateway, route).
 		Build()
 	provider := &recordingProvider{}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	}, provider)
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	_, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -245,10 +245,10 @@ func TestUnsupportedVersionStatusUsesLiveHTTPRouteProgrammedState(t *testing.T) 
 		)},
 	}}
 	liveReader := &liveObjectOverrideReader{Client: kubeClient, route: &liveRoute}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -285,14 +285,14 @@ func TestUnsupportedGatewayAPIVersionDoesNotCreateBindings(t *testing.T) {
 		WithObjects(unsupportedVersionGatewayClass(cfg), gateway, route).
 		Build()
 	provider := &recordingProvider{}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	}, provider)
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -342,14 +342,14 @@ func TestUnsupportedGatewayAPIVersionAllowsDeletion(t *testing.T) {
 		WithObjects(objects...).
 		Build()
 	provider := &recordingProvider{}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: kubeClient, APIReader: kubeClient, Provider: provider,
+	}, provider)
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := routeReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: route.Name},
@@ -376,21 +376,21 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway, route).
 		WithObjects(otherClass, gateway, route).
 		Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	}, provider)
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	routeRequest := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(route)}
 	if result, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
@@ -403,6 +403,12 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	}
 	if _, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
 		t.Fatalf("second HTTPRoute Reconcile() error = %v", err)
+	}
+	if len(provider.deletedRoutes) != 0 {
+		t.Fatal("HTTPRoute deleted resources before its durable detach checkpoint")
+	}
+	if _, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
+		t.Fatalf("resume HTTPRoute handoff cleanup: %v", err)
 	}
 	if liveReader.crdListCalls != 0 {
 		t.Fatalf("HTTPRoute handoff cleanup listed Gateway API CRDs %d times, want 0", liveReader.crdListCalls)
@@ -429,21 +435,21 @@ func TestVersionMismatchDoesNotTrustCachedControllerHandoff(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway, route).
 		WithObjects(cachedClass, gateway, route).
 		Build()
 	liveReader := &unsupportedGatewayAPIVersionReader{Client: cachedClient, gatewayClass: liveClass}
 	provider := &recordingProvider{}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	}, provider)
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := routeReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -502,19 +508,19 @@ func TestVersionMismatchDoesNotWriteStatusAfterLiveVersionRecovery(t *testing.T)
 	liveReader := &unsupportedGatewayAPIVersionReader{
 		Client: kubeClient, gatewayClass: liveClass, useClientCRDs: true,
 	}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	}, &recordingProvider{})
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	if _, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
-	}); err == nil || err.Error() != "gateway changed during reconciliation" {
-		t.Fatalf("Gateway Reconcile() error = %v, want gateway changed during reconciliation", err)
+	}); !errors.Is(err, controller.ErrGraphInputChanged) {
+		t.Fatalf("Gateway Reconcile() error = %v, want changed graph inputs", err)
 	}
 	if _, err := routeReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -559,14 +565,14 @@ func TestVersionMismatchDoesNotWriteStatusAfterLiveControllerHandoff(t *testing.
 	liveReader := &unsupportedGatewayAPIVersionReader{
 		Client: kubeClient, gatewayClass: liveClass, useClientCRDs: true,
 	}
-	gatewayReconciler := &gatewaycontroller.Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	gatewayReconciler := newTestGatewayReconciler(gatewaycontroller.Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
-	routeReconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	}, &recordingProvider{})
+	routeReconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	if _, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -615,10 +621,10 @@ func TestHTTPRouteBindingChecksControllerOwnershipAgainAfterEnsure(t *testing.T)
 		Client: kubeClient, className: gatewayClass.Name, afterFirst: foreignClass,
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
@@ -650,7 +656,7 @@ func TestHTTPRouteProviderMutationRechecksControllerOwnership(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -660,10 +666,10 @@ func TestHTTPRouteProviderMutationRechecksControllerOwnership(t *testing.T) {
 		Client: kubeClient, className: gatewayClass.Name, afterFirst: foreignClass,
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := reconciler.ensureRouteGraph(context.Background(), route, gateway); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("ensureRouteGraph() error = %v, want %v", err, errHTTPRouteChanged)
@@ -685,7 +691,7 @@ func TestHTTPRouteProviderMutationRechecksGatewayBinding(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -693,10 +699,10 @@ func TestHTTPRouteProviderMutationRechecksGatewayBinding(t *testing.T) {
 		Build()
 	liveReader := &gatewayBindingFlipReader{Client: kubeClient, afterFirst: changedGateway}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := reconciler.ensureRouteGraph(context.Background(), route, gateway); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("ensureRouteGraph() error = %v, want %v", err, errHTTPRouteChanged)
@@ -726,10 +732,10 @@ func TestHTTPRouteBindingMutationRechecksControllerOwnership(t *testing.T) {
 	liveReader := &gatewayClassFlipReader{
 		Client: kubeClient, className: gatewayClass.Name, afterFirst: foreignClass,
 	}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	if _, err := reconciler.bindRoute(context.Background(), route, gateway); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("bindRoute() error = %v, want %v", err, errHTTPRouteChanged)
@@ -780,7 +786,7 @@ func TestHTTPRouteCleanupRebuildsLiveDesiredState(t *testing.T) {
 			route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 			route.UID = "route-uid"
 			route.Generation = 1
-			(&Reconciler{Config: cfg}).applyRouteBinding(route, liveGateway)
+			(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, liveGateway)
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 				WithStatusSubresource(route).
 				WithObjects(gatewayClass, cachedGateway, route, cachedService, endpointSlice, node).
@@ -793,10 +799,10 @@ func TestHTTPRouteCleanupRebuildsLiveDesiredState(t *testing.T) {
 				liveReader.service = liveService
 			}
 			provider := &recordingProvider{}
-			reconciler := &Reconciler{
-				Client: kubeClient, APIReader: liveReader, Provider: provider,
+			reconciler := newTestReconciler(Reconciler{
+				Client: kubeClient, APIReader: liveReader,
 				Coordinator: &graph.Coordinator{}, Config: cfg,
-			}
+			}, provider)
 
 			request := ctrl.Request{
 				NamespacedName: client.ObjectKeyFromObject(route),

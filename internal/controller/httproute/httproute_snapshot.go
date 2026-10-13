@@ -180,7 +180,6 @@ func (r *Reconciler) observeRouteValidationInputs(
 		return routeValidationSnapshot{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
 	if gatewayClass.Spec.ControllerName != r.Config.ControllerName ||
-		gatewayClass.Spec.ParametersRef != nil ||
 		(purpose == routeSnapshotForEnsure && len(route.Spec.ParentRefs) != 1) {
 		return routeValidationSnapshot{}, errHTTPRouteChanged
 	}
@@ -278,6 +277,9 @@ func (r *Reconciler) finishRouteBindingSnapshot(
 	snapshot *routeValidationSnapshot,
 	purpose routeSnapshotPurpose,
 ) error {
+	if snapshot.route.Annotations[r.Config.RouteLifecycleAnnotation()] == controller.RouteDetaching {
+		return errHTTPRouteChanged
+	}
 	storedIdentity, bindingPresent, err := r.storedRouteIdentity(snapshot.route)
 	if err != nil {
 		return err
@@ -389,6 +391,9 @@ func (r *Reconciler) sealRouteMutationSnapshot(
 		controller.ValidateGatewayBinding(r.Config, &gateway) != nil {
 		return errHTTPRouteChanged
 	}
+	if route.Annotations[r.Config.RouteLifecycleAnnotation()] != snapshot.route.Annotations[r.Config.RouteLifecycleAnnotation()] {
+		return errHTTPRouteChanged
+	}
 	if bindingRequirement == routeBindingRequired {
 		stored, present, err := r.storedRouteIdentity(&route)
 		if err != nil {
@@ -407,8 +412,7 @@ func (r *Reconciler) sealRouteMutationSnapshot(
 	); err != nil {
 		return errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName ||
-		gatewayClass.Spec.ParametersRef != nil {
+	if gatewayClass.Spec.ControllerName != r.Config.ControllerName {
 		return errHTTPRouteChanged
 	}
 	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
@@ -449,7 +453,7 @@ func (r *Reconciler) buildRouteCleanupSnapshot(
 		identity:    stored,
 		disposition: routeCleanupRequired,
 	}
-	if !route.DeletionTimestamp.IsZero() {
+	if !route.DeletionTimestamp.IsZero() || route.Annotations[r.Config.RouteLifecycleAnnotation()] == controller.RouteDetaching {
 		return snapshot, nil
 	}
 
@@ -474,9 +478,6 @@ func (r *Reconciler) buildRouteCleanupSnapshot(
 	parent := managedParents[0]
 	if !controller.GatewayClassSupportsInstalledVersion(parent.gatewayClass) {
 		return routeCleanupSnapshot{}, controller.ErrUnsupportedGatewayAPIVersion
-	}
-	if parent.gatewayClass.Spec.ParametersRef != nil {
-		return routeCleanupSnapshot{}, errHTTPRouteChanged
 	}
 	if validateRouteParent(&route, parent) != nil || !structurallySupportedRoute(&route) {
 		return snapshot, nil

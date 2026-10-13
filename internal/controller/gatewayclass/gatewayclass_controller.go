@@ -24,6 +24,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,7 +34,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 )
 
 // Reconciler publishes the capabilities of GatewayClasses assigned
@@ -46,10 +50,15 @@ type Reconciler struct {
 	APIReader client.Reader
 	// Config contains immutable controller configuration.
 	Config controller.Config
+	// TopologyResolver verifies class infrastructure with read-only cloud APIs.
+	TopologyResolver cloud.TopologyResolver
+	// Recorder publishes stable diagnostics for cloud authorization failures.
+	Recorder events.EventRecorder
 }
 
 // Reconcile evaluates one GatewayClass and publishes the status owned by this
 // controller.
+// +kubebuilder:rbac:groups=gateway-api-openstack.github.io,resources=openstackgatewayclassconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/status,verbs=get;update;patch
@@ -163,25 +172,10 @@ func (r *Reconciler) reconcileGatewayClassStatus(
 			gatewayClass.Generation,
 		))
 	}
-	if versionObservation.Supported && gatewayClass.Spec.ParametersRef != nil {
-		gatewayClass.Status.SupportedFeatures = nil
-		controller.SetCondition(&gatewayClass.Status.Conditions, controller.Condition(
-			string(gatewayv1.GatewayClassConditionStatusAccepted),
-			metav1.ConditionFalse,
-			string(gatewayv1.GatewayClassReasonInvalidParameters),
-			"GatewayClass parametersRef is not supported in Phase 1",
-			gatewayClass.Generation,
-		))
-	} else if versionObservation.Supported {
-		gatewayClass.Status.SupportedFeatures = phase1SupportedFeatures()
-		controller.SetCondition(&gatewayClass.Status.Conditions, controller.Condition(
-			string(gatewayv1.GatewayClassConditionStatusAccepted),
-			metav1.ConditionTrue,
-			string(gatewayv1.GatewayClassReasonAccepted),
-			"GatewayClass is accepted",
-			gatewayClass.Generation,
-		))
+	if versionObservation.Supported {
+		return r.reconcileParameters(ctx, scope)
 	}
+
 	result := ctrl.Result{}
 	if !versionObservation.Supported {
 		result.RequeueAfter = controller.GatewayAPIVersionRequeueAfter(gatewayClass.UID)
@@ -197,11 +191,53 @@ func (r *Reconciler) hasReferencingGateways(ctx context.Context, className strin
 	return len(gateways.Items) != 0, nil
 }
 
-func phase1SupportedFeatures() []gatewayv1.SupportedFeature {
-	// Gateway and HTTPRoute feature names represent their complete core
-	// conformance profiles. Phase 1 intentionally implements a smaller subset,
-	// so publishing either here would overstate tested support.
-	return nil
+func (r *Reconciler) reconcileParameters(ctx context.Context, scope *gatewayClassScope) (ctrl.Result, error) {
+	class := scope.gatewayClass
+	// Read the class and its parameters live so a delayed cache event cannot
+	// accept an obsolete reference or a class now assigned to another controller.
+	live := &gatewayv1.GatewayClass{}
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(class), live); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if live.UID != class.UID || live.ResourceVersion != class.ResourceVersion || live.Spec.ControllerName != r.Config.ControllerName {
+		scope.gatewayClass.Status = scope.original.Status
+		return ctrl.Result{Requeue: true}, nil
+	}
+	_, err := classconfig.Resolve(ctx, r.APIReader, r.TopologyResolver, live)
+	class.Status.SupportedFeatures = nil
+	if err == nil {
+		// Gateway and HTTPRoute features require their complete core conformance
+		// profiles. The current HTTP subset does not justify declaring either.
+		controller.SetCondition(&class.Status.Conditions, controller.Condition(
+			string(gatewayv1.GatewayClassConditionStatusAccepted), metav1.ConditionTrue,
+			string(gatewayv1.GatewayClassReasonAccepted), "GatewayClass parameters and Amphora topology are accepted", class.Generation,
+		))
+		return ctrl.Result{RequeueAfter: controller.OpenStackResyncAfter(controller.DefaultOpenStackResyncInterval, class.UID)}, nil
+	}
+	var invalid *classconfig.InvalidParametersError
+	if errors.As(err, &invalid) {
+		controller.SetCondition(&class.Status.Conditions, controller.Condition(
+			string(gatewayv1.GatewayClassConditionStatusAccepted), metav1.ConditionFalse,
+			string(gatewayv1.GatewayClassReasonInvalidParameters), invalid.Message, class.Generation,
+		))
+		return ctrl.Result{}, nil
+	}
+	policy, classified := controller.ProviderFailurePolicyFor(err)
+	if !classified {
+		return ctrl.Result{}, err
+	}
+	conditionType := string(gatewayv1.GatewayClassConditionStatusAccepted)
+	observedGeneration := controller.ConditionObservedGeneration(class.Status.Conditions, conditionType, class.Generation, policy.AdvancesObservedGeneration)
+	emitEvent := controller.ConditionTransitioned(class.Status.Conditions, conditionType, policy.ConditionStatus, policy.Reason, policy.Message, observedGeneration)
+
+	controller.SetCondition(&class.Status.Conditions, controller.Condition(
+		string(gatewayv1.GatewayClassConditionStatusAccepted), policy.ConditionStatus,
+		policy.Reason, policy.Message, observedGeneration,
+	))
+	if emitEvent && policy.EmitEvent {
+		scope.warning = &policy
+	}
+	return controller.ProviderFailureResult(policy, err, string(class.UID))
 }
 
 func gatewayClassRequestsForGateway(_ context.Context, object client.Object) []reconcile.Request {
@@ -238,12 +274,14 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 	if r.APIReader == nil {
 		return controller.ErrAPIReaderRequired
 	}
+
 	definition := &metav1.PartialObjectMetadata{}
 	definition.SetGroupVersionKind(
 		apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"),
 	)
 	return ctrl.NewControllerManagedBy(manager).
 		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(controller.GatewayClassReconcilePredicate())).
+		Watches(&configv1alpha1.OpenStackGatewayClassConfig{}, handler.EnqueueRequestsFromMapFunc(r.gatewayClassRequestsForParameters), builder.WithPredicates(controller.GenerationOrDeletionChangedPredicate())).
 		Watches(
 			&gatewayv1.Gateway{},
 			handler.EnqueueRequestsFromMapFunc(gatewayClassRequestsForGateway),

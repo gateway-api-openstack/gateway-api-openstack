@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -28,12 +27,6 @@ func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 	cfg := Config{
 		ControllerName:          gatewayv1.GatewayController("example.net/gateway-api-openstack"),
 		ClusterID:               "cluster-a",
-		Provider:                "amphora",
-		VIPSubnetID:             "subnet-a",
-		MemberSubnetID:          "member-subnet-a",
-		MemberMode:              MemberModeNodePort,
-		NodeAddressType:         corev1.NodeInternalIP,
-		HealthPath:              "/healthz",
 		OpenStackResyncInterval: time.Minute,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -59,12 +52,6 @@ func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 	valid := Config{
 		ControllerName:          "example.net/gateway-api-openstack",
 		ClusterID:               "cluster-a",
-		Provider:                "amphora",
-		VIPSubnetID:             "vip-subnet",
-		MemberSubnetID:          "member-subnet",
-		MemberMode:              MemberModeNodePort,
-		NodeAddressType:         corev1.NodeInternalIP,
-		HealthPath:              "/healthz",
 		OpenStackResyncInterval: time.Minute,
 	}
 	tests := []struct {
@@ -72,9 +59,7 @@ func TestConfigValidateRejectsUnsupportedOrAmbiguousValues(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{name: "invalid controller name", mutate: func(cfg *Config) { cfg.ControllerName = "NOT_A_DOMAIN/controller" }},
-		{name: "unverified provider", mutate: func(cfg *Config) { cfg.Provider = "ovn" }},
-		{name: "implicit member mode", mutate: func(cfg *Config) { cfg.MemberMode = "" }},
-		{name: "missing member subnet", mutate: func(cfg *Config) { cfg.MemberSubnetID = "" }},
+		{name: "missing cluster identity", mutate: func(cfg *Config) { cfg.ClusterID = "" }},
 		{name: "disabled OpenStack resync", mutate: func(cfg *Config) { cfg.OpenStackResyncInterval = 0 }},
 		{name: "negative OpenStack resync", mutate: func(cfg *Config) { cfg.OpenStackResyncInterval = -time.Minute }},
 	}

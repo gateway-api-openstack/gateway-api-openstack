@@ -34,6 +34,8 @@ func TestEnsureRoutePendingReturnsWithoutMutation(t *testing.T) {
 	loadBalancerHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests.record(request)
 		switch request.URL.Path {
+		case "/lbaas/listeners":
+			safetyWriteJSON(t, w, map[string]any{"listeners": []any{}})
 		case "/lbaas/loadbalancers":
 			safetyWriteJSON(t, w, map[string]any{"loadbalancers": []any{
 				gatewayTransitionLoadBalancer(loadBalancerTags, "PENDING_UPDATE"),
@@ -45,7 +47,7 @@ func TestEnsureRoutePendingReturnsWithoutMutation(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 9 * time.Second})
@@ -75,12 +77,12 @@ func TestEnsureRouteRepairsAdministrativelyDisabledGatewayAfterGraphValidation(t
 	}{
 		{
 			name: "load balancer", loadBalancerAdmin: false, listenerAdmin: true,
-			wantMessage:  "Enabled Octavia load balancer after validating the HTTPRoute graph",
+			wantMessage:  "Enabled Octavia load balancer after validating the Gateway graph",
 			wantMutation: "/lbaas/loadbalancers/load-balancer-1",
 		},
 		{
 			name: "listener", loadBalancerAdmin: true, listenerAdmin: false,
-			wantMessage:  "Enabled Octavia listener after validating the HTTPRoute graph",
+			wantMessage:  "Enabled Octavia listener after validating the Gateway graph",
 			wantMutation: "/lbaas/listeners/listener-1",
 		},
 	}
@@ -89,7 +91,7 @@ func TestEnsureRouteRepairsAdministrativelyDisabledGatewayAfterGraphValidation(t
 			identity := safetyTestIdentity(t)
 			requests := &gatewayTransitionRequests{}
 			handler := convergedRouteGraphHandler(t, requests, identity, test.loadBalancerAdmin, test.listenerAdmin)
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(handler),
 				Network:      safetyServiceClient(routeTransitionEmptyFloatingIPHandler(t, requests)),
 				ProjectID:    "project-a",
@@ -170,7 +172,7 @@ func TestEnsureRouteRestoresTrafficInSeparateTransitions(t *testing.T) {
 		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 		http.Error(w, "unexpected request", http.StatusNotFound)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
@@ -254,7 +256,7 @@ func TestEnsureRouteDoesNotRestoreTrafficWithInvalidFloatingIPs(t *testing.T) {
 				t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 				http.Error(w, "unexpected request", http.StatusNotFound)
 			})
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, false, true)),
 				Network:      safetyServiceClient(networkHandler),
 				ProjectID:    "project-a",
@@ -308,7 +310,7 @@ func TestEnsureRouteCreatesOnlyPoolInFirstTransition(t *testing.T) {
 		}
 	})
 	networkHandler := routeTransitionEmptyFloatingIPHandler(t, requests)
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
@@ -374,7 +376,7 @@ func TestEnsureRouteChoosesStaleMemberDeterministically(t *testing.T) {
 		}
 	})
 	networkHandler := routeTransitionEmptyFloatingIPHandler(t, requests)
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
@@ -468,7 +470,7 @@ func TestEnsureRouteRepairsDisabledMemberBeforeReportingReady(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{PollInterval: time.Second})
@@ -504,7 +506,7 @@ func TestEnsureRouteOperationTimeoutStopsObservation(t *testing.T) {
 		<-request.Context().Done()
 		return nil, request.Context().Err()
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: loadBalancerClient,
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: 20 * time.Millisecond})
@@ -639,7 +641,7 @@ func TestEnsureRouteConvergesWithOneMutationPerCall(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{PollInterval: time.Second})
@@ -720,7 +722,7 @@ func TestEnsureRouteValidatesEveryDescendantBeforeMutation(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -757,7 +759,7 @@ func TestEnsureRouteDoesNotRepairParentForStaleRouteUID(t *testing.T) {
 		}
 		baseHandler.ServeHTTP(w, request)
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(handler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -820,11 +822,11 @@ func TestEnsureRouteRediscoversPoolAfterLostCreateResponse(t *testing.T) {
 	clients := ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}
 	spec := routeTransitionSpec(identity)
 
-	firstProvider := NewProvider(clients, ProviderConfig{})
+	firstProvider := newTestProvider(t, clients, ProviderConfig{})
 	if _, err := firstProvider.EnsureRoute(context.Background(), spec); err == nil {
 		t.Fatal("first EnsureRoute() error = nil, want lost create response")
 	}
-	secondProvider := NewProvider(clients, ProviderConfig{})
+	secondProvider := newTestProvider(t, clients, ProviderConfig{})
 	result, err := secondProvider.EnsureRoute(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("second EnsureRoute() error = %v", err)
@@ -859,7 +861,7 @@ func TestDeleteRoutePendingReturnsWithoutMutation(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: 13 * time.Second})
@@ -970,7 +972,7 @@ func TestDeleteRouteConvergesInDeterministicOrder(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: time.Hour})
@@ -1025,7 +1027,7 @@ func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 			ListenerPort: 80,
 		},
 		MemberSubnetID: "member-subnet",
-		HealthPath:     "/healthz",
+		HealthMonitor:  cloud.HealthMonitorConfig{Path: "/healthz"},
 		Hostname:       "api.example.com",
 		PathType:       cloud.PathMatchExact,
 		PathValue:      "/api",

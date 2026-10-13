@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
@@ -95,6 +97,9 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 	if r.APIReader == nil {
 		return controller.ErrAPIReaderRequired
 	}
+	if r.Writer == nil {
+		return errors.New("gateway graph writer is required")
+	}
 	return ctrl.NewControllerManagedBy(manager).
 		For(&gatewayv1.Gateway{}, builder.WithPredicates(controller.GatewayReconcilePredicate(r.Config))).
 		Watches(
@@ -107,6 +112,37 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForGatewayClass),
 			builder.WithPredicates(controller.GatewayClassForGatewayPredicate()),
 		).
+		Watches(&configv1alpha1.OpenStackGatewayClassConfig{}, handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForParameters), builder.WithPredicates(controller.GenerationOrDeletionChangedPredicate())).
 		Named("gateway").
 		Complete(r)
+}
+
+// Parameter updates can leave GatewayClass conditions unchanged. Wake unbound
+// Gateways directly so they cannot remain rejected after the inputs recover.
+func (r *Reconciler) gatewayRequestsForParameters(ctx context.Context, object client.Object) []reconcile.Request {
+	if object == nil {
+		return nil
+	}
+	var classes gatewayv1.GatewayClassList
+	if err := r.List(ctx, &classes, client.MatchingFields{controller.IndexGatewayClassByParameters: object.GetName()}); err != nil {
+		log.FromContext(ctx).Error(err, "Could not list GatewayClasses for parameters")
+		return nil
+	}
+	keys := make(map[types.NamespacedName]struct{})
+	for _, class := range classes.Items {
+		if class.Spec.ControllerName != r.Config.ControllerName {
+			continue
+		}
+		var gateways gatewayv1.GatewayList
+		if err := r.List(ctx, &gateways, client.MatchingFields{controller.IndexGatewayByClass: class.Name}); err != nil {
+			log.FromContext(ctx).Error(err, "Could not list Gateways for class parameters", "gatewayClass", class.Name)
+			continue
+		}
+		for _, gateway := range gateways.Items {
+			if !controller.HasGatewayTopologyBinding(r.Config, &gateway) && gateway.DeletionTimestamp.IsZero() {
+				keys[client.ObjectKeyFromObject(&gateway)] = struct{}{}
+			}
+		}
+	}
+	return controller.SortedRequests(keys)
 }

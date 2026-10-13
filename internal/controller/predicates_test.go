@@ -360,6 +360,37 @@ func TestNodePredicate(t *testing.T) {
 	testPredicateUpdate(t, pred, base, deleting, true, "Node deletion")
 }
 
+func TestNodePredicateWorkerLabels(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     map[string]string
+		updated map[string]string
+		changed bool
+	}{
+		{name: "control plane added", updated: map[string]string{labelNodeRoleControlPlane: ""}, changed: true},
+		{name: "legacy master added", updated: map[string]string{labelNodeRoleMaster: "false"}, changed: true},
+		{name: "worker label added", updated: map[string]string{"node-role.kubernetes.io/worker": ""}},
+		{name: "empty exclusion added", updated: map[string]string{corev1.LabelNodeExcludeBalancers: ""}, changed: true},
+		{name: "true exclusion added", updated: map[string]string{corev1.LabelNodeExcludeBalancers: "true"}, changed: true},
+		{name: "invalid exclusion added", updated: map[string]string{corev1.LabelNodeExcludeBalancers: "invalid"}, changed: true},
+		{name: "false exclusion added", updated: map[string]string{corev1.LabelNodeExcludeBalancers: "false"}},
+		{name: "exclusion disabled", old: map[string]string{corev1.LabelNodeExcludeBalancers: "true"}, updated: map[string]string{corev1.LabelNodeExcludeBalancers: "false"}, changed: true},
+		{name: "equivalent exclusion", old: map[string]string{corev1.LabelNodeExcludeBalancers: ""}, updated: map[string]string{corev1.LabelNodeExcludeBalancers: "true"}},
+		{name: "equivalent inclusion", old: map[string]string{corev1.LabelNodeExcludeBalancers: "false"}, updated: map[string]string{corev1.LabelNodeExcludeBalancers: "0"}},
+		{name: "role value changed", old: map[string]string{labelNodeRoleControlPlane: ""}, updated: map[string]string{labelNodeRoleControlPlane: "false"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1", Labels: tt.old}}
+			updated := old.DeepCopy()
+			updated.Labels = tt.updated
+			pred := NodePredicate(corev1.NodeInternalIP)
+			testPredicateUpdate(t, pred, old, updated, tt.changed, "forward label change")
+			testPredicateUpdate(t, pred, updated, old, tt.changed, "reverse label change")
+		})
+	}
+}
+
 func TestPredicatesAcceptLifecycleEvents(t *testing.T) {
 	object := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge"}}
 	pred := GatewayReconcilePredicate(testConfig())

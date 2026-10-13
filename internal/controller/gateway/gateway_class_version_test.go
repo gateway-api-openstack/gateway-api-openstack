@@ -67,10 +67,10 @@ func TestGatewayClassVersionConditionFailsClosed(t *testing.T) {
 				WithObjects(objects...).
 				Build()
 			provider := &recordingProvider{}
-			reconciler := &Reconciler{
-				Client: kubeClient, APIReader: kubeClient, Provider: provider,
+			reconciler := newTestReconciler(Reconciler{
+				Client: kubeClient, APIReader: kubeClient,
 				Coordinator: &graph.Coordinator{}, Config: cfg,
-			}
+			}, provider)
 
 			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 				NamespacedName: client.ObjectKeyFromObject(gateway),

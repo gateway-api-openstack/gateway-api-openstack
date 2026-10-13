@@ -216,9 +216,9 @@ func convergedRoutePlanFixture() (desiredRoute, observedRouteGraph) {
 			PathType:       cloud.PathMatchExact,
 			PathValue:      "/api",
 		},
-		members:    []cloud.Member{{Address: "10.0.0.10", Port: 30080}},
-		healthPath: "/healthz",
-		policies:   []desiredPolicy{policy},
+		members:       []cloud.Member{{Address: "10.0.0.10", Port: 30080}},
+		healthMonitor: cloud.HealthMonitorConfig{Path: "/healthz", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
+		policies:      []desiredPolicy{policy},
 	}
 	actual := observedRouteGraph{
 		pool: &pools.Pool{

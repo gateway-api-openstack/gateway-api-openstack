@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,13 +33,18 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 )
 
 type Config = controller.Config
 
-const MemberModeNodePort = controller.MemberModeNodePort
+const (
+	testVIPSubnetID    = "11111111-1111-1111-1111-111111111111"
+	testMemberSubnetID = "22222222-2222-2222-2222-222222222222"
+)
 
 const (
 	providerFailureRequeue   = 2 * time.Minute
@@ -140,12 +146,6 @@ func testConfig() Config {
 		ControllerVersion:       "test",
 		OpenStackProjectID:      "project-a",
 		ClusterID:               "cluster-a",
-		Provider:                "amphora",
-		VIPSubnetID:             "vip-subnet",
-		MemberSubnetID:          "member-subnet",
-		MemberMode:              MemberModeNodePort,
-		NodeAddressType:         corev1.NodeInternalIP,
-		HealthPath:              "/",
 		OpenStackResyncInterval: time.Minute,
 	}
 }
@@ -161,6 +161,9 @@ func gatewayBindingAnnotations(cfg Config, listenerPort string) map[string]strin
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +180,10 @@ func testScheme(t *testing.T) *runtime.Scheme {
 }
 
 type controllerTestClientBuilder struct {
-	builder           *fake.ClientBuilder
-	hasGatewayAPICRDs bool
+	builder              *fake.ClientBuilder
+	hasGatewayAPICRDs    bool
+	config               Config
+	hasDefaultParameters bool
 }
 
 // WithObjects gives ordinary controller tests the supported bundle that the
@@ -186,6 +191,20 @@ type controllerTestClientBuilder struct {
 // pass explicit CRDs or conditions to override this fixture.
 func (b *controllerTestClientBuilder) WithObjects(objects ...client.Object) *controllerTestClientBuilder {
 	for _, object := range objects {
+		switch value := object.(type) {
+		case *configv1alpha1.OpenStackGatewayClassConfig:
+			if value.Name == "test-parameters" {
+				b.hasDefaultParameters = true
+			}
+		case *gatewayv1.GatewayClass:
+			if value.Spec.ParametersRef == nil {
+				value.Spec.ParametersRef = &gatewayv1.ParametersReference{Group: configv1alpha1.GroupName, Kind: configv1alpha1.GatewayClassConfigKind, Name: "test-parameters"}
+			}
+		case *gatewayv1.Gateway:
+			completeGatewayTopologyFixture(b.config, value)
+		case *gatewayv1.HTTPRoute:
+			completeRouteLifecycleFixture(b.config, value)
+		}
 		if definition, ok := object.(*apiextensionsv1.CustomResourceDefinition); ok &&
 			(definition.Spec.Group == gatewayv1.GroupName || definition.Spec.Group == "gateway.networking.x-k8s.io") {
 			b.hasGatewayAPICRDs = true
@@ -215,6 +234,9 @@ func (b *controllerTestClientBuilder) WithStatusSubresource(objects ...client.Ob
 }
 
 func (b *controllerTestClientBuilder) Build() client.WithWatch {
+	if !b.hasDefaultParameters {
+		b.builder = b.builder.WithObjects(testClassParameters())
+	}
 	if !b.hasGatewayAPICRDs {
 		definitions := make([]client.Object, 0, len(requiredGatewayAPICRDs))
 		for _, name := range requiredGatewayAPICRDs {
@@ -234,7 +256,7 @@ func (b *controllerTestClientBuilder) Build() client.WithWatch {
 }
 
 func indexedFakeClientBuilder(scheme *runtime.Scheme, config Config) *controllerTestClientBuilder {
-	return &controllerTestClientBuilder{builder: rawIndexedFakeClientBuilder(scheme, config)}
+	return &controllerTestClientBuilder{builder: rawIndexedFakeClientBuilder(scheme, config), config: config}
 }
 
 func rawIndexedFakeClientBuilder(scheme *runtime.Scheme, config Config) *fake.ClientBuilder {
@@ -277,4 +299,66 @@ func (i *fakeFieldIndexer) IndexField(
 ) error {
 	i.builder.WithIndex(object, field, extract)
 	return nil
+}
+
+// These helpers construct ordinary Phase 3 fixtures. Tests for incomplete or
+// corrupted bindings use rawIndexedFakeClientBuilder and explicit metadata.
+func testClassParameters() *configv1alpha1.OpenStackGatewayClassConfig {
+	return &configv1alpha1.OpenStackGatewayClassConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-parameters", UID: "test-parameters-uid", Generation: 1},
+		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
+			VIPSubnet:       configv1alpha1.ResourceReference{ID: testVIPSubnetID},
+			MemberSubnet:    configv1alpha1.ResourceReference{ID: testMemberSubnetID},
+			NodeAddressType: string(corev1.NodeInternalIP),
+			HealthMonitor:   configv1alpha1.HealthMonitorConfig{Path: "/"},
+		},
+	}
+}
+
+func testBoundTopology() classconfig.Resolved {
+	return classconfig.Resolved{
+		Topology:        cloud.Topology{VIPSubnetID: testVIPSubnetID, MemberSubnetID: testMemberSubnetID},
+		NodeAddressType: corev1.NodeInternalIP,
+		HealthMonitor:   cloud.HealthMonitorConfig{Path: "/", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
+		ParametersName:  "test-parameters", ParametersUID: "test-parameters-uid", ParametersGeneration: 1,
+	}
+}
+
+func completeGatewayTopologyFixture(cfg Config, gateway *gatewayv1.Gateway) {
+	if controller.HasGatewayTopologyBinding(cfg, gateway) {
+		return
+	}
+	for _, key := range []string{cfg.GatewayListenerPortAnnotation(), cfg.GatewayClusterIDAnnotation(), cfg.GatewayProjectIDAnnotation()} {
+		if gateway.Annotations[key] == "" {
+			return
+		}
+	}
+	if err := controller.BindGatewayTopology(cfg, gateway, testBoundTopology()); err != nil {
+		panic(err)
+	}
+}
+
+func completeRouteLifecycleFixture(cfg Config, route *gatewayv1.HTTPRoute) {
+	if _, present := route.Annotations[cfg.RouteLifecycleAnnotation()]; present {
+		return
+	}
+	for _, key := range []string{cfg.RouteGatewayNamespaceAnnotation(), cfg.RouteGatewayNameAnnotation(), cfg.RouteGatewayUIDAnnotation(), cfg.RouteClusterIDAnnotation(), cfg.RouteProjectIDAnnotation()} {
+		if route.Annotations[key] == "" {
+			return
+		}
+	}
+	for _, finalizer := range route.Finalizers {
+		if strings.HasPrefix(finalizer, cfg.RouteBindingFinalizerPrefix()) {
+			route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteAttached
+			return
+		}
+	}
+}
+
+func (*recordingProvider) ResolveTopology(_ context.Context, request cloud.TopologyRequest) (cloud.Topology, error) {
+	topology := cloud.Topology{VIPSubnetID: request.VIPSubnet.ID, MemberSubnetID: request.MemberSubnet.ID, FlavorID: request.FlavorID, AvailabilityZone: request.AvailabilityZone}
+	if request.ExternalNetwork != nil {
+		topology.ExternalNetworkID = request.ExternalNetwork.ID
+	}
+	return topology, nil
 }

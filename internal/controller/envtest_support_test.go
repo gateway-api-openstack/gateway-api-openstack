@@ -29,12 +29,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	gatewaycontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	httproutecontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/httproute"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type recordingProvider struct {
 	gatewaySpecs     []cloud.GatewaySpec
+	graphSpecs       []cloud.GatewayGraphSpec
 	gatewayDeleteOut *cloud.Outcome
 	deletedGateways  []cloud.Identity
 }
@@ -78,12 +84,6 @@ func testConfig() controller.Config {
 		ControllerVersion:       "test",
 		OpenStackProjectID:      "project-a",
 		ClusterID:               "cluster-a",
-		Provider:                "amphora",
-		VIPSubnetID:             "vip-subnet",
-		MemberSubnetID:          "member-subnet",
-		MemberMode:              controller.MemberModeNodePort,
-		NodeAddressType:         corev1.NodeInternalIP,
-		HealthPath:              "/",
 		OpenStackResyncInterval: time.Minute,
 	}
 }
@@ -91,6 +91,9 @@ func testConfig() controller.Config {
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
@@ -104,4 +107,54 @@ func testScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	return scheme
+}
+
+func (*recordingProvider) ResolveTopology(_ context.Context, request cloud.TopologyRequest) (cloud.Topology, error) {
+	topology := cloud.Topology{VIPSubnetID: request.VIPSubnet.ID, MemberSubnetID: request.MemberSubnet.ID, FlavorID: request.FlavorID, AvailabilityZone: request.AvailabilityZone}
+	if request.ExternalNetwork != nil {
+		topology.ExternalNetworkID = request.ExternalNetwork.ID
+	}
+	return topology, nil
+}
+
+func newEnvtestGatewayReconciler(kubeClient client.Client, reader client.Reader, provider *recordingProvider, config controller.Config) *gatewaycontroller.Reconciler {
+	coordinator := &graph.Coordinator{}
+	gateway := &gatewaycontroller.Reconciler{Client: kubeClient, APIReader: reader, TopologyResolver: provider, Coordinator: coordinator, Config: config}
+	route := &httproutecontroller.Reconciler{Client: kubeClient, APIReader: reader, Coordinator: coordinator, Config: config}
+	writer := &graph.Writer{Coordinator: coordinator, Gateway: gateway, Routes: route, Provider: provider}
+	gateway.Writer = writer
+	route.Writer = writer
+	return gateway
+}
+
+func (p *recordingProvider) ReconcileGatewayGraph(ctx context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
+	p.graphSpecs = append(p.graphSpecs, spec)
+	result := cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome(), Gateway: cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"})}
+	if spec.Gateway.Disposition == cloud.GraphDelete {
+		outcome, err := p.DeleteGateway(ctx, spec.Identity)
+		result.Outcome = outcome
+		result.Gateway.Outcome = outcome
+		return result, err
+	}
+	for _, route := range spec.Routes {
+		switch route.Disposition {
+		case cloud.GraphDelete:
+			outcome, err := p.DeleteRoute(ctx, route.Spec.Identity)
+			result.Outcome = outcome
+			result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: route.Spec.Identity, Result: cloud.RouteResult{Outcome: outcome}})
+			return result, err
+		case cloud.GraphEnsure:
+			routeResult, err := p.EnsureRoute(ctx, route.Spec)
+			result.Outcome = routeResult.Outcome
+			result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: route.Spec.Identity, Result: routeResult})
+			return result, err
+		}
+	}
+	if spec.Gateway.Disposition == cloud.GraphEnsure {
+		gatewayResult, err := p.EnsureGateway(ctx, spec.Gateway.Spec)
+		result.Gateway = gatewayResult
+		result.Outcome = gatewayResult.Outcome
+		return result, err
+	}
+	return result, nil
 }

@@ -44,6 +44,9 @@ func (r *Reconciler) bindGateway(
 	gateway := snapshot.gateway.DeepCopy()
 
 	metadataBase := gateway.DeepCopy()
+	if err := controller.BindGatewayTopology(r.Config, gateway, snapshot.topology); err != nil {
+		return err
+	}
 	if gateway.Annotations == nil {
 		gateway.Annotations = map[string]string{}
 	}

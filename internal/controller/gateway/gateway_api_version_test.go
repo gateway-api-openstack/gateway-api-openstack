@@ -43,13 +43,13 @@ func TestGatewayMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(gatewayClass, gateway).Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client:      cachedClient,
-		APIReader:   liveReader,
-		Provider:    provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client:    cachedClient,
+		APIReader: liveReader,
+
 		Coordinator: &graph.Coordinator{},
 		Config:      cfg,
-	}
+	}, provider)
 
 	_, err := reconciler.ensureGateway(context.Background(), gateway.DeepCopy())
 	if !errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
@@ -79,10 +79,10 @@ func TestGatewayReconcileChecksLiveVersionBeforeBinding(t *testing.T) {
 		Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -119,10 +119,10 @@ func TestGatewayReconcileChecksLiveVersionBeforeReplacementCleanup(t *testing.T)
 		Build()
 	liveReader := liveReaderWithUnsupportedVersion(cachedClient)
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -167,10 +167,10 @@ func TestGatewayCleanupRechecksControllerHandoffWithSupportedBundle(t *testing.T
 		useClientCRDs: true,
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: cachedClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: cachedClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -205,10 +205,10 @@ func TestGatewayBindingChecksLiveControllerOwnership(t *testing.T) {
 	liveReader := &unsupportedGatewayAPIVersionReader{
 		Client: kubeClient, gatewayClass: liveClass, useClientCRDs: true,
 	}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
@@ -241,10 +241,10 @@ func TestGatewayProviderMutationRechecksControllerOwnership(t *testing.T) {
 		Client: kubeClient, className: gatewayClass.Name, afterFirst: foreignClass,
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := reconciler.ensureGateway(context.Background(), gateway); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
@@ -268,10 +268,10 @@ func TestGatewayProviderMutationRechecksBinding(t *testing.T) {
 		Build()
 	liveReader := &gatewayBindingFlipReader{Client: kubeClient, afterFirst: changedGateway}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: provider,
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, provider)
 
 	if _, err := reconciler.ensureGateway(context.Background(), gateway); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
@@ -302,10 +302,10 @@ func TestGatewayBindingMutationRechecksControllerOwnership(t *testing.T) {
 	liveReader := &gatewayClassFlipReader{
 		Client: kubeClient, className: gatewayClass.Name, afterFirst: foreignClass,
 	}
-	reconciler := &Reconciler{
-		Client: kubeClient, APIReader: liveReader, Provider: &recordingProvider{},
+	reconciler := newTestReconciler(Reconciler{
+		Client: kubeClient, APIReader: liveReader,
 		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}
+	}, &recordingProvider{})
 
 	if err := reconciler.bindGateway(context.Background(), gateway, "80"); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("bindGateway() error = %v, want %v", err, errGatewayChanged)

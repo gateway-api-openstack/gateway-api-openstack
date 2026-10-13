@@ -18,6 +18,7 @@ package httproute
 
 import (
 	"context"
+	"errors"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -123,23 +124,28 @@ func (r *Reconciler) enqueueHTTPRoutesForNode(ctx context.Context, object client
 		return nil
 	}
 	keys := map[types.NamespacedName]struct{}{}
+	inputs := nodeEventInputs{
+		parents:   make(map[string]nodeEligibilityObservation),
+		services:  make(map[types.NamespacedName]*nodeServiceObservation),
+		endpoints: make(map[types.NamespacedName]nodeEligibilityObservation),
+	}
 	for index := range routes.Items {
 		route := &routes.Items[index]
 		if !structurallySupportedRoute(route) {
 			continue
 		}
-		parents, err := r.managedParents(ctx, route)
+		managed, err := inputs.hasManagedParent(ctx, r, route)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Could not resolve HTTPRoute parents for Node", "httpRoute", client.ObjectKeyFromObject(route), "node", node.Name)
 			continue
 		}
-		if len(parents) == 0 {
+		if !managed {
 			continue
 		}
 		backend := route.Spec.Rules[0].BackendRefs[0]
 		serviceKey := types.NamespacedName{Namespace: route.Namespace, Name: string(backend.Name)}
-		var service corev1.Service
-		if err := r.Get(ctx, serviceKey, &service); err != nil {
+		service, err := inputs.service(ctx, r.Client, serviceKey)
+		if err != nil {
 			if !apierrors.IsNotFound(err) {
 				log.FromContext(ctx).Error(err, "Could not get backend Service for Node", "service", serviceKey, "node", node.Name)
 			}
@@ -149,7 +155,7 @@ func (r *Reconciler) enqueueHTTPRoutesForNode(ctx context.Context, object client
 			continue
 		}
 		if service.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
-			local, err := r.nodeHasReadyEndpoint(ctx, serviceKey, node.Name)
+			local, err := inputs.hasReadyEndpoint(ctx, r, serviceKey, node.Name)
 			if err != nil {
 				log.FromContext(ctx).Error(err, "Could not list local endpoints for Node", "service", serviceKey, "node", node.Name)
 				continue
@@ -188,6 +194,9 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 	if r.APIReader == nil {
 		return controller.ErrAPIReaderRequired
 	}
+	if r.Writer == nil {
+		return errors.New("gateway graph writer is required")
+	}
 	return ctrl.NewControllerManagedBy(manager).
 		For(&gatewayv1.HTTPRoute{}, builder.WithPredicates(controller.HTTPRouteReconcilePredicate(r.Config))).
 		// A create, spec change, or completed deletion can change the sole
@@ -197,7 +206,7 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForGateway), builder.WithPredicates(controller.GatewayForHTTPRoutePredicate(r.Config))).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForService), builder.WithPredicates(controller.ServicePredicate())).
 		Watches(&discoveryv1.EndpointSlice{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForEndpointSlice), builder.WithPredicates(controller.EndpointSlicePredicate())).
-		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForNode), builder.WithPredicates(controller.NodePredicate(r.Config.NodeAddressType))).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForNode), builder.WithPredicates(controller.NodePredicate(""))).
 		Named("httproute").
 		Complete(r)
 }

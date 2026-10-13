@@ -65,7 +65,7 @@ func CollectOwnershipSnapshot(ctx context.Context, reader client.Reader, config 
 			continue
 		}
 		object := gatewayAuditReference(gateway)
-		if err := controller.ValidateGatewayBinding(config, gateway); err != nil {
+		if err := controller.ValidateGatewayIdentityBinding(config, gateway); err != nil {
 			snapshot.Issues = append(snapshot.Issues, invalidBindingIssue(object))
 			continue
 		}

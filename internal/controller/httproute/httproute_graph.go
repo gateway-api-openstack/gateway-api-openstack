@@ -52,43 +52,69 @@ func (r *Reconciler) ensureRouteGraph(
 	if r.APIReader == nil {
 		return routeGraphResult{}, controller.ErrAPIReaderRequired
 	}
-	release, err := graph.Acquire(ctx, r.Coordinator, string(expectedGateway.UID))
-	if err != nil {
-		return routeGraphResult{}, fmt.Errorf("acquire Gateway graph: %w", err)
+	if r.Writer == nil {
+		return routeGraphResult{}, fmt.Errorf("gateway graph writer is required")
 	}
-	defer release()
-
-	snapshot, err := r.buildRouteValidationSnapshot(
-		ctx,
-		expectedRoute,
-		expectedGateway,
-		routeSnapshotForEnsure,
-	)
+	checkpoint, pending, err := r.prepareRouteGraphBinding(ctx, expectedRoute, expectedGateway)
 	if err != nil {
 		return routeGraphResult{}, err
+	}
+	if checkpoint || pending {
+		return routeGraphResult{bindingCheckpoint: checkpoint}, nil
+	}
+	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{
+		Identity: controller.RouteIdentity(r.Config, expectedGateway, expectedRoute),
+		Action:   graph.Ensure, Gateway: expectedGateway, Route: expectedRoute,
+	})
+	if err != nil {
+		return routeGraphResult{}, err
+	}
+	expectedIdentity := controller.RouteIdentity(r.Config, expectedGateway, expectedRoute)
+	var component *cloud.RouteGraphResult
+	for i := range result.Routes {
+		route := &result.Routes[i]
+		if route.Identity.RouteUID != expectedIdentity.RouteUID {
+			continue
+		}
+		if route.Identity != expectedIdentity || component != nil {
+			return routeGraphResult{}, fmt.Errorf("provider returned an inconsistent HTTPRoute component identity")
+		}
+		component = route
+	}
+	if component != nil {
+		if err := component.Result.Outcome.Validate(); err != nil {
+			return routeGraphResult{}, fmt.Errorf("validate HTTPRoute component outcome: %w", err)
+		}
+		return routeGraphResult{outcome: component.Result.Outcome}, nil
+	}
+	if result.Outcome.State == cloud.OutcomeProgressing {
+		return routeGraphResult{outcome: result.Outcome}, nil
+	}
+	return routeGraphResult{}, fmt.Errorf("provider omitted the ensured HTTPRoute component result")
+}
+
+// prepareRouteGraphBinding persists the binding before the writer can create resources.
+func (r *Reconciler) prepareRouteGraphBinding(ctx context.Context, route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway) (checkpoint, pending bool, retErr error) {
+	release, err := graph.Acquire(ctx, r.Coordinator, string(gateway.UID))
+	if err != nil {
+		return false, false, fmt.Errorf("acquire Gateway graph: %w", err)
+	}
+	defer release()
+	snapshot, err := r.buildRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForEnsure)
+	if err != nil {
+		return false, false, err
 	}
 	switch snapshot.disposition {
 	case routeValidationGatewayPending:
-		return routeGraphResult{}, nil
+		return false, true, nil
 	case routeValidationBindingRequired:
-		if _, err := r.bindRouteFromSnapshot(ctx, expectedRoute, expectedGateway, snapshot); err != nil {
-			return routeGraphResult{}, &routeBindingCheckpointError{err: err}
+		if _, err := r.bindRouteFromSnapshot(ctx, route, gateway, snapshot); err != nil {
+			return false, false, &routeBindingCheckpointError{err: err}
 		}
-		return routeGraphResult{bindingCheckpoint: true}, nil
+		return true, false, nil
 	case routeValidationReady:
+		return false, false, nil
 	default:
-		return routeGraphResult{}, fmt.Errorf("invalid HTTPRoute validation snapshot disposition %d", snapshot.disposition)
+		return false, false, fmt.Errorf("invalid HTTPRoute validation disposition %d", snapshot.disposition)
 	}
-	if err := r.sealRouteMutationSnapshot(ctx, snapshot, routeBindingRequired); err != nil {
-		return routeGraphResult{}, err
-	}
-
-	result, err := r.Provider.EnsureRoute(ctx, snapshot.desired)
-	if err != nil {
-		return routeGraphResult{}, fmt.Errorf("ensure OpenStack resources for HTTPRoute: %w", err)
-	}
-	if err := result.Outcome.Validate(); err != nil {
-		return routeGraphResult{}, fmt.Errorf("validate HTTPRoute provider outcome: %w", err)
-	}
-	return routeGraphResult{outcome: result.Outcome}, nil
 }

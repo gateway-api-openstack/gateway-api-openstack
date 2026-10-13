@@ -28,6 +28,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
@@ -52,13 +53,14 @@ func TestReconcilersShareGatewayGraphCoordinator(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-1"
 	route.Generation = 1
-	routeBinder := &Reconciler{Config: config}
+	routeBinder := newTestReconciler(Reconciler{Config: config}, nil)
 	routeBinder.applyRouteBinding(route, gateway)
+	route.Annotations[config.RouteLifecycleAnnotation()] = controller.RouteDetaching
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).WithObjects(route).Build()
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), route); err != nil {
 		t.Fatal(err)
 	}
-	routeReconciler := &Reconciler{Client: kubeClient, Provider: provider, Coordinator: coordinator, APIReader: kubeClient, Config: config}
+	routeReconciler := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: coordinator, APIReader: kubeClient, Config: config}, provider)
 	storedRouteIdentity, present, err := routeReconciler.storedRouteIdentity(route)
 	if err != nil || !present {
 		t.Fatalf("stored route identity = %#v, present %t, error %v", storedRouteIdentity, present, err)
@@ -104,7 +106,7 @@ func TestHTTPRouteRevalidatesSnapshotAfterWaitingForGraph(t *testing.T) {
 	route.Generation = 1
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).WithObjects(gateway, route).Build()
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{Client: kubeClient, Provider: provider, Coordinator: coordinator, APIReader: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: coordinator, APIReader: kubeClient, Config: config}, provider)
 
 	release, err := graph.Acquire(context.Background(), coordinator, string(gateway.UID))
 	if err != nil {
@@ -141,14 +143,14 @@ func TestHTTPRouteDeleteRevalidatesBindingAfterWaitingForGraph(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-1"
 	route.Generation = 1
-	binder := &Reconciler{Config: config}
+	binder := newTestReconciler(Reconciler{Config: config}, nil)
 	binder.applyRouteBinding(route, gateway)
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).WithObjects(route).Build()
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), route); err != nil {
 		t.Fatal(err)
 	}
 	provider := &recordingProvider{}
-	reconciler := &Reconciler{Client: kubeClient, Provider: provider, Coordinator: coordinator, APIReader: kubeClient, Config: config}
+	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: coordinator, APIReader: kubeClient, Config: config}, provider)
 	stored, present, err := reconciler.storedRouteIdentity(route)
 	if err != nil || !present {
 		t.Fatalf("stored route identity = %#v, present %t, error %v", stored, present, err)

@@ -118,33 +118,31 @@ func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {
 					http.Error(w, "unexpected request", http.StatusNotFound)
 					return
 				}
-				if got := request.URL.Query().Get("port_id"); got != "vip-port" {
-					t.Errorf("Floating IP request port_id = %q, want %q", got, "vip-port")
-					http.Error(w, "unexpected port_id", http.StatusBadRequest)
-					return
-				}
+				assertGatewayFloatingIPDiscoveryQuery(t, request)
 				safetyWriteJSON(t, w, map[string]any{"floatingips": test.floatingIPs})
 			})
 
-			provider := NewProvider(ServiceClients{Network: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
-			floatingIP, outcome, err := provider.ensureFloatingIP(context.Background(), identity, "external-network", "vip-port")
+			requests := &gatewayTransitionRequests{}
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
+			spec := completeGraphSpec(identity)
+			spec.Gateway.Spec.ExternalNetworkID = "external-network"
+			spec.Routes[0].Spec.GatewayRequirements.ExternalNetworkID = "external-network"
+			result, err := provider.ReconcileGatewayGraph(context.Background(), spec)
 			if test.wantConflict {
 				if !errors.Is(err, cloud.ErrOwnershipConflict) {
 					t.Fatalf("ensureFloatingIP() error = %v, want ownership conflict", err)
 				}
-				if floatingIP != nil {
-					t.Fatalf("ensureFloatingIP() returned Floating IP %q on conflict", floatingIP.ID)
-				}
+
 				return
 			}
 			if err != nil {
 				t.Fatalf("ensureFloatingIP() error = %v", err)
 			}
-			if floatingIP == nil || floatingIP.ID != test.wantID {
-				t.Fatalf("ensureFloatingIP() Floating IP = %#v, want ID %q", floatingIP, test.wantID)
+			if result.Gateway.State.FloatingIPID != test.wantID {
+				t.Fatalf("Floating IP = %q, want ID %q", result.Gateway.State.FloatingIPID, test.wantID)
 			}
-			if outcome.State != cloud.OutcomeReady {
-				t.Fatalf("ensureFloatingIP() outcome = %#v, want Ready", outcome)
+			if result.Outcome.State != cloud.OutcomeReady {
+				t.Fatalf("graph outcome = %#v, want Ready", result.Outcome)
 			}
 		})
 	}
@@ -183,8 +181,10 @@ func TestEnsureNoFloatingIPValidatesBeforeDeletion(t *testing.T) {
 					http.Error(w, "unexpected request", http.StatusNotFound)
 				}
 			})
-			provider := NewProvider(ServiceClients{Network: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
-			outcome, err := provider.ensureNoFloatingIP(context.Background(), identity, "vip-port")
+			requests := &gatewayTransitionRequests{}
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
+			result, err := provider.ReconcileGatewayGraph(context.Background(), completeGraphSpec(identity))
+			outcome := result.Outcome
 			if test.wantConflict && !errors.Is(err, cloud.ErrOwnershipConflict) {
 				t.Fatalf("ensureNoFloatingIP() error = %v, want ownership conflict", err)
 			}
@@ -205,7 +205,7 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	requests := newSafetyRequestLog()
 
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, "", requests)),
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
@@ -270,7 +270,7 @@ func TestBuildGatewayDeletionPlanRejectsUnmanagedDescendants(t *testing.T) {
 		t.Run(resource, func(t *testing.T) {
 			identity := safetyTestIdentity(t)
 
-			provider := NewProvider(ServiceClients{
+			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(safetyGatewayGraphHandler(t, identity, resource, newSafetyRequestLog())),
 				ProjectID:    "project-a",
 			}, ProviderConfig{})
@@ -294,7 +294,7 @@ func TestExecuteGatewayDeletionStepIgnoresAlreadyDeletedResource(t *testing.T) {
 		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 		http.Error(w, "unexpected request", http.StatusNotFound)
 	})
-	provider := NewProvider(ServiceClients{LoadBalancer: safetyServiceClient(handler)}, ProviderConfig{})
+	provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(handler)}, ProviderConfig{})
 
 	if err := provider.executeGatewayDeletionStep(context.Background(), step); err != nil {
 		t.Fatalf("executeGatewayDeletionStep() error = %v", err)
@@ -413,7 +413,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 		}
 	})
 
-	provider := NewProvider(ServiceClients{
+	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
@@ -488,7 +488,7 @@ func TestFindGatewayLoadBalancerScopesAuthenticatedProject(t *testing.T) {
 			"id": "load-balancer-1", "project_id": "project-a", "tags": tags,
 		}}})
 	})
-	provider := NewProvider(ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
+	provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
 	loadBalancer, err := provider.findGatewayLoadBalancer(context.Background(), identity)
 	if err != nil {
 		t.Fatalf("findGatewayLoadBalancer() error = %v", err)
@@ -513,6 +513,8 @@ func TestObserveRoutePoliciesRejectsForeignPolicyOrRule(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 				switch request.URL.Path {
+				case "/lbaas/pools":
+					safetyWriteJSON(t, w, map[string]any{"pools": []any{}})
 				case "/lbaas/l7policies":
 					if !safetyRequireQuery(t, w, request, "listener_id", "listener-1") {
 						return
@@ -525,10 +527,10 @@ func TestObserveRoutePoliciesRejectsForeignPolicyOrRule(t *testing.T) {
 					http.Error(w, "unexpected request", http.StatusNotFound)
 				}
 			})
-			provider := NewProvider(ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
-			_, err := provider.observeRoutePolicies(context.Background(), identity, "listener-1")
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
+			_, err := provider.observeGatewayRoutes(context.Background(), []Identity{identity}, cloud.GatewayState{LoadBalancerID: "load-balancer-1", ListenerID: "listener-1"})
 			if !errors.Is(err, cloud.ErrOwnershipConflict) {
-				t.Fatalf("observeRoutePolicies() error = %v, want ownership conflict", err)
+				t.Fatalf("observeGatewayRoutes() error = %v, want ownership conflict", err)
 			}
 		})
 	}

@@ -34,6 +34,7 @@ import (
 type gatewayClassScope struct {
 	gatewayClass *gatewayv1.GatewayClass
 	original     *gatewayv1.GatewayClass
+	warning      *controller.ProviderFailurePolicy
 }
 
 func (s *gatewayClassScope) finalizerChanged() bool {
@@ -88,6 +89,9 @@ func (r *Reconciler) patchGatewayClass(ctx context.Context, scope *gatewayClassS
 			return fmt.Errorf("patch GatewayClass status: %w", err)
 		}
 		*scope.gatewayClass = *statusTarget
+		if scope.warning != nil {
+			controller.RecordProviderWarning(r.Recorder, statusTarget, *scope.warning, "ResolveParameters")
+		}
 		accepted := gatewayClassConditionStatus(
 			statusTarget.Status.Conditions,
 			gatewayv1.GatewayClassConditionStatusAccepted,

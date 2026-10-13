@@ -45,6 +45,8 @@ type GatewaySpec struct {
 	Provider          string
 	VIPSubnetID       string
 	ExternalNetworkID string
+	FlavorID          string
+	AvailabilityZone  string
 	ListenerName      string
 	ListenerPort      int
 }
@@ -66,6 +68,8 @@ type GatewayRequirements struct {
 	Provider          string
 	VIPSubnetID       string
 	ExternalNetworkID string
+	FlavorID          string
+	AvailabilityZone  string
 	ListenerPort      int
 }
 
@@ -101,7 +105,7 @@ type RouteSpec struct {
 	Gateway             GatewayState
 	GatewayRequirements GatewayRequirements
 	MemberSubnetID      string
-	HealthPath          string
+	HealthMonitor       HealthMonitorConfig
 	Hostname            string
 	PathType            PathMatchType
 	PathValue           string
@@ -117,15 +121,11 @@ type RouteState struct {
 	L7RuleIDs   []string
 }
 
-// Provider is the complete cloud boundary used by the Phase 1 reconcilers.
-// Ensure operations must be idempotent, and Delete operations must verify the
-// complete identity before removing anything.
+// Provider is the complete cloud boundary for the Gateway graph writer.
+// Reconciliation validates the complete graph and performs at most one mutation.
 type Provider interface {
-	EnsureGateway(context.Context, GatewaySpec) (GatewayResult, error)
+	GraphProvider
 	GetGateway(context.Context, Identity) (GatewayResult, bool, error)
-	DeleteGateway(context.Context, Identity) (Outcome, error)
-	EnsureRoute(context.Context, RouteSpec) (RouteResult, error)
-	DeleteRoute(context.Context, Identity) (Outcome, error)
 }
 
 // ValidateGatewayIdentity verifies the common Gateway ownership tuple.

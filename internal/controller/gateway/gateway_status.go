@@ -148,7 +148,7 @@ func (r *Reconciler) handleGatewayProviderFailure(
 ) (ctrl.Result, error) {
 	policy, ok := controller.ProviderFailurePolicyFor(providerErr)
 	if !ok {
-		return ctrl.Result{}, providerErr
+		return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The Gateway graph could not be reconciled"}, providerErr)
 	}
 	gateway := scope.gateway
 	gatewayReason, listenerReason := gatewayProviderFailureReasons(policy.Category)
@@ -193,7 +193,7 @@ func (r *Reconciler) handleGatewayDeleteFailure(
 ) (ctrl.Result, error) {
 	policy, ok := controller.ProviderFailurePolicyFor(providerErr)
 	if !ok {
-		return ctrl.Result{}, providerErr
+		return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The Gateway graph could not be removed"}, providerErr)
 	}
 	gateway := scope.gateway
 	policy = controller.ProviderCleanupFailurePolicy(policy, "Gateway")
