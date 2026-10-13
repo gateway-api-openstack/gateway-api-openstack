@@ -13,6 +13,7 @@ ENVTEST_ASSETS_DIR ?= $(abspath $(BINARY_DIR)/envtest)
 ENVTEST_K8S_VERSION ?= 1.36.2
 ENVTEST_RELEASE_INDEX ?= https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/3311c8d50e5c8a976266e08f1f92f827439bd34a/envtest-releases.yaml
 E2E_CONFIG ?=
+CONFORMANCE_CONFIG ?=
 VERSION ?= dev
 IMAGE ?= openstack-gateway-controller:$(VERSION)
 
@@ -51,6 +52,7 @@ test: ## Run unit tests.
 .PHONY: test-race
 test-race: ## Run unit tests with the race detector.
 	$(GO) test -race ./...
+	cd test/conformance && GATEWAY_OPENSTACK_CONFORMANCE_DIAGNOSTIC=false $(GO) test -mod=readonly -race ./...
 
 .PHONY: test-envtest
 test-envtest: ## Run controller tests against a real API server and etcd.
@@ -79,6 +81,22 @@ test-e2e: build-audit ## Install a run-scoped controller and run live E2E in the
 		--repository-root "$(CURDIR)" \
 		--audit-binary "$(abspath $(AUDIT_BINARY))"
 
+.PHONY: test-conformance-compile
+test-conformance-compile: ## Compile the pinned diagnostic without contacting a cluster.
+	cd test/conformance && $(GO) test -mod=readonly -run '^$$' ./...
+
+.PHONY: test-conformance-unit
+test-conformance-unit: ## Test diagnostic setup and cleanup without live access.
+	cd test/conformance && GATEWAY_OPENSTACK_CONFORMANCE_DIAGNOSTIC=false $(GO) test -mod=readonly -count=1 ./...
+
+.PHONY: test-conformance
+test-conformance: ## Run the opt-in adapted upstream HTTP diagnostic.
+	@test -n "$(CONFORMANCE_CONFIG)" || { printf 'Set CONFORMANCE_CONFIG to the diagnostic YAML path.\n'; exit 1; }
+	cd test/conformance && \
+		GATEWAY_OPENSTACK_CONFORMANCE_DIAGNOSTIC=true \
+		GATEWAY_OPENSTACK_CONFORMANCE_CONFIG="$(abspath $(CONFORMANCE_CONFIG))" \
+		$(GO) test -mod=readonly -count=1 -run '^TestOpenStackDiagnostic$$' -timeout=75m .
+
 .PHONY: envtest-assets
 envtest-assets: ## Download the pinned envtest control-plane binaries.
 	@mkdir -p "$(BINARY_DIR)" "$(ENVTEST_ASSETS_DIR)"
@@ -102,21 +120,25 @@ fmt-check: ## Fail when Go source files need formatting.
 .PHONY: vet
 vet: ## Run go vet.
 	$(GO) vet ./...
+	cd test/conformance && $(GO) vet -mod=readonly ./...
 
 .PHONY: lint
 lint: ## Run golangci-lint when installed.
 	$(GOLANGCI_LINT) run
+	cd test/conformance && $(GOLANGCI_LINT) run --config ../../.golangci.yml
 
 .PHONY: lint-fix
 lint-fix: ## Apply safe golangci-lint fixes when installed.
 	$(GOLANGCI_LINT) run --fix
+	cd test/conformance && $(GOLANGCI_LINT) run --config ../../.golangci.yml --fix
 
 .PHONY: verify
-verify: fmt-check vet test test-e2e-unit ## Run the checks required by CI.
+verify: fmt-check vet test test-e2e-unit test-conformance-unit ## Run the checks required by CI.
 
 .PHONY: tidy
 tidy: ## Update module metadata.
 	$(GO) mod tidy
+	cd test/conformance && $(GO) mod tidy
 
 .PHONY: release-check
 release-check: ## Validate GoReleaser configuration and prerequisites.

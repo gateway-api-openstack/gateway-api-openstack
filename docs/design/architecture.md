@@ -201,13 +201,16 @@ A different transition order requires a design that addresses health, mixed traf
 Manager indexes cover class ownership and parameters, parent Gateways, backend Services, cleanup bindings, and EndpointSlice Services.
 Watch handlers use these relationships to enqueue affected objects.
 Node mapping filters managed NodePort backends and reuses parent, Service, and endpoint reads within one event.
+Service and EndpointSlice mappers read each shared parent index once per invocation while retaining route contenders and direct cleanup requests.
 This temporary reuse does not replace the writer's live ownership checks or persist between events.
 
 Predicates react to readiness, schedulability, deletion, relevant labels, and selected addresses.
 Cached objects remain immutable.
 External drift is observed through a slow resync with stable UID-based jitter, while pending Octavia work uses bounded shorter intervals.
 
-Local benchmarks separate desired-model and diff costs from provider I/O.
+Local Node and EndpointSlice tests follow bursts through the real reconciler and graph writer to member convergence with a fake provider, including unchanged final input that produces no member mutations.
+They do not model API server timing or Octavia transitions.
+Mapper benchmarks measure read counts and fan-out, and separate benchmarks measure desired-model and diff costs without provider I/O.
 The graph writer measures lock wait, Gateway input, route input, validation, and provider stages with bounded labels.
 OpenStack client metrics record request outcomes and latency.
 The provider stage includes waits within one call and does not measure full asynchronous convergence or traffic recovery.
@@ -230,13 +233,9 @@ NodePort is the only implemented member mode.
 The controller uses the class-selected Node address type and a user-provided NodePort Service.
 It checks readiness, schedulability, address family, Service ports, and EndpointSlice state.
 
-Nodes labeled `node-role.kubernetes.io/control-plane` or `node-role.kubernetes.io/master` are excluded regardless of label value.
-Workers need no role label.
-For `node.kubernetes.io/exclude-from-external-load-balancers`, an absent label or an explicit false value permits eligibility, while empty, true, or invalid values exclude the Node.
-
-`externalTrafficPolicy: Cluster` can use every otherwise eligible worker.
-`externalTrafficPolicy: Local` includes only eligible workers with ready local endpoints.
-Both policies apply the same role and exclusion-label checks.
+Control plane Nodes are excluded.
+`externalTrafficPolicy: Cluster` can use every eligible worker, while `Local` requires a ready endpoint on that worker.
+The [class configuration reference](../reference/class-configuration.md#worker-nodeport-members) defines the full eligibility and exclusion-label rules.
 The controller does not alter Node labels or create helper Services.
 
 The operator must provide routing and security rules that let Amphora reach NodePorts.
@@ -262,6 +261,7 @@ Existing Gateways use that snapshot even when class parameters change or disappe
 The complete topology is required for bound Gateway lifecycle work.
 A replacement cloud graph for the same Gateway UID retains it, including health settings and Node addressing.
 A new Gateway can use the updated template.
+The [local validation record](../providers/compatibility.md#local-validation) describes the two-class envtest coverage for these bindings.
 
 Requested Gateway addresses, `Gateway.spec.infrastructure.parametersRef`, security policy modes, and per-backend health policies remain unsupported.
 Future per-Gateway or Direct Policy Attachment APIs need their own scope, precedence, and merge decisions.
@@ -275,7 +275,8 @@ PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so th
 Wildcard hostnames, headers, multiple routes, redirects, header modification, rewriting, mirroring, weighted backends, and other filters require further implementation and evidence.
 Octavia member weights alone do not prove Gateway API weights across Services or invalid-backend semantics.
 The constrained NodePort path cannot claim full HTTPRoute Core support or GATEWAY-HTTP conformance.
-The pinned conformance suite and gap report remain the next validation work after Phase 3 implementation.
+The [upstream diagnostic runner](../testing-conformance.md) selects one pinned HTTP test with a NodePort fixture adaptation.
+It has not run against OpenStack and is not a full conformance run.
 
 Terminated HTTPS requires a Barbican identity and certificate lifecycle design, including rotation, rollback, SNI, and safe deletion.
 Cross-namespace Service or Secret references also require ReferenceGrant implementation.

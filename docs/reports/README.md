@@ -20,7 +20,8 @@ Include a digest in the public summary when the image is available to reviewers 
 
 ## Minimum PR evidence
 
-Use the [validation template](openstack-e2e-template.md) for the tested revision, command, relevant environment, results, cleanup, and remaining gaps.
+For OpenStack runs, use the [validation template](openstack-e2e-template.md) to record the tested revision, command, relevant environment, results, cleanup, and remaining gaps.
+For local tests, a concise command and result summary is sufficient.
 Identify any local changes so the result is not attributed to an untested PR revision.
 Summarize unresolved failures even if a later retry passed.
 Link a public CI run when available, or state that the checks ran locally and the details are retained privately.
@@ -29,7 +30,7 @@ Private filesystem paths are not useful links in a public PR.
 ## Local and CI artifacts
 
 The repository ignores `_artifacts/` and `test-results/`.
-Use a separate directory per run and retain generated reports, exact artifact identity, and investigation history through review and any related investigation.
+Use a separate directory per run and retain its reports and artifact identities through review and any related investigation.
 Keep credentials and sensitive raw output in protected storage outside the artifact bundle.
 Git ignore rules do not restrict file access.
 
@@ -45,4 +46,8 @@ Preserve public release evidence for as long as the project makes the claim it s
 
 The [Cluster API contribution guide](https://github.com/kubernetes-sigs/cluster-api/blob/main/CONTRIBUTING.md#triaging-pr-or-periodic-test-failures), [CAPO CI guide](https://cluster-api-openstack.sigs.k8s.io/development/ci#prow), and [cloud-provider-openstack CI runner](https://github.com/kubernetes/cloud-provider-openstack/blob/master/tests/ci-occm-e2e.sh) illustrate PR results backed by separate test artifacts.
 Omitting internal cloud branding and local image digests is this project's publication policy, not a claim that upstream forbids those fields.
-Use the [conformance gap template](conformance-gap-template.md) for separate conformance work and [release guidance](../releasing.md) for release evidence.
+
+The [conformance guide](../testing-conformance.md) distinguishes the adapted HTTP diagnostic from a full suite run.
+Keep its generated diagnostic report local and describe the fixture adaptations in any public summary.
+A diagnostic pass does not establish conformance or prove that OpenStack cleanup returned to baseline.
+Use the [conformance gap template](conformance-gap-template.md) for diagnostic findings or full suite analysis and [release guidance](../releasing.md) for release evidence.

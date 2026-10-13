@@ -53,8 +53,9 @@ approvers make the final repository decision after the public discussion. While
 there is only one approver, that person must record the reason for a material
 decision and any dissent in the issue or ADR.
 
-Accepted ADRs override older proposed design text. A later change is made with
-a new ADR that supersedes the old one; accepted history is not rewritten.
+Accepted ADRs override older proposed design text.
+Record later changes in a new ADR that supersedes the old one.
+Keep the accepted history intact.
 
 ## Adding and removing maintainers
 

@@ -2,20 +2,17 @@
 
 The controller is pre-alpha.
 Phase 3 implements typed class configuration, a shared Gateway graph writer, and worker NodePort members.
-The earlier Phase 2 OpenStack E2E run covers the previous HTTP and NodePort baseline.
-It does not validate the Phase 3 changes.
-See the [development validation record](providers/compatibility.md#development-validation) for the evidence and the [roadmap](../ROADMAP.md) for the remaining live validation and conformance work.
-No supported controller environment profile has been published.
-No release image is available.
+The [compatibility record](providers/compatibility.md) separates local checks from the earlier OpenStack E2E baseline, which does not validate the Phase 3 changes.
+No supported environment profile or release image is available.
+See the [roadmap](../ROADMAP.md) for remaining validation work.
 
 Use these base manifests only in a disposable test project.
 Keep cloud-provider-openstack responsible for Services of type `LoadBalancer`.
 This controller creates separate resources only for its Gateway API objects.
 
-The one-command E2E runner is separate from this base installation and accepts a dedicated or shared OpenStack project.
-It creates a run-scoped controller with immutable configuration and credential objects, verifies the controller and audit projects independently, and requires the read-only ownership audit.
-Do not adapt the base commands below to an existing controller for E2E.
-Follow the [OpenStack E2E test guide](testing-openstack-e2e.md) for either project mode.
+For automated validation, use the [OpenStack E2E runner](testing-openstack-e2e.md), which creates a separate test installation in a dedicated or shared project.
+The [upstream HTTP diagnostic](testing-conformance.md) uses an existing installation and runs one adapted test.
+It has not yet been run against OpenStack and does not establish conformance.
 
 ## Prerequisites
 
@@ -37,10 +34,8 @@ Select `ExternalIP` only when those addresses belong to the configured member ne
 Only eligible worker Nodes become members.
 See the [class configuration reference](reference/class-configuration.md#worker-nodeport-members) for control plane exclusions and traffic policy behavior.
 
-The current controller does not create networks, subnets, routers, or backend security groups and does not attach security groups to worker ports.
-Operators must establish that connectivity before creating a Gateway.
-Planned automation will not take ownership of existing networks, subnets, routers, or worker ports.
-Any future change to a worker port's security groups will require an explicit opt-in and the ownership safeguards described in the roadmap.
+The controller does not create networks, subnets, routers, or backend security groups and does not attach security groups to worker ports.
+Establish that connectivity before creating a Gateway.
 
 Install the pinned Standard Channel CRDs if the cluster does not already have them:
 
@@ -49,13 +44,10 @@ kubectl apply -f \
   https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml
 ```
 
-The controller also performs a startup discovery check and exits with a clear error when GatewayClass, Gateway, or HTTPRoute is unavailable.
-After startup it checks the bundle version annotation on every installed Gateway API CRD.
-The required CRDs must all come from the v1.6.1 bundle.
-
-When the bundle annotation is missing or versions are mixed, the managed GatewayClass reports `SupportedVersion=False` and `Accepted=False` with reason `UnsupportedVersion`.
-The controller does not create or repair OpenStack resources until the CRDs match again.
-It leaves an existing graph in place and continues to honor deletion, so a partial CRD upgrade does not remove live traffic or prevent finalization.
+Startup requires GatewayClass, Gateway, and HTTPRoute to be available.
+The controller also checks that installed Gateway API CRDs have the pinned bundle annotation.
+A missing or mixed annotation produces `SupportedVersion=False` and `Accepted=False` with reason `UnsupportedVersion` on GatewayClass and blocks provisioning and repair.
+Existing graphs remain in place and can still be finalized, as described in the [API version contract](design/architecture.md#installed-gateway-api-version).
 
 ## Prepare OpenStack credentials
 
@@ -97,10 +89,8 @@ Edit `config/manager/controller-config.yaml` before applying it:
 
 The default controller name is `gateway-api-openstack.github.io/gateway-api-openstack`.
 The same value must appear in every managed `GatewayClass.spec.controllerName`, including `examples/basic.yaml`.
-The API group `gateway-api-openstack.github.io` uses the project organization's domain.
-[ADR 0003](design/adr/0003-project-organization.md) records the repository and identity change.
-This alpha API has no automatic conversion from the earlier personal API group.
-Finish cleanup with the original controller before replacing an existing development installation.
+The API group is `gateway-api-openstack.github.io`.
+An existing development installation must complete cleanup with its original controller before changing identities, as described in the [compatibility guidance](reference/class-configuration.md#development-compatibility).
 
 Configure VIP and member placement in the OpenStackGatewayClassConfig in `examples/basic.yaml`.
 Replace its synthetic subnet IDs with existing resources in the controller project.
@@ -254,6 +244,3 @@ kubectl delete -k config/default
 If another installation uses this API, remove only the resources owned by this installation and retain the shared CRD and any shared RBAC resources.
 The base uninstall removes the dedicated `openstack-gateway-system` namespace and its credential Secret.
 It does not remove the upstream Gateway API CRDs.
-
-Changing the development API group, controller name, cluster ID, or authenticated project requires cleanup with the original installation followed by recreation.
-There is no automatic migration or adoption path from Phase 2 or between controller identities.

@@ -92,7 +92,8 @@ The scope remains a logical inventory filter, not Keystone or Neutron authorizat
 An empty scoped report does not show that the credential cannot access another load balancer, Floating IP, network, or security group.
 It also cannot measure project-wide quota or API contention, find a detached resource after all scope metadata is lost, or attribute concurrent changes made by another user.
 An E2E run in a shared project therefore needs a separate redacted inventory before and after the run.
-Operators must review and attribute that difference; the audit must not delete or adopt anything to make the inventories match.
+Operators must review and attribute that difference.
+The audit must not delete or adopt anything to make the inventories match.
 
 The runner may use a separate credential for this audit.
 The OpenStack operator should grant it only the authentication and inventory read permissions the command needs.

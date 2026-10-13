@@ -131,8 +131,8 @@ in [docs/providers/compatibility.md](docs/providers/compatibility.md).
 Reviewers check correctness and test coverage. Approvers check the wider API,
 ownership, compatibility, and project direction. The root `OWNERS` file is the
 current source for those roles. Until the project has more than one approver,
-independent maintainer approval is not always possible; the limitation is
-recorded openly rather than filled with inactive names.
+independent maintainer approval is not always possible.
+Record that limitation openly rather than adding inactive names.
 
 ## Documentation
 

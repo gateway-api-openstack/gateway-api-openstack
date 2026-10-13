@@ -4,9 +4,10 @@ This roadmap sets the order of work for gateway-api-openstack. It is a planning
 document, not a release promise. A feature moves forward only after its
 ownership, failure behavior, and test evidence are clear.
 
-The current development stage is **Phase 3 implementation complete, with release validation pending**.
+The core Phase 3 features are implemented, with validation and release work remaining.
 The Phase 2 development milestone is complete for the current HTTP and NodePort reliability foundations, following a successful baseline OpenStack E2E run.
-Phase 3 implements the complete Gateway graph writer, typed class configuration, worker member selection, and local scale checks.
+Phase 3 implements the complete Gateway graph writer, typed class configuration, and worker member selection.
+Local tests now cover class isolation and event bursts through reconciliation.
 A new OpenStack run, extended fault tests, the conformance gap report, and public image delivery remain validation and release work.
 The project remains pre-alpha, with no production readiness, support, or conformance claim.
 
@@ -65,14 +66,14 @@ proposed text. The table below summarizes each phase and its exit criteria.
 
 | Phase | Status | Outcome | Exit gate |
 | --- | --- | --- | --- |
-| 0 — Feasibility | Historical | Prove the required Amphora primitives and ownership boundary | Capability probe retained, with later phases still requiring their ADRs |
-| 1 — HTTP slice | Implemented and development-tested | One Gateway, listener, route, and NodePort backend | Formal compatibility claims still require published environment evidence |
-| 2 — Reconciliation | Development milestone complete | Reliability foundations for the current HTTP and NodePort path | Baseline OpenStack E2E passed. Remaining work is carried into Phase 3 |
-| 3 — Class API | Implemented locally | Typed topology configuration, one graph writer, and worker members | Revalidate the selected revision in OpenStack, publish conformance gaps, and prepare outside testing |
-| 4 — Connectivity | Planned | Deterministic address, network, and security handling | Results from tests in OpenStack without adopting foreign network resources |
-| 5 — HTTP/HTTPS | Planned | Multiple listeners, route compilation, and terminated HTTPS | Pinned conformance results and safe Barbican lifecycle |
-| 6 — Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible conformance report |
-| 7 — Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, support policy, and release evidence |
+| 0: Feasibility | Historical | Prove the required Amphora primitives and ownership boundary | Capability probe retained, with later phases still requiring their ADRs |
+| 1: HTTP slice | Implemented and development-tested | One Gateway, listener, route, and NodePort backend | Formal compatibility claims still require published environment evidence |
+| 2: Reconciliation | Development milestone complete | Reliability foundations for the current HTTP and NodePort path | Baseline OpenStack E2E passed. Remaining work is carried into Phase 3 |
+| 3: Class API | Implemented locally | Typed topology configuration, one graph writer, and worker members | Revalidate the selected revision in OpenStack, publish conformance gaps, and prepare outside testing |
+| 4: Connectivity | Planned | Deterministic address, network, and security handling | Results from tests in OpenStack without adopting foreign network resources |
+| 5: HTTP/HTTPS | Planned | Multiple listeners, route compilation, and terminated HTTPS | Pinned conformance results and safe Barbican lifecycle |
+| 6: Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible conformance report |
+| 7: Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, support policy, and release evidence |
 
 Phase numbers describe engineering milestones, and version milestones are planning targets rather than published releases.
 Closing Phase 2 changes the sequencing of its original gates.
@@ -83,7 +84,8 @@ The [work carried into Phase 3](#work-carried-into-phase-3) distinguishes comple
 Phase 3 code is implemented and passes local unit, race, API server, and packaging checks.
 The next work validates the implemented revision and identifies the remaining Gateway API gaps.
 
-1. **Run conformance and record gaps.** Run the pinned GATEWAY-HTTP suite and classify its failures before expanding the HTTP compiler.
+1. **Run the pinned diagnostic and record gaps.** Use the [v1.6.1 diagnostic](docs/testing-conformance.md) for the current HTTP subset.
+   Record its fixture adaptations and the setup blockers for a full GATEWAY-HTTP run before expanding the compiler.
 2. **Repeat OpenStack validation.** Test the class API, complete graph writer, worker selection, traffic, restart, finalization, and leak audit for the selected revision.
    Use the [OpenStack E2E test guide](docs/testing-openstack-e2e.md) and a dedicated environment for fault scenarios.
 3. **Prepare outside testing.** Choose an artifact registry, publish an immutable pre-alpha image, and configure scheduled E2E only after a dedicated test environment and credentials are approved.
@@ -132,7 +134,7 @@ Every phase must preserve the following invariants:
 
 ## Phase 0 - Feasibility and ownership discovery
 
-**Status:** Historical baseline — capability probe completed, design records
+**Status:** Historical baseline: capability probe completed, design records
 remain incomplete
 
 **Milestone:** `phase-0-initialize`
@@ -150,7 +152,7 @@ the decision.
 
 ## Phase 1 - Constrained HTTP implementation
 
-**Status:** Implementation complete — release evidence pending
+**Status:** Implementation complete: release evidence pending
 
 **Milestone:** `v0.1.0`
 
@@ -287,20 +289,26 @@ Parameter changes also enqueue unbound Gateways directly, including when the Gat
 
 Node events still begin with indexed routes that reference Services.
 Within each event, the mapper reuses parent ownership, Service, and endpoint reads, then enqueues only affected managed NodePort routes.
-Synthetic burst tests cover bounded dependency reads and queue coalescing.
+Service and EndpointSlice events read each shared parent once per event.
+Burst tests pass Node and EndpointSlice updates through the real reconciler and graph writer with a stateful fake provider.
+They verify bounded reads, queue coalescing, member changes, and zero mutations after convergence.
 Pure member and cloud graph benchmarks measure calculation separately from API calls.
 The [local measurement guide](docs/development-priorities.md#measure-before-increasing-concurrency) provides reproducible commands without generating cloud load.
 
 The writer exposes bounded stage metrics for lock wait, input collection, validation, and the provider call.
 A provider call duration includes client-side waits and does not measure total Octavia convergence.
+Separate measurements of rate limiter wait, pending duration, and total convergence remain outstanding.
 Keystone, Octavia, and Neutron continue to share one request budget and process-scoped clients.
 Class topology checks make fresh reads, with reuse confined to one resolution call.
 No cross-reconcile topology cache or independent member writer is introduced.
 
 ### Conformance feasibility and design gates
 
-After completing Phase 3 implementation, run the pinned GATEWAY-HTTP suite as the next validation step and publish a gap analysis.
-Classify every result as controller defect, compiler work, Octavia limitation, planned extension, or out of scope.
+The opt-in [v1.6.1 diagnostic](docs/testing-conformance.md) runs one upstream HTTPRoute test with an adapted NodePort fixture.
+It has no live result for this revision and is not a GATEWAY-HTTP profile report.
+The default upstream setup requires unsupported behavior, including ClusterIP backends and multiple listeners.
+Record those blockers and diagnostic findings in a gap analysis, then run the full profile when its setup can complete.
+Classify findings as controller defects, compiler work, backend or Octavia limitations, planned extensions, non-goals, or environment failures.
 The known Core gaps include ClusterIP Services and any other Service backend accepted by Gateway API but rejected by the current NodePort path, `RequestHeaderModifier`, `RequestRedirect`, backend weights and invalid backend semantics, and every applicable ReferenceGrant combination.
 Weights assigned to Services must not be inferred from Octavia member weights.
 
@@ -308,8 +316,8 @@ Do not advertise `HTTPRoute` in `supportedFeatures` until all HTTPRoute Core
 behavior has passed. Gateway API does not provide a declaration for only this
 controller's smaller HTTPRoute subset. `ReferenceGrant` is included in
 `supportedFeatures` only after all combinations with the other reported
-features pass. If NodePort remains the only stable backend path, report partial
-GATEWAY-HTTP conformance.
+features pass.
+If NodePort remains the only backend path, document that Core gap without claiming GATEWAY-HTTP conformance.
 
 The GatewayClass controller checks the bundle version annotation on every
 installed Gateway API CRD. It reports `SupportedVersion=True` only when the
@@ -345,12 +353,12 @@ Local tests do not replace OpenStack or conformance evidence.
 | --- | --- |
 | Complete Gateway graph writer and durable route lifecycle | Implemented with controller, adapter, race, and envtest coverage |
 | Development identity, class API, frozen configuration, and worker selection | Implemented under ADRs 0001 and 0002, with schema and API server tests |
-| Measure Node event handling and model calculation | Synthetic read budgets, coalescing tests, and local benchmarks added. Cloud scale limits are not established |
+| Measure event handling and model calculation | Node and EndpointSlice read budgets, burst reconciliation tests, and local benchmarks added. Separate wait, pending, and total convergence measurements remain open |
 | Test intermediate backend transitions and recovery | Adapter tests cover one mutation per pass, unchanged members, replacement, pending state, and restart. Traffic continuity is not claimed |
-| Exercise external deletion, quota, rate limiting, timeout, Octavia failure, and repeated deletion in OpenStack | Outstanding for the selected revision. Use a dedicated environment for fault injection |
+| Exercise external deletion, quota, rate limiting, timeout, Octavia failure, and repeated deletion in OpenStack | Execution procedures or injectors and live results remain outstanding. Use an approved dedicated environment |
 | Validate blocked finalization and operator recovery with the ownership audit | OpenStack validation remains outstanding |
 | Repeat baseline E2E and publish an environment report | Required before a compatibility claim for the new revision |
-| Publish the pinned GATEWAY-HTTP gap analysis | Next validation step after Phase 3 implementation |
+| Publish the pinned GATEWAY-HTTP gap analysis | Adapted single-test runner prepared. Live diagnostic findings and full-profile setup analysis remain open |
 | Publish an immutable image and configure scheduled E2E with a leak audit | Registry and approved dedicated test infrastructure remain operational prerequisites |
 | Review governance, support, ADR guidance, and contact paths | Required before outside release testing |
 
@@ -361,60 +369,41 @@ Formal release evidence follows the [publication policy](docs/reports/README.md)
 
 ## Phase 3 - Class configuration and topology API
 
-**Status:** Implementation complete. OpenStack validation, conformance gap analysis, and outside release testing remain open.
+**Status:** Core features implemented. OpenStack validation, conformance gap analysis, measurements, and release work remain open.
 
 **Milestone:** `v0.3.0`
 
 Phase 3 replaces deployment-wide topology flags with the cluster-scoped OpenStackGatewayClassConfig API at `gateway-api-openstack.github.io/v1alpha1`.
 GatewayClass requires a `parametersRef` naming that kind, with no namespace.
-The controller identity defaults to `gateway-api-openstack.github.io/gateway-api-openstack` and can be overridden for an isolated installation.
-The canonical repository and Go module are `github.com/gateway-api-openstack/gateway-api-openstack`.
-[ADR 0003](docs/design/adr/0003-project-organization.md) records the move to the project organization and its API domain.
-The API remains pre-alpha, and public image publication and supported upgrades remain separate release decisions.
+The [class configuration reference](docs/reference/class-configuration.md) defines its schema, defaults, selectors, frozen bindings, worker eligibility, and operator workflow.
+[ADR 0002](docs/design/adr/0002-class-configuration.md) records the API decision, and [ADR 0003](docs/design/adr/0003-project-organization.md) records the organization and domain.
 
-The [class configuration reference](docs/reference/class-configuration.md) defines the schema, defaults, and operator workflow.
-It includes VIP and member subnet selection, optional Floating IP allocation, Node address type, HTTP health monitor settings, and optional Amphora flavor and availability zone.
-The API excludes credentials, project selection, provider choice, resource adoption, security group mutation, and arbitrary Octavia properties.
+The API covers subnet selection, optional Floating IP allocation, Node address type, health monitors, and optional Amphora flavor and availability zone.
 Amphora and NodePort remain the only data path.
-
-OpenAPI and CEL validate the small schema without a webhook.
+It does not add credentials, project selection, resource adoption, security group mutation, or per-Gateway infrastructure overrides.
+OpenAPI and CEL validate the schema without a webhook.
 The Go types, DeepCopy methods, and CRD are maintained together and checked by schema tests and envtest.
-There is no Kubebuilder scaffold or generated API tree.
-Gateway infrastructure parameters and per-Gateway overrides remain unsupported.
 
-A Gateway stores its resolved topology and class settings before the first cloud create.
-That snapshot remains authoritative for the same Gateway UID through controller restart, class changes, parameter deletion, listener replacement, and recovery from an invalid spec.
-It is released after finalization or controller handoff confirms that the owned graph is absent.
-Changing the template does not move an existing load balancer to another network.
-
-This development change does not provide a Phase 2 upgrade or rollback path, a flag compatibility window, or automatic conversion between API groups.
-Clean up managed graphs with the controller that owns them before replacing an older development installation.
-Future supported upgrades require their own compatibility policy and evidence.
+Resolved class settings are stored before cloud creation and remain fixed for the same Gateway UID.
+Tests with two classes verify that parameter changes, reference swaps, parameter deletion, and a newly constructed reconciler preserve each Gateway's separate topology.
+This development API has no Phase 2 migration or rollback promise.
+The [installation guide](docs/getting-started.md) describes cleanup before replacing an older development installation.
 
 ### Worker NodePort member selection
 
-The controller excludes Nodes carrying `node-role.kubernetes.io/control-plane` or the legacy `node-role.kubernetes.io/master` label.
-A worker label is not required, and there is no control-plane opt-in.
-It also honors `node.kubernetes.io/exclude-from-external-load-balancers`: an absent label or a value parsed as false allows eligibility, while true, empty, or invalid values exclude the Node.
-Readiness, deletion, schedulability, and address checks still apply.
-
-Both NodePort traffic policies use these rules.
-Local additionally requires a ready endpoint on the Node.
-Watches react to role, exclusion, endpoint, and address changes, including either supported Node address type across different classes.
-Tests cover membership changes without recreating unchanged members.
-Selecting only a few workers in a shared test environment still requires the E2E Local profile and workload placement labels.
+The controller excludes control-plane Nodes and honors the standard load balancer exclusion label.
+Both NodePort traffic policies apply worker eligibility, readiness, schedulability, deletion, and address checks.
+Local also requires a ready endpoint on the Node.
+The [class configuration reference](docs/reference/class-configuration.md#worker-nodeport-members) specifies the label rules.
+Node and EndpointSlice tests verify member changes without recreating unchanged members.
+Shared test environments still need Local traffic policy and workload placement labels to limit membership to selected workers.
 
 ### Deterministic resource resolution
 
-A subnet or network reference selects exactly one UUID, exact name, or set of Neutron tags.
-Tags form an AND selector.
-Zero or multiple matches reject the configuration before provisioning.
-Subnet resolution verifies the authenticated project, parent network, and compatible IP family.
-An external network must be visible to the project and marked external, and may be shared from another project.
-Reading those resources never grants ownership.
-
-Existing Gateways use their snapshots instead of resolving mutable selectors again.
-The controller does not create, alter, or delete tenant networks, subnets, routers, or worker ports.
+Each subnet or network selector must resolve to exactly one resource.
+Resolution validates project visibility, parent network, IP family, and external network requirements before provisioning.
+Existing Gateways use their stored snapshots instead of resolving mutable selectors again.
+Reading those resources does not grant ownership of tenant networks or worker ports.
 
 ### Amphora capability checks
 
@@ -430,14 +419,17 @@ Class acceptance does not populate conformance `supportedFeatures`.
 
 ### Phase 3 validation and release gates
 
-Local checks cover structural validation and defaults, multiple classes with separate topologies, frozen bindings, status, dependency watches, worker eligibility, restart, ownership conflicts, and one mutation per graph pass.
+Local checks cover schema validation, frozen bindings, status, worker eligibility, ownership conflicts, and one mutation per graph pass.
+Envtest covers two classes with distinct topologies and reconstruction of their stored settings.
+Node and EndpointSlice burst tests exercise reconciliation and member convergence with a fake provider.
 The release archives contain the matching CRD, RBAC, Kustomize resources, and examples alongside the binaries.
 
 The following gates remain before claiming the complete Phase 3 release milestone:
 
 - Repeat live E2E for the implemented class API and graph writer.
 - Complete the fault and recovery evidence listed above.
-- Run the pinned conformance suite and publish a gap analysis.
+- Run the pinned diagnostic, record full-profile blockers, and publish a gap analysis.
+- Complete the separate wait, pending, and convergence measurements before increasing concurrency.
 - Choose a registry and publish an immutable pre-alpha image for evaluation.
 - Configure scheduled E2E and a leak audit in an approved dedicated environment.
 
@@ -604,7 +596,7 @@ Unsupported or incompatible fields receive standard Gateway API conditions.
 Weighted backends require the conformance feasibility decision carried into Phase 3.
 Weights assigned to Services, different endpoint counts, weight zero, and Gateway API behavior when a backend is invalid must match the specification.
 Similar Octavia member weights are not enough to prove this behavior.
-If exact semantics cannot be demonstrated, the feature remains rejected and the project publishes partial rather than full conformance.
+If exact semantics cannot be demonstrated, keep the feature rejected and publish the failed Core requirement without claiming full conformance.
 
 ### Cross-namespace references
 

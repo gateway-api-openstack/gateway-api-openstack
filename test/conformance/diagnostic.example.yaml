@@ -1,0 +1,17 @@
+# Copy to a private path and replace every placeholder before opting in.
+# The existing class must use floatingIP.mode: None.
+kubeconfig: /absolute/path/to/kubeconfig
+context: diagnostic-context
+apiServer: https://kubernetes.example.test:6443
+clusterUID: replace-with-kube-system-namespace-uid
+namespace: gateway-conformance-infra
+controllerName: gateway-api-openstack.github.io/gateway-api-openstack
+gatewayClass: diagnostic-class
+gatewayClassUID: replace-with-gatewayclass-uid
+classConfig: diagnostic-class
+classConfigUID: replace-with-class-configuration-uid
+backendImage: registry.k8s.io/gateway-api/echo-basic:v1.5.1@sha256:<sha256-digest>
+backendNodeSelector:
+  example.test/diagnostic-worker: "true"
+reportPath: /absolute/private/path/to/new-diagnostic-report.json
+acceptResourceCreation: false

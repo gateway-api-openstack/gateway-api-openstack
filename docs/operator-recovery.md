@@ -134,11 +134,10 @@ The controller will observe the graph again and continue cleanup in dependency
 order. Run the audit again after the Kubernetes object finishes deletion or the
 failure condition changes.
 
-This project does not provide a supported manual cleanup command. If normal
-reconciliation cannot be restored, preserve the report and controller logs and
-open a focused recovery issue with identifiers removed. Any manual OpenStack
-change needs its own review and ownership proof immediately before mutation; a
-saved audit report is not sufficient.
+This project does not provide a supported manual cleanup command.
+If normal reconciliation cannot be restored, preserve the report and controller logs and open a focused recovery issue with identifiers removed.
+Any manual OpenStack change needs its own review and ownership proof immediately before mutation.
+A saved audit report is not sufficient.
 
 ## Discovery limits
 

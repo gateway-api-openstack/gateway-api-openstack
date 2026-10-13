@@ -12,9 +12,10 @@ Environment report:
 
 ## Invocation
 
-Record the exact upstream suite revision, profile, supported feature flags,
-command, and unmodified result artifact. This is a local gap analysis unless an
-accepted upstream report says otherwise.
+Identify the run as an upstream profile or an adapted diagnostic.
+Record the exact suite revision, selected tests or profile, feature flags, command, and original result artifact.
+List fixture changes and setup blockers.
+This is a local gap analysis unless an accepted upstream report says otherwise.
 
 ## Summary
 
@@ -23,10 +24,14 @@ accepted upstream report says otherwise.
 | Passed | 0 |
 | Failed | 0 |
 | Skipped | 0 |
+| Setup blocked | 0 |
+
+Count only selected tests.
+Unselected tests have not run and do not count as skipped or passed.
 
 ## Gap classification
 
-Classify every failed or skipped Core test.
+Classify each failed or skipped test and each setup blocker within the selected scope.
 
 | Test | Result | Classification | Reason | Follow-up |
 | --- | --- | --- | --- | --- |
@@ -44,12 +49,12 @@ Use one of these classifications:
 
 ## Feature claims
 
-List the `GatewayClass.status.supportedFeatures` observed during the run. Explain
-any difference between those runtime claims and the test selection. Do not add
-a feature merely to make a test run, or remove one merely to hide a failure.
+List the `GatewayClass.status.supportedFeatures` observed during the run.
+Explain any difference between those runtime claims and the test selection.
+Do not add a feature merely to make a test run, or remove one merely to hide a failure.
 
 ## Conclusion
 
-State whether the result is eligible for upstream submission under the current
-Gateway API rules. List the work needed for the next report and the Core
-semantics that may be structurally unrepresentable on Amphora.
+State whether the result is eligible for upstream submission under the current Gateway API rules.
+An adapted diagnostic is not a profile conformance result.
+List the work needed for the next report and the Core semantics that may be structurally unrepresentable on Amphora.
