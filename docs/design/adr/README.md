@@ -56,6 +56,7 @@ new ADR and link both records.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-gateway-graph-writer.md) | Proposed | Use one writer and durable route fragments for each Gateway graph |
+| [0002](0002-class-configuration.md) | Accepted, identity superseded by 0003 | Define class configuration, frozen Gateway topology, and worker NodePort eligibility. |
 | [0003](0003-project-organization.md) | Accepted | Use the project organization for the repository, Go module, API group, and default controller identity. |
 
 The repository owner explicitly approved the organization and identity change in ADR 0003 as a scoped exception to the normal proposal period.

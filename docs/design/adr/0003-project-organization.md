@@ -7,8 +7,8 @@ Date: 2026-10-09
 Owner: `jihyun-huh`
 
 Approval: The repository owner transferred the project to the `gateway-api-openstack` GitHub organization and explicitly selected `gateway-api-openstack.github.io` as its API domain.
-This scoped decision supersedes the initial development identity.
-It does not change the class configuration, topology binding, or worker selection contracts.
+This scoped decision supersedes the development identity in [ADR 0002](0002-class-configuration.md).
+It does not change that ADR's class configuration, topology binding, or worker selection contracts.
 
 ## Context
 
