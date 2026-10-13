@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 )
 
 func TestRunBuildsArgumentsAndValidatesEmptyReport(t *testing.T) {

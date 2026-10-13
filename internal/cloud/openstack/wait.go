@@ -20,9 +20,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/octavia"
 )
 
 // WaitLoadBalancerActive retains the Phase 0 probe compatibility facade.

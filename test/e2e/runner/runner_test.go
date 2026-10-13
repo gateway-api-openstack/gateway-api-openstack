@@ -36,8 +36,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestOpenStackExampleMatchesStrictRunnerSchema(t *testing.T) {

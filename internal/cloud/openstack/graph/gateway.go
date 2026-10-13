@@ -24,10 +24,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 // EnsureGateway creates or discovers the load balancer, optional Floating IP,

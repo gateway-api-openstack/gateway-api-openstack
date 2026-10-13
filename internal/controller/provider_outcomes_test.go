@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 func TestProviderProgressRequeueAfter(t *testing.T) {

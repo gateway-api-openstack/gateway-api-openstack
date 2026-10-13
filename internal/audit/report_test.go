@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 func TestBuildReport(t *testing.T) {

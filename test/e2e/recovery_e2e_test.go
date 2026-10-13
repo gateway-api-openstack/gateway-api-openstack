@@ -40,9 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/auditexec"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/auditexec"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
 type leaderProcessState struct {

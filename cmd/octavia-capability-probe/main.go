@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/probe"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/probe"
 )
 
 func main() {

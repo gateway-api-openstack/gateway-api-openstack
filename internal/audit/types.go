@@ -25,7 +25,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 // Scope limits one inventory to a controller installation and authenticated

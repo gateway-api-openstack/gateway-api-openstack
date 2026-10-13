@@ -29,10 +29,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/clients"
-	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/clients"
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 )
 
 func TestScanReturnsMatchedGraphUsingReadOnlyPaginatedQueries(t *testing.T) {

@@ -22,8 +22,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 const (

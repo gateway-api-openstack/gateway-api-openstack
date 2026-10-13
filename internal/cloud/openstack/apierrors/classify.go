@@ -29,9 +29,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2"
 	gopheropenstack "github.com/gophercloud/gophercloud/v2/openstack"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 const openStackInvalidTokenStatus = 498

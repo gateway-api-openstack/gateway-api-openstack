@@ -44,9 +44,9 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/cloudauth"
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
 const (

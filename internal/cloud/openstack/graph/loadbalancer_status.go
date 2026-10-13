@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 type loadBalancerPhase uint8

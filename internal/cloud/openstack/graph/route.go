@@ -24,8 +24,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 type desiredPolicy struct {

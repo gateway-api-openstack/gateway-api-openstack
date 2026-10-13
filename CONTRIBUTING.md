@@ -38,6 +38,15 @@ current maintainer group to pick them up. Ask on the issue if that is not true.
 
 ## Set up a development environment
 
+Clone the canonical project repository:
+
+```sh
+git clone https://github.com/gateway-api-openstack/gateway-api-openstack.git
+cd gateway-api-openstack
+```
+
+Use `github.com/gateway-api-openstack/gateway-api-openstack` for imports within this module.
+
 Use the Go version in `go.mod`. Unit tests use fake Kubernetes clients or fake
 OpenStack HTTP servers and do not need cloud credentials.
 

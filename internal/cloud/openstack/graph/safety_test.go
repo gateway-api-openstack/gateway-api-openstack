@@ -25,8 +25,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {

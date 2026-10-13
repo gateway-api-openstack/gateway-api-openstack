@@ -26,7 +26,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
 
 func nodePortForBackend(service *corev1.Service, port int32) (*corev1.ServicePort, error) {

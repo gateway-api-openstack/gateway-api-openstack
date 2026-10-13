@@ -14,36 +14,32 @@ This does not reduce the importance of reporting vulnerabilities responsibly.
 
 Do not put vulnerability details in a public GitHub issue.
 
-Use GitHub's private vulnerability reporting feature only when its report
-button is visible. The repository does not currently have that feature enabled
-and does not publish another monitored private security address. Until a
-private channel is available, open an issue that says only that private
-reporting is unavailable. Do not include the vulnerability, affected
-resources, or reproduction details. A maintainer must establish a private
-channel before asking for those details.
+Check the [organization repository's security page](https://github.com/gateway-api-openstack/gateway-api-openstack/security) for the private vulnerability reporting button.
+Use that private channel when it is available.
+The project does not publish another monitored private security address.
+If private reporting is unavailable, open an issue that says only that a private reporting channel is needed.
+Do not include the vulnerability, affected resources, or reproduction details.
+A maintainer must establish a private channel before asking for those details.
 
-The repository owner must verify that private vulnerability reporting is
-enabled before publishing any release. A release issue cannot be completed
-until that check is recorded.
+The repository owner must verify that private vulnerability reporting is enabled before publishing a release.
+Record that check in the release issue.
 
-Include:
+Include the following information in a private report:
 
 - affected version or commit
 - impact and threat model
 - reproduction details
-- whether credentials, OpenStack project isolation, resource deletion, or traffic
-  exposure is involved
+- whether credentials, OpenStack project isolation, resource deletion, or traffic exposure is involved
 - any suggested mitigation
 - your preferred contact details and disclosure timeline
 
-Never send real OpenStack credentials or customer data. Use redacted
-configuration and a minimal reproduction.
+Never send real OpenStack credentials or customer data.
+Use redacted configuration and a minimal reproduction.
 
 ## Response
 
-Maintainers will acknowledge private reports as soon as practical, assess the
-affected versions, and coordinate a fix and disclosure. The project will
-publish formal response times before its first production release.
+Maintainers acknowledge private reports as soon as practical, assess affected versions, and coordinate a fix and disclosure.
+The project will publish formal response times before its first production release.
 
 ## Scope
 

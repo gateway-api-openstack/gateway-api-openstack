@@ -35,10 +35,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
-	gatewaycontroller "github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	gatewaycontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
 func routeBindingFinalizers(cfg Config, gatewayNamespace, gatewayName, gatewayUID string) []string {

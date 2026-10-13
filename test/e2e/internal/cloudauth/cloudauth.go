@@ -28,7 +28,7 @@ import (
 	openstackclouds "github.com/gophercloud/gophercloud/v2/openstack/config/clouds"
 	"sigs.k8s.io/yaml"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 )
 
 // ProjectIDResolver authenticates one clouds.yaml file and returns the project

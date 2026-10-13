@@ -22,7 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 )
 
 func TestConfigureOpenStackRequestMetrics(t *testing.T) {

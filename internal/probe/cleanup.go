@@ -23,13 +23,13 @@ import (
 	"os"
 	"time"
 
+	cloudopenstack "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/monitors"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
-	cloudopenstack "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
 )
 
 // Cleanup resumes deletion using a state file. It refuses to delete any

@@ -21,10 +21,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/monitors"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 )
 
 func TestBuildRouteEnsurePlanDisablesPolicyBeforeChangingRules(t *testing.T) {

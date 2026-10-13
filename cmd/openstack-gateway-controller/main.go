@@ -41,13 +41,13 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack"
-	openstackobservability "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/observability"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/graph"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/httproute"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
+	openstackobservability "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/observability"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gatewayclass"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/httproute"
 )
 
 // version is overridden at build time with -X main.version=<release>.

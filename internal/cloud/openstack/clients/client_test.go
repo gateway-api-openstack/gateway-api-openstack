@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
 	"golang.org/x/time/rate"
 )
 

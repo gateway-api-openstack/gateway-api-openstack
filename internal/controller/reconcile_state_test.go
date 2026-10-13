@@ -25,9 +25,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gateway"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/gatewayclass"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/controller/httproute"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gatewayclass"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/httproute"
 )
 
 func TestReconcilersKeepRequestStateLocal(t *testing.T) {

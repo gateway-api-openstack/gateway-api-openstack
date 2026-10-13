@@ -31,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/jihyun-huh/gateway-api-openstack/test/e2e/internal/runconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestObserveControllerReadyRequiresDeploymentPodsAndCurrentLease(t *testing.T) {

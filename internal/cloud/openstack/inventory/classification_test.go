@@ -20,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jihyun-huh/gateway-api-openstack/internal/audit"
-	"github.com/jihyun-huh/gateway-api-openstack/internal/cloud"
-	openstackidentity "github.com/jihyun-huh/gateway-api-openstack/internal/cloud/openstack/identity"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 )
 
 const testIdentityPrefix = "gateway-api-openstack."

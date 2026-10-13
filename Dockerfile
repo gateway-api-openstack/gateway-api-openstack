@@ -20,6 +20,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
+LABEL org.opencontainers.image.source="https://github.com/gateway-api-openstack/gateway-api-openstack"
+
 COPY --from=builder /out/openstack-gateway-controller /openstack-gateway-controller
 
 USER 65532:65532
