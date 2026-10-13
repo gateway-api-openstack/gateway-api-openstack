@@ -26,30 +26,20 @@ import (
 
 func TestSettingsEnvironmentReturnsCompleteIndependentMap(t *testing.T) {
 	settings := Settings{
-		ControllerName:    "e2e.example.test/gao-e2e-run-1234",
-		ClusterID:         "gao-e2e-run-1234",
-		VIPSubnetID:       "vip-subnet",
-		ExternalNetworkID: "",
-		MemberSubnetID:    "member-subnet",
-		Cloud:             "openstack-e2e",
-		Region:            "RegionOne",
+		ControllerName: "e2e.example.test/gao-e2e-run-1234",
+		ClusterID:      "gao-e2e-run-1234",
+		Cloud:          "openstack-e2e",
+		Region:         "RegionOne",
 	}
 	want := map[string]string{
-		EnvControllerName:    settings.ControllerName,
-		EnvClusterID:         settings.ClusterID,
-		EnvOctaviaProvider:   "amphora",
-		EnvVIPSubnetID:       settings.VIPSubnetID,
-		EnvExternalNetworkID: "",
-		EnvMemberSubnetID:    settings.MemberSubnetID,
-		EnvMemberMode:        "NodePort",
-		EnvNodeAddressType:   "InternalIP",
-		EnvHealthPath:        "/",
-		EnvResyncInterval:    "10m",
-		EnvAPIQPS:            "10",
-		EnvAPIBurst:          "20",
-		EnvCloudsYAML:        "/etc/openstack/clouds.yaml",
-		EnvCloud:             settings.Cloud,
-		EnvRegion:            settings.Region,
+		EnvControllerName: settings.ControllerName,
+		EnvClusterID:      settings.ClusterID,
+		EnvResyncInterval: "10m",
+		EnvAPIQPS:         "10",
+		EnvAPIBurst:       "20",
+		EnvCloudsYAML:     "/etc/openstack/clouds.yaml",
+		EnvCloud:          settings.Cloud,
+		EnvRegion:         settings.Region,
 	}
 	got := settings.Environment()
 	if len(got) != len(want) {

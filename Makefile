@@ -64,7 +64,7 @@ test-envtest: ## Run controller tests against a real API server and etcd.
 	$(GO) test -tags=envtest -count=1 -run '^TestControllerEnvtest$$' -timeout=5m ./internal/controller
 
 .PHONY: test-e2e-compile
-test-e2e-compile: ## Compile the opt-in Phase 2 E2E suite without running it.
+test-e2e-compile: ## Compile the opt-in OpenStack E2E suite without running it.
 	$(GO) test -tags=e2e -run '^$$' ./test/e2e/...
 
 .PHONY: test-e2e-unit

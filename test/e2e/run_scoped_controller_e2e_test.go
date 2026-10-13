@@ -27,14 +27,16 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
-func (s *phase2Suite) verifyRunScopedController(ctx context.Context, deployment *appsv1.Deployment) error {
+func (s *openStackSuite) verifyRunScopedController(ctx context.Context, deployment *appsv1.Deployment) error {
 	var namespace corev1.Namespace
 	if err := s.client.Get(ctx, client.ObjectKey{Name: s.config.ControllerNamespace}, &namespace); err != nil {
 		return fmt.Errorf("read run-scoped controller Namespace: %w", err)
@@ -44,6 +46,9 @@ func (s *phase2Suite) verifyRunScopedController(ctx context.Context, deployment 
 	}
 
 	if err := s.rejectControllerIdentityCollision(ctx); err != nil {
+		return err
+	}
+	if err := s.verifyRunScopedClassConfig(ctx); err != nil {
 		return err
 	}
 	container, found := findContainer(deployment.Spec.Template.Spec.Containers, s.config.ControllerContainer)
@@ -69,7 +74,23 @@ func (s *phase2Suite) verifyRunScopedController(ctx context.Context, deployment 
 	})
 }
 
-func (s *phase2Suite) rejectControllerIdentityCollision(ctx context.Context) error {
+func (s *openStackSuite) verifyRunScopedClassConfig(ctx context.Context) error {
+	var parameters configv1alpha1.OpenStackGatewayClassConfig
+	if err := s.client.Get(ctx, client.ObjectKey{Name: s.config.GatewayClassName}, &parameters); err != nil {
+		return fmt.Errorf("read run-scoped class configuration: %w", err)
+	}
+	wanted := controllercontract.TopologySettings{
+		VIPSubnetID:       s.config.Project.ExpectedVIPSubnetID,
+		MemberSubnetID:    s.config.Project.ExpectedMemberSubnetID,
+		ExternalNetworkID: s.config.Project.ExpectedExternalNetworkID,
+	}.ClassConfig(s.config.GatewayClassName, s.config.RunID)
+	if parameters.UID == "" || parameters.Annotations[runAnnotation] != s.config.RunID || !parameters.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(parameters.Spec, wanted.Spec) {
+		return fmt.Errorf("class configuration does not match the approved run identity and topology")
+	}
+	return nil
+}
+
+func (s *openStackSuite) rejectControllerIdentityCollision(ctx context.Context) error {
 	var classes gatewayv1.GatewayClassList
 	if err := s.client.List(ctx, &classes); err != nil {
 		return fmt.Errorf("list GatewayClasses before E2E execution: %w", err)
@@ -81,6 +102,10 @@ func (s *phase2Suite) rejectControllerIdentityCollision(ctx context.Context) err
 		}
 		if s.createdClass && class.Name == s.gatewayClassName && class.UID == s.gatewayClassUID &&
 			class.Annotations[runAnnotation] == s.config.RunID {
+			ref := class.Spec.ParametersRef
+			if ref == nil || string(ref.Group) != configv1alpha1.GroupName || string(ref.Kind) != configv1alpha1.GatewayClassConfigKind || ref.Name != s.config.GatewayClassName || ref.Namespace != nil {
+				return fmt.Errorf("the run-scoped GatewayClass no longer references its approved class configuration")
+			}
 			continue
 		}
 		return fmt.Errorf("the run-scoped controller identity is already selected by a GatewayClass")
@@ -88,7 +113,7 @@ func (s *phase2Suite) rejectControllerIdentityCollision(ctx context.Context) err
 	return nil
 }
 
-func (s *phase2Suite) runScopedControllerConfigMap(ctx context.Context, container *corev1.Container) (*corev1.ConfigMap, error) {
+func (s *openStackSuite) runScopedControllerConfigMap(ctx context.Context, container *corev1.Container) (*corev1.ConfigMap, error) {
 	name, err := controllerConfigMapName(container, s.config.Audit.Microversion)
 	if err != nil {
 		return nil, err
@@ -144,13 +169,10 @@ func validateRunScopedControllerConfigMap(configMap *corev1.ConfigMap, config e2
 		return fmt.Errorf("controller ConfigMap must be immutable and carry the exact run annotation")
 	}
 	want := controllercontract.Settings{
-		ControllerName:    config.ControllerName,
-		ClusterID:         config.Audit.ClusterID,
-		VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
-		ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
-		MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
-		Cloud:             config.Audit.Cloud,
-		Region:            config.Audit.Region,
+		ControllerName: config.ControllerName,
+		ClusterID:      config.Audit.ClusterID,
+		Cloud:          config.Audit.Cloud,
+		Region:         config.Audit.Region,
 	}.Environment()
 	if !maps.Equal(configMap.Data, want) {
 		return fmt.Errorf("controller ConfigMap does not match the approved E2E settings")
@@ -177,7 +199,7 @@ func validateControllerSourceVersions(deployment *appsv1.Deployment, configMap *
 	return nil
 }
 
-func (s *phase2Suite) runScopedControllerCloudsSecret(
+func (s *openStackSuite) runScopedControllerCloudsSecret(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	container *corev1.Container,
@@ -259,11 +281,11 @@ func mountsOnlyCloudsYAML(source *corev1.SecretVolumeSource) bool {
 		filepath.Clean(source.Items[0].Path) == "clouds.yaml"
 }
 
-func (s *phase2Suite) verifyAuthenticatedAuditProject(ctx context.Context) error {
+func (s *openStackSuite) verifyAuthenticatedAuditProject(ctx context.Context) error {
 	return s.withAuthenticatedAuditCloudsYAML(ctx, func(string) error { return nil })
 }
 
-func (s *phase2Suite) withAuthenticatedAuditCloudsYAML(ctx context.Context, use func(path string) error) error {
+func (s *openStackSuite) withAuthenticatedAuditCloudsYAML(ctx context.Context, use func(path string) error) error {
 	contents, err := os.ReadFile(s.config.Audit.CloudsYAML)
 	if err != nil {
 		return fmt.Errorf("read audit clouds.yaml: %w", err)

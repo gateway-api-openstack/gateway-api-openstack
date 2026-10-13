@@ -23,8 +23,7 @@ assignees: ""
 - [ ] CI is green for the exact target commit.
 - [ ] `make verify`, `make build`, `make release-check`, and
       `make release-snapshot` pass from a clean checkout.
-- [ ] The snapshot contains Linux `amd64` and `arm64` archives with all three
-      binaries, `LICENSE`, `README.md`, and `SECURITY.md`.
+- [ ] The snapshot contains Linux `amd64` and `arm64` archives with all three binaries, `LICENSE`, `README.md`, `SECURITY.md`, and the version-matched `config/` and `examples/` YAML files.
 - [ ] `checksums.txt` verifies every generated archive.
 - [ ] README, the getting started guide, ROADMAP, support and security policies,
       governance, and Amphora compatibility evidence are current for this
@@ -42,7 +41,7 @@ assignees: ""
       public release.
 - [ ] An annotated or signed SemVer tag with a `v` prefix was created at the
       reviewed commit and pushed without moving or reusing an existing tag.
-- [ ] The Release workflow succeeded and created a draft GitHub release.
+- [ ] The Release workflow succeeded in `gateway-api-openstack/gateway-api-openstack` and created a draft GitHub release.
 - [ ] The draft contains one binary archive for each supported architecture,
       one source archive, and `checksums.txt`, with names and versions matching
       the tag.

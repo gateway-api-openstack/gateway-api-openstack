@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
@@ -104,7 +106,6 @@ func assertControllerEnvironment(t *testing.T, config resolvedConfig, actual map
 	t.Helper()
 	wantEnvironment := controllercontract.Settings{
 		ControllerName: config.ControllerName, ClusterID: config.Audit.ClusterID,
-		VIPSubnetID: config.Project.ExpectedVIPSubnetID, MemberSubnetID: config.Project.ExpectedMemberSubnetID,
 		Cloud: config.Audit.Cloud, Region: config.Audit.Region,
 	}.Environment()
 	for name, want := range wantEnvironment {
@@ -251,7 +252,7 @@ func TestPreflightKubernetesRejectsRunIdentityCollisions(t *testing.T) {
 	}
 	for _, test := range preflightCollisionCases(config) {
 		t.Run(test.name, func(t *testing.T) {
-			kubeClient := fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(test.objects...).Build()
+			kubeClient := fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(append(test.objects, installedClassConfigCRD(t))...).Build()
 			err := preflightKubernetes(context.Background(), kubeClient, config)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("preflightKubernetes() error = %v, wantErr %t", err, test.wantErr)
@@ -269,6 +270,11 @@ type preflightCollisionCase struct {
 func preflightCollisionCases(config resolvedConfig) []preflightCollisionCase {
 	return []preflightCollisionCase{
 		{name: "empty cluster"},
+		{
+			name:    "class configuration exists",
+			objects: []client.Object{&configv1alpha1.OpenStackGatewayClassConfig{ObjectMeta: metav1.ObjectMeta{Name: config.GatewayClassName}}},
+			wantErr: true,
+		},
 		{
 			name: "workload Namespace exists",
 			objects: []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
@@ -475,7 +481,7 @@ func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T)
 	if err != nil {
 		t.Fatalf("installController() error = %v", err)
 	}
-	wantCreates := []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "ConfigMap", "Secret", "Deployment"}
+	wantCreates := []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "ConfigMap", "Secret", "OpenStackGatewayClassConfig", "Deployment"}
 	if strings.Join(kubeClient.creates, ",") != strings.Join(wantCreates, ",") || !installed.deploymentAttempted {
 		t.Fatalf("create order = %#v, deploymentAttempted = %t", kubeClient.creates, installed.deploymentAttempted)
 	}
@@ -490,7 +496,7 @@ func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T)
 	if err := installed.remove(context.Background(), kubeClient); err != nil {
 		t.Fatalf("installation.remove() error = %v", err)
 	}
-	wantDeletes := []string{"Deployment", "Secret", "ConfigMap", "ClusterRoleBinding", "ClusterRole", "ServiceAccount", "Namespace"}
+	wantDeletes := []string{"Deployment", "OpenStackGatewayClassConfig", "Secret", "ConfigMap", "ClusterRoleBinding", "ClusterRole", "ServiceAccount", "Namespace"}
 	if strings.Join(kubeClient.deletes, ",") != strings.Join(wantDeletes, ",") {
 		t.Fatalf("delete order = %#v", kubeClient.deletes)
 	}
@@ -594,7 +600,7 @@ func TestInstallationCleanupRefusesChangedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, configv1alpha1.AddToScheme} {
 		if err := install(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -633,7 +639,7 @@ func TestInstallationCleanupValidatesLaterObjectBeforeAnyDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, configv1alpha1.AddToScheme} {
 		if err := install(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -772,7 +778,7 @@ func preparedRunFixture(t *testing.T, mode runconfig.ProjectMode) (resolvedConfi
 	if err := os.WriteFile(auditBinary, []byte("synthetic executable"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).Build()}
+	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(installedClassConfigCRD(t)).Build()}
 	return config, kubeClient, preparedRunOptions(root, auditBinary, config, kubeClient)
 }
 
@@ -820,6 +826,8 @@ func runnerTestScheme(t *testing.T) *runtime.Scheme {
 		corev1.AddToScheme,
 		appsv1.AddToScheme,
 		rbacv1.AddToScheme,
+		apiextensionsv1.AddToScheme,
+		configv1alpha1.AddToScheme,
 		gatewayv1.Install,
 	} {
 		if err := install(scheme); err != nil {
@@ -976,7 +984,7 @@ func controllerInstallFixture(t *testing.T) (resolvedConfig, controllerObjects, 
 		t.Fatal(err)
 	}
 	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme} {
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, configv1alpha1.AddToScheme} {
 		if err := install(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -994,6 +1002,8 @@ func (c *recordingClient) Delete(ctx context.Context, object client.Object, opti
 
 func objectKind(object client.Object) string {
 	switch object.(type) {
+	case *configv1alpha1.OpenStackGatewayClassConfig:
+		return "OpenStackGatewayClassConfig"
 	case *corev1.Namespace:
 		return "Namespace"
 	case *corev1.ServiceAccount:
@@ -1015,4 +1025,14 @@ func objectKind(object client.Object) string {
 
 func recordingObjectKey(object client.Object) string {
 	return objectKind(object) + "/" + object.GetNamespace() + "/" + object.GetName()
+}
+
+func installedClassConfigCRD(t *testing.T) *apiextensionsv1.CustomResourceDefinition {
+	t.Helper()
+	definition, err := loadBaseObject[apiextensionsv1.CustomResourceDefinition](testRepositoryRoot(t), "config/crd/gateway-api-openstack.github.io_openstackgatewayclassconfigs.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}
+	return definition
 }

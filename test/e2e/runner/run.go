@@ -31,6 +31,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,6 +40,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
@@ -225,6 +228,8 @@ func newKubernetesClient(config resolvedConfig) (client.Client, error) {
 		appsv1.AddToScheme,
 		rbacv1.AddToScheme,
 		coordinationv1.AddToScheme,
+		apiextensionsv1.AddToScheme,
+		configv1alpha1.AddToScheme,
 		gatewayv1.Install,
 	} {
 		if err := install(scheme); err != nil {
@@ -239,6 +244,9 @@ func newKubernetesClient(config resolvedConfig) (client.Client, error) {
 }
 
 func preflightKubernetes(ctx context.Context, kubeClient client.Client, config resolvedConfig) error {
+	if err := controllercontract.RequireClassConfigCRD(ctx, kubeClient); err != nil {
+		return err
+	}
 	if err := requireRunNamespacesAbsent(ctx, kubeClient, config); err != nil {
 		return err
 	}
@@ -282,6 +290,12 @@ func requireRunRBACAbsent(ctx context.Context, kubeClient client.Client, config 
 }
 
 func requireRunGatewayClassIdentityAbsent(ctx context.Context, kubeClient client.Client, config resolvedConfig) error {
+	var parameters configv1alpha1.OpenStackGatewayClassConfig
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: config.GatewayClassName}, &parameters); err == nil {
+		return fmt.Errorf("preflight found a class configuration collision for the run identity")
+	} else if client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("read class configuration during preflight: %w", err)
+	}
 	var classes gatewayv1.GatewayClassList
 	if err := kubeClient.List(ctx, &classes); err != nil {
 		return fmt.Errorf("list GatewayClasses during preflight: %w", err)
@@ -427,7 +441,7 @@ func runHarness(ctx context.Context, config resolvedConfig, options runOptions) 
 		"test",
 		"-tags=e2e",
 		"-count=1",
-		"-run=^TestPhase2E2E$",
+		"-run=^TestOpenStackE2E$",
 		"-timeout=90m",
 		"./test/e2e",
 	)

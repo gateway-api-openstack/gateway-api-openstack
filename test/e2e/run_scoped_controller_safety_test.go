@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
@@ -64,7 +65,8 @@ func TestVerifyRunScopedControllerAllowsHarnessGatewayClassDuringRecovery(t *tes
 			UID:         types.UID("run-gateway-class-uid"),
 			Annotations: map[string]string{runAnnotation: suite.config.RunID},
 		},
-		Spec: gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController(suite.config.ControllerName)},
+		Spec: gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController(suite.config.ControllerName),
+			ParametersRef: &gatewayv1.ParametersReference{Group: gatewayv1.Group(configv1alpha1.GroupName), Kind: gatewayv1.Kind(configv1alpha1.GatewayClassConfigKind), Name: suite.config.GatewayClassName}},
 	}
 	if err := suite.client.Create(context.Background(), class); err != nil {
 		t.Fatal(err)
@@ -93,7 +95,7 @@ func TestVerifyRunScopedControllerRejectsUnsafeConfiguration(t *testing.T) {
 
 type unsafeControllerMutation struct {
 	name   string
-	mutate func(*phase2Suite, *appsv1.Deployment)
+	mutate func(*openStackSuite, *appsv1.Deployment)
 }
 
 func unsafeControllerMutations(t *testing.T) []unsafeControllerMutation {
@@ -107,34 +109,52 @@ func unsafeControllerMutations(t *testing.T) []unsafeControllerMutation {
 		{name: "ConfigMap contains an unexpected setting", mutate: setControllerConfigMapValue(t, "GATEWAY_OPENSTACK_UNREVIEWED", "unexpected")},
 		{name: "controller authenticates to another project", mutate: resolveAnotherControllerProject},
 		{name: "controller identity already selected", mutate: createControllerIdentityCollision(t)},
+		{name: "class topology changed", mutate: changeClassConfig(t, func(config *configv1alpha1.OpenStackGatewayClassConfig) { config.Spec.VIPSubnet.ID = "another-subnet" })},
+		{name: "class configuration belongs to another run", mutate: changeClassConfig(t, func(config *configv1alpha1.OpenStackGatewayClassConfig) {
+			config.Annotations[runAnnotation] = "another-run"
+		})},
 	}
 }
 
-func addProtectedControllerArgument(_ *phase2Suite, deployment *appsv1.Deployment) {
+func changeClassConfig(t *testing.T, change func(*configv1alpha1.OpenStackGatewayClassConfig)) func(*openStackSuite, *appsv1.Deployment) {
+	t.Helper()
+	return func(suite *openStackSuite, _ *appsv1.Deployment) {
+		var parameters configv1alpha1.OpenStackGatewayClassConfig
+		if err := suite.client.Get(context.Background(), types.NamespacedName{Name: suite.config.GatewayClassName}, &parameters); err != nil {
+			t.Fatal(err)
+		}
+		change(&parameters)
+		if err := suite.client.Update(context.Background(), &parameters); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func addProtectedControllerArgument(_ *openStackSuite, deployment *appsv1.Deployment) {
 	deployment.Spec.Template.Spec.Containers[0].Args = append(
 		deployment.Spec.Template.Spec.Containers[0].Args,
 		"--vip-subnet-id=another-subnet",
 	)
 }
 
-func addDirectControllerEnvironment(_ *phase2Suite, deployment *appsv1.Deployment) {
+func addDirectControllerEnvironment(_ *openStackSuite, deployment *appsv1.Deployment) {
 	deployment.Spec.Template.Spec.Containers[0].Env = append(
 		deployment.Spec.Template.Spec.Containers[0].Env,
 		corev1.EnvVar{Name: controllercontract.EnvClusterID, Value: "another-cluster"},
 	)
 }
 
-func overrideControllerCommand(_ *phase2Suite, deployment *appsv1.Deployment) {
+func overrideControllerCommand(_ *openStackSuite, deployment *appsv1.Deployment) {
 	deployment.Spec.Template.Spec.Containers[0].Command = []string{"/bin/sh", "-c"}
 }
 
-func removeControllerConfigSource(_ *phase2Suite, deployment *appsv1.Deployment) {
+func removeControllerConfigSource(_ *openStackSuite, deployment *appsv1.Deployment) {
 	delete(deployment.Spec.Template.Annotations, controllercontract.ConfigSourceAnnotation)
 }
 
-func setControllerConfigMapValue(t *testing.T, key, value string) func(*phase2Suite, *appsv1.Deployment) {
+func setControllerConfigMapValue(t *testing.T, key, value string) func(*openStackSuite, *appsv1.Deployment) {
 	t.Helper()
-	return func(suite *phase2Suite, _ *appsv1.Deployment) {
+	return func(suite *openStackSuite, _ *appsv1.Deployment) {
 		var configMap corev1.ConfigMap
 		name := types.NamespacedName{Namespace: suite.config.ControllerNamespace, Name: "controller-config"}
 		if err := suite.client.Get(context.Background(), name, &configMap); err != nil {
@@ -147,15 +167,15 @@ func setControllerConfigMapValue(t *testing.T, key, value string) func(*phase2Su
 	}
 }
 
-func resolveAnotherControllerProject(suite *phase2Suite, _ *appsv1.Deployment) {
+func resolveAnotherControllerProject(suite *openStackSuite, _ *appsv1.Deployment) {
 	suite.projectIDResolver = func(context.Context, string, string, string, string) (string, error) {
 		return "different-project", nil
 	}
 }
 
-func createControllerIdentityCollision(t *testing.T) func(*phase2Suite, *appsv1.Deployment) {
+func createControllerIdentityCollision(t *testing.T) func(*openStackSuite, *appsv1.Deployment) {
 	t.Helper()
-	return func(suite *phase2Suite, _ *appsv1.Deployment) {
+	return func(suite *openStackSuite, _ *appsv1.Deployment) {
 		class := &gatewayv1.GatewayClass{
 			ObjectMeta: metav1.ObjectMeta{Name: "existing-class"},
 			Spec:       gatewayv1.GatewayClassSpec{ControllerName: gatewayv1.GatewayController(suite.config.ControllerName)},
@@ -185,7 +205,7 @@ func TestVerifyAuthenticatedAuditProjectAppliesToBothModes(t *testing.T) {
 	for _, mode := range []projectMode{projectModeDedicated, projectModeShared} {
 		t.Run(string(mode), func(t *testing.T) {
 			config := runScopedControllerTestConfig(t, mode)
-			suite := phase2Suite{
+			suite := openStackSuite{
 				config: config,
 				projectIDResolver: func(context.Context, string, string, string, string) (string, error) {
 					return config.Project.ExpectedProjectID, nil
@@ -200,7 +220,7 @@ func TestVerifyAuthenticatedAuditProjectAppliesToBothModes(t *testing.T) {
 
 func TestVerifyAuthenticatedAuditProjectRejectsMismatchWithoutIDs(t *testing.T) {
 	config := runScopedControllerTestConfig(t, projectModeDedicated)
-	suite := phase2Suite{
+	suite := openStackSuite{
 		config: config,
 		projectIDResolver: func(context.Context, string, string, string, string) (string, error) {
 			return "different-project", nil
@@ -223,7 +243,7 @@ func TestWithAuthenticatedAuditCloudsYAMLUsesExactPrivateCopy(t *testing.T) {
 	}
 	var authenticatedPath string
 	var callbackPath string
-	suite := phase2Suite{
+	suite := openStackSuite{
 		config:            config,
 		projectIDResolver: mutatingExactAuditResolver(t, config, want, &authenticatedPath),
 	}
@@ -281,17 +301,18 @@ func TestMountsOnlyCloudsYAMLRejectsAdditionalFiles(t *testing.T) {
 	}
 }
 
-func newRunScopedControllerFixture(t *testing.T, mode projectMode) (*phase2Suite, *appsv1.Deployment) {
+func newRunScopedControllerFixture(t *testing.T, mode projectMode) (*openStackSuite, *appsv1.Deployment) {
 	t.Helper()
 	config := runScopedControllerTestConfig(t, mode)
 	sources := newRunScopedControllerSources(config)
 	deployment := newRunScopedControllerDeployment(t, config, sources)
-	suite := &phase2Suite{
+	suite := &openStackSuite{
 		config: config,
 		client: fake.NewClientBuilder().WithScheme(runScopedControllerScheme(t)).WithObjects(
 			sources.namespace,
 			sources.configMap,
 			sources.secret,
+			sources.classConfig,
 		).Build(),
 		projectIDResolver: func(context.Context, string, string, string, string) (string, error) {
 			return testProjectID, nil
@@ -301,9 +322,10 @@ func newRunScopedControllerFixture(t *testing.T, mode projectMode) (*phase2Suite
 }
 
 type runScopedControllerSources struct {
-	namespace *corev1.Namespace
-	configMap *corev1.ConfigMap
-	secret    *corev1.Secret
+	classConfig *configv1alpha1.OpenStackGatewayClassConfig
+	namespace   *corev1.Namespace
+	configMap   *corev1.ConfigMap
+	secret      *corev1.Secret
 }
 
 func newRunScopedControllerSources(config e2eConfig) runScopedControllerSources {
@@ -313,13 +335,10 @@ func newRunScopedControllerSources(config e2eConfig) runScopedControllerSources 
 		Annotations: map[string]string{runAnnotation: config.RunID},
 	}}
 	settings := controllercontract.Settings{
-		ControllerName:    config.ControllerName,
-		ClusterID:         config.Audit.ClusterID,
-		VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
-		ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
-		MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
-		Cloud:             config.Audit.Cloud,
-		Region:            config.Audit.Region,
+		ControllerName: config.ControllerName,
+		ClusterID:      config.Audit.ClusterID,
+		Cloud:          config.Audit.Cloud,
+		Region:         config.Audit.Region,
 	}
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -337,7 +356,9 @@ func newRunScopedControllerSources(config e2eConfig) runScopedControllerSources 
 		Immutable: &immutable,
 		Data:      map[string][]byte{"clouds.yaml": testCloudsYAML(testAppSecret)},
 	}
-	return runScopedControllerSources{namespace: controllerNamespace, configMap: configMap, secret: secret}
+	parameters := controllercontract.TopologySettings{VIPSubnetID: config.Project.ExpectedVIPSubnetID, MemberSubnetID: config.Project.ExpectedMemberSubnetID, ExternalNetworkID: config.Project.ExpectedExternalNetworkID}.ClassConfig(config.GatewayClassName, config.RunID)
+	parameters.UID = "class-config-uid"
+	return runScopedControllerSources{namespace: controllerNamespace, configMap: configMap, secret: secret, classConfig: parameters}
 }
 
 func newRunScopedControllerDeployment(
@@ -398,7 +419,7 @@ func requireControllerSourceVersion(t *testing.T, uid types.UID, resourceVersion
 func runScopedControllerScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, gatewayv1.Install} {
+	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, gatewayv1.Install, configv1alpha1.AddToScheme} {
 		if err := install(scheme); err != nil {
 			t.Fatal(err)
 		}

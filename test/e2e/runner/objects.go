@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 )
 
@@ -52,6 +53,7 @@ type controllerObjects struct {
 	clusterRoleBinding *rbacv1.ClusterRoleBinding
 	configMap          *corev1.ConfigMap
 	secret             *corev1.Secret
+	classConfig        *configv1alpha1.OpenStackGatewayClassConfig
 	deployment         *appsv1.Deployment
 }
 
@@ -132,7 +134,12 @@ func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML 
 		clusterRoleBinding: clusterRoleBinding,
 		configMap:          configMap,
 		secret:             secret,
-		deployment:         deployment,
+		classConfig: controllercontract.TopologySettings{
+			VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
+			MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
+			ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
+		}.ClassConfig(config.GatewayClassName, config.RunID),
+		deployment: deployment,
 	}, nil
 }
 
@@ -177,13 +184,10 @@ func buildConfigurationObjects(
 	configMap.Immutable = &immutable
 	setRunAnnotation(configMap, config.RunID)
 	settings := controllercontract.Settings{
-		ControllerName:    config.ControllerName,
-		ClusterID:         config.Audit.ClusterID,
-		VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
-		ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
-		MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
-		Cloud:             config.Audit.Cloud,
-		Region:            config.Audit.Region,
+		ControllerName: config.ControllerName,
+		ClusterID:      config.Audit.ClusterID,
+		Cloud:          config.Audit.Cloud,
+		Region:         config.Audit.Region,
 	}
 	configMap.Data = settings.Environment()
 
@@ -284,6 +288,7 @@ func installController(ctx context.Context, kubeClient client.Client, objects co
 		objects.clusterRoleBinding,
 		objects.configMap,
 		objects.secret,
+		objects.classConfig,
 	} {
 		if err := result.create(ctx, kubeClient, object); err != nil {
 			return result, fmt.Errorf("create run-scoped controller object: %w", err)

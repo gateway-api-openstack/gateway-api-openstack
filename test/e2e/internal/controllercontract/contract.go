@@ -24,15 +24,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 )
 
 const (
 	// RunAnnotation binds a Kubernetes object to one E2E run.
-	RunAnnotation = "e2e.gateway-api-openstack.io/run-id"
+	RunAnnotation = "e2e." + configv1alpha1.GroupName + "/run-id"
 	// ConfigSourceAnnotation binds a controller Pod template to an immutable ConfigMap API version.
-	ConfigSourceAnnotation = "e2e.gateway-api-openstack.io/controller-config-source"
+	ConfigSourceAnnotation = "e2e." + configv1alpha1.GroupName + "/controller-config-source"
 	// CloudsSourceAnnotation binds a controller Pod template to an immutable Secret API version.
-	CloudsSourceAnnotation = "e2e.gateway-api-openstack.io/controller-clouds-source"
+	CloudsSourceAnnotation = "e2e." + configv1alpha1.GroupName + "/controller-clouds-source"
 
 	// CloudsMountPath is the exact directory used for the controller clouds.yaml Secret.
 	CloudsMountPath = "/etc/openstack"
@@ -74,14 +76,10 @@ const (
 )
 
 const (
-	controllerProvider = "amphora"
-	memberMode         = "NodePort"
-	nodeAddressType    = "InternalIP"
-	healthPath         = "/"
-	resyncInterval     = "10m"
-	apiQPS             = "10"
-	apiBurst           = "20"
-	cloudsYAMLPath     = CloudsMountPath + "/clouds.yaml"
+	resyncInterval = "10m"
+	apiQPS         = "10"
+	apiBurst       = "20"
+	cloudsYAMLPath = CloudsMountPath + "/clouds.yaml"
 )
 
 var protectedArgumentNames = map[string]struct{}{
@@ -126,34 +124,24 @@ var protectedEnvironmentNames = map[string]struct{}{
 // Settings contains the values rendered into the controller ConfigMap for one
 // E2E run.
 type Settings struct {
-	ControllerName    string
-	ClusterID         string
-	VIPSubnetID       string
-	ExternalNetworkID string
-	MemberSubnetID    string
-	Cloud             string
-	Region            string
+	ControllerName string
+	ClusterID      string
+	Cloud          string
+	Region         string
 }
 
 // Environment returns a new map containing the complete protected controller
 // environment for the settings.
 func (s Settings) Environment() map[string]string {
 	return map[string]string{
-		EnvControllerName:    s.ControllerName,
-		EnvClusterID:         s.ClusterID,
-		EnvOctaviaProvider:   controllerProvider,
-		EnvVIPSubnetID:       s.VIPSubnetID,
-		EnvExternalNetworkID: s.ExternalNetworkID,
-		EnvMemberSubnetID:    s.MemberSubnetID,
-		EnvMemberMode:        memberMode,
-		EnvNodeAddressType:   nodeAddressType,
-		EnvHealthPath:        healthPath,
-		EnvResyncInterval:    resyncInterval,
-		EnvAPIQPS:            apiQPS,
-		EnvAPIBurst:          apiBurst,
-		EnvCloudsYAML:        cloudsYAMLPath,
-		EnvCloud:             s.Cloud,
-		EnvRegion:            s.Region,
+		EnvControllerName: s.ControllerName,
+		EnvClusterID:      s.ClusterID,
+		EnvResyncInterval: resyncInterval,
+		EnvAPIQPS:         apiQPS,
+		EnvAPIBurst:       apiBurst,
+		EnvCloudsYAML:     cloudsYAMLPath,
+		EnvCloud:          s.Cloud,
+		EnvRegion:         s.Region,
 	}
 }
 
