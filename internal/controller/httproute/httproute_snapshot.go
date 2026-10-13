@@ -262,7 +262,7 @@ func (r *Reconciler) selectAndBuildRouteModel(
 	if !selected {
 		return routeSelectionSnapshot{}, cloud.RouteSpec{}, routeSnapshotRejection(purpose, newRouteBuildError(
 			routeErrorUnsupported,
-			"Phase 1 supports one HTTPRoute per Gateway; an older route is already selected",
+			"only one HTTPRoute per Gateway is supported. An older route is already selected",
 		))
 	}
 

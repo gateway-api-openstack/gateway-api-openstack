@@ -39,7 +39,7 @@ type Identity struct {
 	RouteUID           string `json:"routeUID,omitempty"`
 }
 
-// GatewaySpec describes the Phase 1 OpenStack resources owned by a Gateway.
+// GatewaySpec describes the OpenStack resources owned by a Gateway.
 type GatewaySpec struct {
 	Identity          Identity
 	Provider          string
@@ -82,7 +82,7 @@ func (s GatewayState) Address() string {
 	return s.VIPAddress
 }
 
-// PathMatchType is the small HTTP path subset supported in Phase 1.
+// PathMatchType is the supported HTTP path matching subset.
 type PathMatchType string
 
 const (
@@ -99,7 +99,7 @@ type Member struct {
 	Port    int
 }
 
-// RouteSpec describes the Phase 1 pool and L7 policies owned by one route.
+// RouteSpec describes the pool and L7 policies owned by one route.
 type RouteSpec struct {
 	Identity            Identity
 	Gateway             GatewayState

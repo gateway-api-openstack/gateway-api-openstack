@@ -62,14 +62,14 @@ func (r *Reconciler) ensureRouteGraph(
 	if checkpoint || pending {
 		return routeGraphResult{bindingCheckpoint: checkpoint}, nil
 	}
+	expectedIdentity := controller.RouteIdentity(r.Config, expectedGateway, expectedRoute)
 	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{
-		Identity: controller.RouteIdentity(r.Config, expectedGateway, expectedRoute),
+		Identity: expectedIdentity,
 		Action:   graph.Ensure, Gateway: expectedGateway, Route: expectedRoute,
 	})
 	if err != nil {
 		return routeGraphResult{}, err
 	}
-	expectedIdentity := controller.RouteIdentity(r.Config, expectedGateway, expectedRoute)
 	var component *cloud.RouteGraphResult
 	for i := range result.Routes {
 		route := &result.Routes[i]

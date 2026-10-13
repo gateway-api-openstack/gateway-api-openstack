@@ -112,21 +112,6 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 	}
 
 	monitor := spec.HealthMonitor
-	if monitor.Path == "" {
-		monitor.Path = "/"
-	}
-	if monitor.Delay == 0 {
-		monitor.Delay = routeMonitorDelay
-	}
-	if monitor.Timeout == 0 {
-		monitor.Timeout = routeMonitorTimeout
-	}
-	if monitor.MaxRetries == 0 {
-		monitor.MaxRetries = routeMonitorMaxRetries
-	}
-	if monitor.MaxRetriesDown == 0 {
-		monitor.MaxRetriesDown = routeMonitorMaxRetriesDown
-	}
 	if !strings.HasPrefix(monitor.Path, "/") {
 		return invalid(fmt.Errorf("health check path %q must start with /", monitor.Path))
 	}

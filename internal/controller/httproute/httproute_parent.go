@@ -84,10 +84,10 @@ func validateRouteParent(route *gatewayv1.HTTPRoute, parent managedRouteParent) 
 		return newRouteBuildError(routeErrorPending, "parent Gateway is being deleted")
 	}
 	if parent.gateway.Namespace != route.Namespace {
-		return newRouteBuildError(routeErrorNotAllowed, "cross-namespace parentRefs are not supported in Phase 1")
+		return newRouteBuildError(routeErrorNotAllowed, "cross-namespace parentRefs are not supported")
 	}
 	if parent.listener == nil {
-		return newRouteBuildError(routeErrorUnsupported, "parent Gateway must have exactly one listener in Phase 1")
+		return newRouteBuildError(routeErrorUnsupported, "parent Gateway must have exactly one listener")
 	}
 	listener := parent.listener
 	if listener.Protocol != gatewayv1.HTTPProtocolType || listener.TLS != nil {
@@ -115,7 +115,7 @@ func validateRouteParent(route *gatewayv1.HTTPRoute, parent managedRouteParent) 
 		}
 		if listener.AllowedRoutes.Namespaces != nil && listener.AllowedRoutes.Namespaces.From != nil &&
 			*listener.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
-			return newRouteBuildError(routeErrorNotAllowed, "Phase 1 listeners only allow same-namespace HTTPRoutes")
+			return newRouteBuildError(routeErrorNotAllowed, "listeners only allow same-namespace HTTPRoutes")
 		}
 	}
 	return nil

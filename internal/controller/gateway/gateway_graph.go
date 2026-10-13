@@ -35,11 +35,7 @@ func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gate
 	if r.Writer == nil {
 		return cloud.GatewayGraphResult{}, fmt.Errorf("gateway graph writer is required")
 	}
-	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{Identity: controller.GatewayIdentity(r.Config, expected), Action: graph.Ensure, Gateway: expected})
-	if err != nil {
-		return result, err
-	}
-	return result, nil
+	return r.Writer.ReconcileGraph(ctx, graph.Request{Identity: controller.GatewayIdentity(r.Config, expected), Action: graph.Ensure, Gateway: expected})
 }
 
 func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, topology classconfig.Resolved) cloud.GatewaySpec {
