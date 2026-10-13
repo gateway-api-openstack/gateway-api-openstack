@@ -1027,7 +1027,7 @@ func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 			ListenerPort: 80,
 		},
 		MemberSubnetID: "member-subnet",
-		HealthMonitor:  cloud.HealthMonitorConfig{Path: "/healthz"},
+		HealthMonitor:  cloud.HealthMonitorConfig{Path: "/healthz", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
 		Hostname:       "api.example.com",
 		PathType:       cloud.PathMatchExact,
 		PathValue:      "/api",

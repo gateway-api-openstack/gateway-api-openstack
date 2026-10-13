@@ -55,23 +55,35 @@ func TestReconcileGatewayGraphValidatesAllDesiredComponentsBeforeCloudReads(t *t
 	tests := []struct {
 		name   string
 		change func(*cloud.GatewayGraphSpec)
+		want   error
 	}{
-		{name: "invalid backend", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.Members[0].Port = 0 }},
-		{name: "duplicate fragment", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes = append(spec.Routes, spec.Routes[0]) }},
-		{name: "different topology", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.GatewayRequirements.VIPSubnetID = "other" }},
+		{name: "invalid backend", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.Members[0].Port = 0 }, want: cloud.ErrTerminalValidation},
+		{name: "duplicate fragment", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes = append(spec.Routes, spec.Routes[0]) }, want: cloud.ErrOwnershipConflict},
+		{name: "different topology", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.GatewayRequirements.VIPSubnetID = "other" }, want: cloud.ErrOwnershipConflict},
 		{name: "invalid monitor", change: func(spec *cloud.GatewayGraphSpec) {
-			spec.Routes[0].Spec.HealthMonitor = cloud.HealthMonitorConfig{Delay: 5, Timeout: 10}
-		}},
+			spec.Routes[0].Spec.HealthMonitor.Timeout = spec.Routes[0].Spec.HealthMonitor.Delay
+		}, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor", change: func(spec *cloud.GatewayGraphSpec) {
+			spec.Routes[0].Spec.HealthMonitor = cloud.HealthMonitorConfig{}
+		}, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor path", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.HealthMonitor.Path = "" }, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor delay", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.HealthMonitor.Delay = 0 }, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor timeout", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.HealthMonitor.Timeout = 0 }, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor retries", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.HealthMonitor.MaxRetries = 0 }, want: cloud.ErrTerminalValidation},
+		{name: "missing monitor retries down", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.HealthMonitor.MaxRetriesDown = 0 }, want: cloud.ErrTerminalValidation},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			spec := completeGraphSpec(identity)
 			test.change(&spec)
-			provider := completeGraphProvider(t, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			rejectRequest := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 				t.Errorf("cloud request before complete desired validation: %s", request.URL)
-			}), &gatewayTransitionRequests{})
-			if _, err := provider.ReconcileGatewayGraph(context.Background(), spec); err == nil {
-				t.Fatal("expected validation error")
+			})
+			provider := newTestProvider(t, ServiceClients{
+				LoadBalancer: safetyServiceClient(rejectRequest), Network: safetyServiceClient(rejectRequest), ProjectID: "project-a",
+			}, ProviderConfig{})
+			if _, err := provider.ReconcileGatewayGraph(context.Background(), spec); !errors.Is(err, test.want) {
+				t.Fatalf("validation error = %v, want %v", err, test.want)
 			}
 		})
 	}

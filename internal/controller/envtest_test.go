@@ -142,6 +142,9 @@ func TestControllerEnvtest(t *testing.T) {
 	testCacheFieldIndexes(t, apiClient, cacheClient, gateway)
 	testGraphWriterTriggerEquivalence(t, apiClient, cacheClient, config, gateway)
 	testFinalizersWithNewReconciler(t, apiClient, cacheClient, config, gatewayClass, gateway)
+	t.Run("GatewayClass topology isolation", func(t *testing.T) {
+		testGatewayClassTopologyIsolation(t, apiClient, cacheClient, config)
+	})
 }
 
 func requiredEnvtestDirectory(t *testing.T, environmentName string) string {

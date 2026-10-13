@@ -27,6 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
 func TestHTTPRouteRequestsForGatewayUseParentAndStoredBinding(t *testing.T) {
@@ -72,8 +74,10 @@ func TestHTTPRouteRequestsForGatewayUseParentAndStoredBinding(t *testing.T) {
 func TestHTTPRouteRequestsForServiceKeepDirectRouteWhenPeerLookupFails(t *testing.T) {
 	config := testConfig()
 	direct := mapperTestHTTPRoute("default", "direct", gatewayv1.ParentReference{Name: "edge"}, "changed")
+	second := mapperTestHTTPRoute("default", "second", gatewayv1.ParentReference{Name: "edge"}, "changed")
+	peer := mapperTestHTTPRoute("default", "peer", gatewayv1.ParentReference{Name: "edge"}, "stable")
 	baseClient := indexedFakeClientBuilder(testScheme(t), config).
-		WithObjects(direct).
+		WithObjects(direct, second, peer).
 		Build()
 	kubeClient := &failNthListClient{Client: baseClient, failAt: 2, err: errors.New("cache unavailable")}
 	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: config}, nil)
@@ -82,9 +86,53 @@ func TestHTTPRouteRequestsForServiceKeepDirectRouteWhenPeerLookupFails(t *testin
 		Namespace: "default",
 		Name:      "changed",
 	})
-	want := []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "default", Name: "direct"}}}
+	want := []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Namespace: "default", Name: "direct"}},
+		{NamespacedName: types.NamespacedName{Namespace: "default", Name: "second"}},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("enqueueHTTPRoutesForServiceKey() after peer lookup failure = %#v, want %#v", got, want)
+	}
+	if kubeClient.calls != 2 {
+		t.Fatalf("list calls = %d, want one backend and one parent lookup", kubeClient.calls)
+	}
+	got = reconciler.enqueueHTTPRoutesForServiceKey(context.Background(), types.NamespacedName{Namespace: "default", Name: "changed"})
+	want = []reconcile.Request{
+		{NamespacedName: client.ObjectKeyFromObject(direct)},
+		{NamespacedName: client.ObjectKeyFromObject(peer)},
+		{NamespacedName: client.ObjectKeyFromObject(second)},
+	}
+	if !reflect.DeepEqual(got, want) || kubeClient.calls != 4 {
+		t.Fatalf("later event did not reobserve the parent: requests=%#v, list calls=%d", got, kubeClient.calls)
+	}
+}
+
+func TestHTTPRouteRequestsForServicePreserveContendersAndDetachedBindings(t *testing.T) {
+	cfg := testConfig()
+	direct := mapperTestHTTPRoute("default", "direct", gatewayv1.ParentReference{Name: "edge"}, "changed")
+	second := mapperTestHTTPRoute("default", "second", gatewayv1.ParentReference{Name: "edge"}, "changed")
+	peer := mapperTestHTTPRoute("default", "peer", gatewayv1.ParentReference{Name: "edge"}, "stable")
+	other := mapperTestHTTPRoute("default", "other", gatewayv1.ParentReference{Name: "other-edge"}, "changed")
+	otherPeer := mapperTestHTTPRoute("default", "other-peer", gatewayv1.ParentReference{Name: "other-edge"}, "stable")
+	detaching := mapperTestHTTPRoute("default", "detaching", gatewayv1.ParentReference{Name: "removed"}, "changed")
+	(&Reconciler{Config: cfg}).applyRouteBinding(detaching, &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "removed", UID: "old-gateway"}})
+	detaching.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	detaching.Spec.ParentRefs = nil
+	unrelated := mapperTestHTTPRoute("default", "unrelated", gatewayv1.ParentReference{Name: "unrelated"}, "stable")
+	base := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(direct, second, peer, other, otherPeer, detaching, unrelated).Build()
+	reader := &fanoutCountingClient{Client: base}
+	r := &Reconciler{Client: reader, Config: cfg}
+	got := r.enqueueHTTPRoutesForServiceKey(context.Background(), client.ObjectKey{Namespace: "default", Name: "changed"})
+	want := []reconcile.Request{
+		{NamespacedName: client.ObjectKeyFromObject(detaching)},
+		{NamespacedName: client.ObjectKeyFromObject(direct)},
+		{NamespacedName: client.ObjectKeyFromObject(other)},
+		{NamespacedName: client.ObjectKeyFromObject(otherPeer)},
+		{NamespacedName: client.ObjectKeyFromObject(peer)},
+		{NamespacedName: client.ObjectKeyFromObject(second)},
+	}
+	if !reflect.DeepEqual(got, want) || reader.lists != 3 || reader.gets != 0 {
+		t.Fatalf("requests=%#v, reads=%d/%d, want all direct and contender routes with three lists", got, reader.gets, reader.lists)
 	}
 }
 

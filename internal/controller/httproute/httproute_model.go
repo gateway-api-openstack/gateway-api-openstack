@@ -83,35 +83,35 @@ func (r *Reconciler) buildRouteSpecWithReader(
 	gateway *gatewayv1.Gateway,
 ) (cloud.RouteSpec, error) {
 	if len(route.Spec.Hostnames) > 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "Phase 1 supports at most one exact hostname")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
 	}
 	hostname := ""
 	if len(route.Spec.Hostnames) == 1 {
 		hostname = string(route.Spec.Hostnames[0])
 		if strings.HasPrefix(hostname, "*.") {
-			return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported in Phase 1")
+			return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
 		}
 	}
 	if len(route.Spec.Rules) != 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "Phase 1 supports exactly one HTTPRoute rule")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
 	}
 	rule := route.Spec.Rules[0]
 	if rule.Name != nil || len(rule.Filters) != 0 || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "named rules, filters, timeouts, retries, and session persistence are not supported in Phase 1")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "named rules, filters, timeouts, retries, and session persistence are not supported")
 	}
 	_, pathType, pathValue, err := supportedMatch(rule.Matches)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
 	if len(rule.BackendRefs) != 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "Phase 1 supports exactly one backendRef")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
 	}
 	backend := rule.BackendRefs[0]
 	if len(backend.Filters) != 0 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported in Phase 1")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
 	}
 	if backend.Weight != nil && *backend.Weight == 0 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "a single Phase 1 backendRef must have non-zero weight")
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
 	}
 	if backend.Group != nil && *backend.Group != gatewayv1.Group("") {
 		return cloud.RouteSpec{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
@@ -135,7 +135,7 @@ func (r *Reconciler) buildRouteSpecWithReader(
 		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", err)
 	}
 	if service.Spec.Type != corev1.ServiceTypeNodePort {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort in Phase 1", service.Name)
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)
 	}
 	servicePort, err := nodePortForBackend(&service, int32(*backend.Port))
 	if err != nil {
@@ -172,11 +172,11 @@ func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (*gatewayv1.HTTPRouteMat
 		return nil, cloud.PathMatchPrefix, "/", nil
 	}
 	if len(matches) != 1 {
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "Phase 1 supports at most one HTTPRoute match")
+		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "at most one HTTPRoute match is supported")
 	}
 	match := &matches[0]
 	if len(match.Headers) != 0 || len(match.QueryParams) != 0 || match.Method != nil {
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported in Phase 1")
+		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported")
 	}
 	pathType := gatewayv1.PathMatchPathPrefix
 	pathValue := "/"

@@ -84,10 +84,17 @@ func (r *Reconciler) enqueueHTTPRoutesForServiceKey(ctx context.Context, service
 		return nil
 	}
 	keys := map[types.NamespacedName]struct{}{}
+	observedParents := map[string]struct{}{}
 	for index := range direct.Items {
 		route := &direct.Items[index]
 		keys[client.ObjectKeyFromObject(route)] = struct{}{}
 		for _, gatewayKey := range controller.ParentGatewayKeys(route) {
+			if _, observed := observedParents[gatewayKey]; observed {
+				continue
+			}
+			// Contenders sharing a parent need one indexed read per event,
+			// including when that read fails. Later events observe it again.
+			observedParents[gatewayKey] = struct{}{}
 			var peers gatewayv1.HTTPRouteList
 			if err := r.List(ctx, &peers, client.MatchingFields{controller.IndexHTTPRouteByParentGateway: gatewayKey}); err != nil {
 				log.FromContext(ctx).Error(err, "Could not list HTTPRoute contenders for Service", "service", serviceKey, "gateway", gatewayKey)
@@ -200,7 +207,7 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(manager).
 		For(&gatewayv1.HTTPRoute{}, builder.WithPredicates(controller.HTTPRouteReconcilePredicate(r.Config))).
 		// A create, spec change, or completed deletion can change the sole
-		// selected route for a Phase 1 Gateway. Requeue routes for the same
+		// selected route for a Gateway. Requeue routes for the same
 		// parent Gateway and ignore status updates made by this controller.
 		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutePeers), builder.WithPredicates(controller.HTTPRoutePeerPredicate())).
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForGateway), builder.WithPredicates(controller.GatewayForHTTPRoutePredicate(r.Config))).

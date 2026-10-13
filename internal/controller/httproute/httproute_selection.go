@@ -49,7 +49,7 @@ func (r *Reconciler) isSelectedRouteWithReader(
 		})
 	}
 	if err := reader.List(ctx, &routes, listOptions...); err != nil {
-		return false, fmt.Errorf("list HTTPRoutes for Phase 1 attachment selection: %w", err)
+		return false, fmt.Errorf("list HTTPRoutes for attachment selection: %w", err)
 	}
 	winner := route
 	for index := range routes.Items {
@@ -103,7 +103,7 @@ func (r *Reconciler) evaluateRouteSlotWithReader(
 		return routeSlotDecision{}, fmt.Errorf("get candidate backend Service: %w", err)
 	}
 	if service.Spec.Type != corev1.ServiceTypeNodePort {
-		return routeSlotDecision{rejection: newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort in Phase 1", service.Name)}, nil
+		return routeSlotDecision{rejection: newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)}, nil
 	}
 	if _, err := nodePortForBackend(&service, int32(*backend.Port)); err != nil {
 		var buildError *routeBuildError

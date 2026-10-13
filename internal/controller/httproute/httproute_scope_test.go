@@ -238,7 +238,7 @@ func TestHTTPRouteProviderWarningWaitsForStatusPatch(t *testing.T) {
 	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
 	invalidStatus := statusForRouteBuildError(newRouteBuildError(
 		routeErrorUnsupported,
-		"Phase 1 supports exactly one HTTPRoute rule",
+		"exactly one HTTPRoute rule is supported",
 	))
 	updates := []parentStatusUpdate{{parent: parent, status: invalidStatus}}
 	applyRouteParentStatuses(cfg, route, updates)

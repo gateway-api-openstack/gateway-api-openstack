@@ -29,13 +29,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 )
 
-const (
-	routeMonitorDelay          = 10
-	routeMonitorTimeout        = 5
-	routeMonitorMaxRetries     = 3
-	routeMonitorMaxRetriesDown = 3
-	routeMonitorExpectedCodes  = "200-399"
-)
+const routeMonitorExpectedCodes = "200-399"
 
 type observedRoutePolicy struct {
 	policy l7policies.L7Policy

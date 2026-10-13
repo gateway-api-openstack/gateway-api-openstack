@@ -57,7 +57,7 @@ type cachedRouteDecision struct {
 	disposition    cachedRouteDisposition
 }
 
-// Reconciler owns the route-scoped Octavia resources for the Phase 1
+// Reconciler owns the route-scoped Octavia resources for the current
 // HTTP/NodePort profile.
 type Reconciler struct {
 	// Client reads and patches cached Kubernetes objects.
@@ -213,7 +213,7 @@ func (r *Reconciler) validateCachedRouteDecision(
 			parent: parent.ref,
 			status: rejectedRouteStatus(
 				string(gatewayv1.RouteReasonUnsupportedValue),
-				"Phase 1 supports one HTTPRoute per Gateway; an older route is already selected",
+				"only one HTTPRoute per Gateway is supported. An older route is already selected",
 			),
 		}}
 		return decision, nil
@@ -234,7 +234,7 @@ func managedParentsSupportInstalledVersion(parents []managedRouteParent) bool {
 func unsupportedParentCountUpdates(parents []managedRouteParent) []parentStatusUpdate {
 	status := rejectedRouteStatus(
 		string(gatewayv1.RouteReasonUnsupportedValue),
-		"Phase 1 supports exactly one Gateway parentRef",
+		"exactly one Gateway parentRef is supported",
 	)
 	updates := make([]parentStatusUpdate, 0, len(parents))
 	for _, parent := range parents {

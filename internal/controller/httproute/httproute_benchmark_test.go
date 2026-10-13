@@ -25,10 +25,8 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
@@ -142,33 +140,62 @@ func BenchmarkNodeEventFanout(b *testing.B) {
 	}
 }
 
-func TestNodeEventBurstCoalescesManagedRouteRequests(t *testing.T) {
+// BenchmarkEndpointSliceEventFanout measures one mapper invocation. Update
+// handlers invoke the mapper for both old and new objects before deduplication.
+func BenchmarkEndpointSliceEventFanout(b *testing.B) {
+	for _, count := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("routes=%d", count), func(b *testing.B) {
+			r, reader, _ := nodeFanoutFixture(b, count, corev1.ServiceExternalTrafficPolicyLocal)
+			endpoint := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"},
+			}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				// Service events retain direct routes for both controllers. Their
+				// reconciler checks ownership before any write or provider call.
+				if got := len(r.enqueueHTTPRoutesForEndpointSlice(context.Background(), endpoint)); got != 2*count {
+					b.Fatalf("enqueues = %d, want %d referencing routes", got, 2*count)
+				}
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(reader.gets)/float64(b.N), "gets/event")
+			b.ReportMetric(float64(reader.lists)/float64(b.N), "lists/event")
+			b.ReportMetric(float64(2*count), "enqueues/event")
+		})
+	}
+}
+
+func TestNodeEventReadsSharedDependencies(t *testing.T) {
 	const routes, events = 20, 5
 	r, reader, node := nodeFanoutFixture(t, routes, corev1.ServiceExternalTrafficPolicyLocal)
-	queue := workqueue.NewTyped[reconcile.Request]()
-	defer queue.ShutDown()
 	for range events {
-		for _, request := range r.enqueueHTTPRoutesForNode(context.Background(), node) {
-			queue.Add(request)
+		requests := r.enqueueHTTPRoutesForNode(context.Background(), node)
+		if len(requests) != routes {
+			t.Fatalf("enqueued requests = %d, want %d managed routes", len(requests), routes)
 		}
-	}
-	if queue.Len() != routes {
-		t.Fatalf("effective queued requests = %d, want %d", queue.Len(), routes)
-	}
-	for queue.Len() > 0 {
-		request, shutdown := queue.Get()
-		if shutdown {
-			t.Fatal("queue shut down before processing the burst")
-		}
-		if len(request.Name) < len("route-") || request.Name[:len("route-")] != "route-" {
-			t.Fatalf("foreign route was enqueued: %s", request.Name)
-		}
-		queue.Done(request)
 	}
 	// Each event resolves two parents and one Service once, with one route
 	// list and one EndpointSlice list, regardless of the number of routes.
 	if reader.gets > events*5 || reader.lists > events*2 {
 		t.Fatalf("event burst amplified reads: %d gets, %d lists", reader.gets, reader.lists)
+	}
+}
+
+func TestEndpointSliceEventReadsEachSharedParentOnce(t *testing.T) {
+	for _, count := range []int{1, 20, 100} {
+		t.Run(fmt.Sprintf("routes=%d", count), func(t *testing.T) {
+			r, reader, _ := nodeFanoutFixture(t, count, corev1.ServiceExternalTrafficPolicyLocal)
+			endpoint := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"},
+			}}
+			for event := range 2 {
+				requests := r.enqueueHTTPRoutesForEndpointSlice(context.Background(), endpoint)
+				if len(requests) != 2*count || reader.gets != 0 || reader.lists != (event+1)*3 {
+					t.Fatalf("event %d: enqueues=%d, gets=%d, lists=%d, want %d/0/%d", event, len(requests), reader.gets, reader.lists, 2*count, (event+1)*3)
+				}
+			}
+		})
 	}
 }
 

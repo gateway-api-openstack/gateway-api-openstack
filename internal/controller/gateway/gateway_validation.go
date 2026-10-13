@@ -45,53 +45,53 @@ func (r *Reconciler) getGatewayClass(ctx context.Context, gateway *gatewayv1.Gat
 	return &gatewayClass, gatewayClass.Spec.ControllerName == r.Config.ControllerName, nil
 }
 
-// Validate checks whether a Gateway can be represented by the current Phase 1
+// Validate checks whether a Gateway can be represented by the current HTTP
 // profile and returns its single supported listener.
 func Validate(gateway *gatewayv1.Gateway) (*gatewayv1.Listener, error) {
 	if len(gateway.Spec.Addresses) != 0 {
 		return nil, &gatewayValidationError{
-			message:       "spec.addresses is not supported in Phase 1",
+			message:       "spec.addresses is not supported",
 			gatewayReason: gatewayv1.GatewayReasonUnsupportedAddress,
 		}
 	}
 	if gateway.Spec.Infrastructure != nil {
 		return nil, &gatewayValidationError{
-			message:       "spec.infrastructure is not supported in Phase 1",
+			message:       "spec.infrastructure is not supported",
 			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
 		}
 	}
 	if gateway.Spec.AllowedListeners != nil {
 		return nil, &gatewayValidationError{
-			message:       "spec.allowedListeners and ListenerSet attachment are not supported in Phase 1",
+			message:       "spec.allowedListeners and ListenerSet attachment are not supported",
 			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
 		}
 	}
 	if gateway.Spec.TLS != nil {
 		return nil, &gatewayValidationError{
-			message:       "gateway-wide spec.tls is not supported in Phase 1",
+			message:       "gateway-wide spec.tls is not supported",
 			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
 		}
 	}
 	if len(gateway.Spec.Listeners) != 1 {
-		return nil, fmt.Errorf("exactly one listener is supported in Phase 1")
+		return nil, fmt.Errorf("exactly one listener is supported")
 	}
 	listener := &gateway.Spec.Listeners[0]
 	if listener.Protocol != gatewayv1.HTTPProtocolType || listener.TLS != nil {
-		return nil, fmt.Errorf("only a plain HTTP listener is supported in Phase 1")
+		return nil, fmt.Errorf("only a plain HTTP listener is supported")
 	}
 	if listener.Hostname != nil {
-		return nil, fmt.Errorf("listener hostname is not supported in Phase 1; put one exact hostname on HTTPRoute")
+		return nil, fmt.Errorf("listener hostname is not supported. Set an exact hostname on HTTPRoute")
 	}
 	if listener.AllowedRoutes != nil && listener.AllowedRoutes.Namespaces != nil &&
 		listener.AllowedRoutes.Namespaces.From != nil &&
 		*listener.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
-		return nil, fmt.Errorf("only same-namespace HTTPRoutes are supported in Phase 1")
+		return nil, fmt.Errorf("only same-namespace HTTPRoutes are supported")
 	}
 	if listener.AllowedRoutes != nil && len(listener.AllowedRoutes.Kinds) != 0 {
 		for _, kind := range listener.AllowedRoutes.Kinds {
 			if !isHTTPRouteGroupKind(kind) {
 				return nil, &gatewayValidationError{
-					message:           "only HTTPRoute is supported in listener allowedRoutes.kinds in Phase 1",
+					message:           "only HTTPRoute is supported in listener allowedRoutes.kinds",
 					invalidRouteKinds: true,
 				}
 			}
