@@ -44,6 +44,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
@@ -66,7 +67,7 @@ var requiredBundleCRDs = []string{
 	"httproutes.gateway.networking.k8s.io",
 }
 
-type phase2Suite struct {
+type openStackSuite struct {
 	config         e2eConfig
 	client         client.Client
 	coreRESTClient rest.Interface
@@ -97,10 +98,10 @@ type leaseState struct {
 	transitions int32
 }
 
-func TestPhase2E2E(t *testing.T) {
+func TestOpenStackE2E(t *testing.T) {
 	config, enabled, err := loadE2EConfig(os.Getenv)
 	if err != nil {
-		t.Fatalf("Phase 2 E2E configuration was rejected: %v", err)
+		t.Fatalf("OpenStack E2E configuration was rejected: %v", err)
 	}
 	if !enabled {
 		t.Skip("run the suite through make test-e2e with an explicit E2E_CONFIG")
@@ -112,28 +113,28 @@ func TestPhase2E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
 	defer cancel()
 
-	suite := requirePhase2Suite(t, config, report)
-	runErr := runPhase2WithCleanup(ctx, suite, report)
-	runErr = verifyPhase2PostCleanupAudit(suite, report, runErr)
-	runErr = writePhase2Artifacts(t, config.ArtifactDirectory, report, runErr)
+	suite := requireOpenStackSuite(t, config, report)
+	runErr := runOpenStackWithCleanup(ctx, suite, report)
+	runErr = verifyOpenStackPostCleanupAudit(suite, report, runErr)
+	runErr = writeOpenStackArtifacts(t, config.ArtifactDirectory, report, runErr)
 	if runErr != nil {
-		t.Fatal("Phase 2 E2E did not complete. Details were omitted from test output.")
+		t.Fatal("OpenStack E2E did not complete. Details were omitted from test output.")
 	}
 }
 
-func requirePhase2Suite(t *testing.T, config e2eConfig, report *e2eReport) *phase2Suite {
+func requireOpenStackSuite(t *testing.T, config e2eConfig, report *e2eReport) *openStackSuite {
 	t.Helper()
-	suite, err := newPhase2Suite(config, report)
+	suite, err := newOpenStackSuite(config, report)
 	if err == nil {
 		return suite
 	}
 	mustSetCheck(report, "preflight safety validation", statusFailed, checkSummaryFailed)
 	writeReportAfterSetupFailure(t, config.ArtifactDirectory, report)
-	t.Fatal("Phase 2 E2E preflight could not create a Kubernetes client")
+	t.Fatal("OpenStack E2E preflight could not create a Kubernetes client")
 	return nil
 }
 
-func runPhase2WithCleanup(ctx context.Context, suite *phase2Suite, report *e2eReport) error {
+func runOpenStackWithCleanup(ctx context.Context, suite *openStackSuite, report *e2eReport) error {
 	runErr := suite.run(ctx)
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), emergencyCleanupLimit)
 	cleanupErr := suite.ensureCleanup(cleanupCtx)
@@ -142,10 +143,10 @@ func runPhase2WithCleanup(ctx context.Context, suite *phase2Suite, report *e2eRe
 		return runErr
 	}
 	mustSetCheck(report, "orderly deletion and finalizer completion", statusFailed, checkSummaryFailed)
-	return firstPhase2Error(runErr, errors.New("ordered E2E cleanup did not complete"))
+	return firstOpenStackError(runErr, errors.New("ordered E2E cleanup did not complete"))
 }
 
-func verifyPhase2PostCleanupAudit(suite *phase2Suite, report *e2eReport, runErr error) error {
+func verifyOpenStackPostCleanupAudit(suite *openStackSuite, report *e2eReport, runErr error) error {
 	if suite.baselineAudit == nil {
 		return runErr
 	}
@@ -156,26 +157,26 @@ func verifyPhase2PostCleanupAudit(suite *phase2Suite, report *e2eReport, runErr 
 		return runErr
 	}
 	mustSetCheck(report, "post-test ownership audit returns to baseline", statusFailed, checkSummaryFailed)
-	return firstPhase2Error(runErr, errors.New("post-test ownership audit did not match the baseline"))
+	return firstOpenStackError(runErr, errors.New("post-test ownership audit did not match the baseline"))
 }
 
-func writePhase2Artifacts(t *testing.T, directory string, report *e2eReport, runErr error) error {
+func writeOpenStackArtifacts(t *testing.T, directory string, report *e2eReport, runErr error) error {
 	t.Helper()
 	if err := writeE2EArtifacts(directory, report); err != nil {
-		t.Errorf("Phase 2 E2E artifacts could not be written: %v", err)
-		return firstPhase2Error(runErr, errors.New("E2E artifacts could not be written"))
+		t.Errorf("OpenStack E2E artifacts could not be written: %v", err)
+		return firstOpenStackError(runErr, errors.New("E2E artifacts could not be written"))
 	}
 	return runErr
 }
 
-func firstPhase2Error(current, fallback error) error {
+func firstOpenStackError(current, fallback error) error {
 	if current != nil {
 		return current
 	}
 	return fallback
 }
 
-func newPhase2Suite(config e2eConfig, report *e2eReport) (*phase2Suite, error) {
+func newOpenStackSuite(config e2eConfig, report *e2eReport) (*openStackSuite, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	rules.ExplicitPath = config.Kubeconfig
 	overrides := &clientcmd.ConfigOverrides{CurrentContext: config.KubeContext}
@@ -192,6 +193,7 @@ func newPhase2Suite(config e2eConfig, report *e2eReport) (*phase2Suite, error) {
 		coordinationv1.AddToScheme,
 		discoveryv1.AddToScheme,
 		apiextensionsv1.AddToScheme,
+		configv1alpha1.AddToScheme,
 		gatewayv1.Install,
 	} {
 		if err := install(scheme); err != nil {
@@ -207,7 +209,7 @@ func newPhase2Suite(config e2eConfig, report *e2eReport) (*phase2Suite, error) {
 		return nil, fmt.Errorf("create Kubernetes pod proxy client: %w", err)
 	}
 
-	return &phase2Suite{
+	return &openStackSuite{
 		config:         config,
 		client:         kubeClient,
 		coreRESTClient: clientset.CoreV1().RESTClient(),
@@ -223,7 +225,7 @@ func newPhase2Suite(config e2eConfig, report *e2eReport) (*phase2Suite, error) {
 	}, nil
 }
 
-func (s *phase2Suite) run(ctx context.Context) error {
+func (s *openStackSuite) run(ctx context.Context) error {
 	steps := []struct {
 		name string
 		run  func(context.Context) error
@@ -250,7 +252,7 @@ func (s *phase2Suite) run(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) preflight(ctx context.Context) error {
+func (s *openStackSuite) preflight(ctx context.Context) error {
 	if err := s.verifyPreflightFiles(); err != nil {
 		return err
 	}
@@ -260,7 +262,7 @@ func (s *phase2Suite) preflight(ctx context.Context) error {
 	return s.prepareBaselineAudit(ctx)
 }
 
-func (s *phase2Suite) verifyPreflightFiles() error {
+func (s *openStackSuite) verifyPreflightFiles() error {
 	if _, err := os.Lstat(s.config.ArtifactDirectory); !os.IsNotExist(err) {
 		if err == nil {
 			return fmt.Errorf("artifact directory already exists")
@@ -277,11 +279,14 @@ func (s *phase2Suite) verifyPreflightFiles() error {
 	return nil
 }
 
-func (s *phase2Suite) verifyPreflightKubernetesState(ctx context.Context) error {
+func (s *openStackSuite) verifyPreflightKubernetesState(ctx context.Context) error {
 	if err := s.verifyExplicitContext(); err != nil {
 		return err
 	}
 	if err := s.verifyGatewayAPIBundle(ctx); err != nil {
+		return err
+	}
+	if err := controllercontract.RequireClassConfigCRD(ctx, s.client); err != nil {
 		return err
 	}
 	if err := s.requireAbsent(ctx, client.ObjectKey{Name: s.gatewayClassName}, &gatewayv1.GatewayClass{}); err != nil {
@@ -296,7 +301,7 @@ func (s *phase2Suite) verifyPreflightKubernetesState(ctx context.Context) error 
 	return nil
 }
 
-func (s *phase2Suite) prepareBaselineAudit(ctx context.Context) error {
+func (s *openStackSuite) prepareBaselineAudit(ctx context.Context) error {
 	info, err := os.Stat(s.config.Audit.Binary)
 	if err != nil {
 		return fmt.Errorf("inspect audit binary: %w", err)
@@ -313,7 +318,7 @@ func (s *phase2Suite) prepareBaselineAudit(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) verifyExplicitContext() error {
+func (s *openStackSuite) verifyExplicitContext() error {
 	raw, err := clientcmd.LoadFromFile(s.config.Kubeconfig)
 	if err != nil {
 		return fmt.Errorf("load kubeconfig metadata: %w", err)
@@ -324,7 +329,7 @@ func (s *phase2Suite) verifyExplicitContext() error {
 	return nil
 }
 
-func (s *phase2Suite) verifyGatewayAPIBundle(ctx context.Context) error {
+func (s *openStackSuite) verifyGatewayAPIBundle(ctx context.Context) error {
 	observation, err := controller.ObserveGatewayAPIVersion(ctx, s.client)
 	if err != nil {
 		return fmt.Errorf("observe Gateway API bundle: %w", err)
@@ -355,7 +360,7 @@ func (s *phase2Suite) verifyGatewayAPIBundle(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) verifyControllerDeployment(ctx context.Context) error {
+func (s *openStackSuite) verifyControllerDeployment(ctx context.Context) error {
 	deployment, pods, err := s.readyControllerPods(ctx)
 	if err != nil {
 		return err
@@ -375,7 +380,7 @@ func (s *phase2Suite) verifyControllerDeployment(ctx context.Context) error {
 	return s.verifyControllerLease(ctx, pods)
 }
 
-func (s *phase2Suite) validateControllerRollout(deployment *appsv1.Deployment, pods []corev1.Pod) error {
+func (s *openStackSuite) validateControllerRollout(deployment *appsv1.Deployment, pods []corev1.Pod) error {
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != s.config.ControllerReplicas {
 		return fmt.Errorf("controller Deployment replica count does not match the explicit configuration")
 	}
@@ -392,7 +397,7 @@ func (s *phase2Suite) validateControllerRollout(deployment *appsv1.Deployment, p
 	return nil
 }
 
-func (s *phase2Suite) verifyControllerPods(ctx context.Context, deployment *appsv1.Deployment, pods []corev1.Pod) error {
+func (s *openStackSuite) verifyControllerPods(ctx context.Context, deployment *appsv1.Deployment, pods []corev1.Pod) error {
 	for index := range pods {
 		if err := s.verifyControllerPod(ctx, deployment, &pods[index]); err != nil {
 			return err
@@ -401,7 +406,7 @@ func (s *phase2Suite) verifyControllerPods(ctx context.Context, deployment *apps
 	return nil
 }
 
-func (s *phase2Suite) verifyControllerLease(ctx context.Context, pods []corev1.Pod) error {
+func (s *openStackSuite) verifyControllerLease(ctx context.Context, pods []corev1.Pod) error {
 	lease, err := s.currentLease(ctx)
 	if err != nil {
 		return err
@@ -412,7 +417,7 @@ func (s *phase2Suite) verifyControllerLease(ctx context.Context, pods []corev1.P
 	return nil
 }
 
-func (s *phase2Suite) validateControllerDeploymentIdentity(deployment *appsv1.Deployment) error {
+func (s *openStackSuite) validateControllerDeploymentIdentity(deployment *appsv1.Deployment) error {
 	if deployment == nil || deployment.UID == "" {
 		return fmt.Errorf("controller Deployment has no immutable UID")
 	}
@@ -440,7 +445,7 @@ func (s *phase2Suite) validateControllerDeploymentIdentity(deployment *appsv1.De
 	return nil
 }
 
-func (s *phase2Suite) readyControllerPods(ctx context.Context) (*appsv1.Deployment, []corev1.Pod, error) {
+func (s *openStackSuite) readyControllerPods(ctx context.Context) (*appsv1.Deployment, []corev1.Pod, error) {
 	var deployment appsv1.Deployment
 	key := client.ObjectKey{Namespace: s.config.ControllerNamespace, Name: s.config.ControllerDeployment}
 	if err := s.client.Get(ctx, key, &deployment); err != nil {
@@ -453,7 +458,7 @@ func (s *phase2Suite) readyControllerPods(ctx context.Context) (*appsv1.Deployme
 	return &deployment, pods.Items, nil
 }
 
-func (s *phase2Suite) verifyControllerPod(ctx context.Context, deployment *appsv1.Deployment, pod *corev1.Pod) error {
+func (s *openStackSuite) verifyControllerPod(ctx context.Context, deployment *appsv1.Deployment, pod *corev1.Pod) error {
 	if !podReady(pod) {
 		return fmt.Errorf("controller pod is not Ready")
 	}
@@ -498,7 +503,7 @@ func verifyReplicaSetDeploymentOwner(replicaSet *appsv1.ReplicaSet, deployment *
 	return nil
 }
 
-func (s *phase2Suite) verifyControllerPodImage(pod *corev1.Pod) error {
+func (s *openStackSuite) verifyControllerPodImage(pod *corev1.Pod) error {
 	status, found := findContainerStatus(pod.Status.ContainerStatuses, s.config.ControllerContainer)
 	if !found || !status.Ready ||
 		(status.ImageID != s.config.ControllerImageDigest && !strings.HasSuffix(status.ImageID, "@"+s.config.ControllerImageDigest)) {
@@ -507,7 +512,7 @@ func (s *phase2Suite) verifyControllerPodImage(pod *corev1.Pod) error {
 	return nil
 }
 
-func (s *phase2Suite) requireAbsent(ctx context.Context, key client.ObjectKey, object client.Object) error {
+func (s *openStackSuite) requireAbsent(ctx context.Context, key client.ObjectKey, object client.Object) error {
 	err := s.client.Get(ctx, key, object)
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -527,6 +532,6 @@ func mustSetCheck(report *e2eReport, name string, status checkStatus, summary st
 func writeReportAfterSetupFailure(t *testing.T, directory string, report *e2eReport) {
 	t.Helper()
 	if err := writeE2EArtifacts(directory, report); err != nil {
-		t.Error("Phase 2 E2E failure artifacts could not be written")
+		t.Error("OpenStack E2E failure artifacts could not be written")
 	}
 }

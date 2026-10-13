@@ -37,9 +37,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
-func (s *phase2Suite) createBackend(ctx context.Context) error {
+func (s *openStackSuite) createBackend(ctx context.Context) error {
 	replicas := int32(2)
 	if len(s.config.BackendNodeSelector) != 0 {
 		nodes, err := s.selectedBackendNodes(ctx)
@@ -70,7 +73,7 @@ func (s *phase2Suite) createBackend(ctx context.Context) error {
 	return s.waitForBackend(ctx, deployment, service, replicas)
 }
 
-func (s *phase2Suite) backendNamespace() *corev1.Namespace {
+func (s *openStackSuite) backendNamespace() *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: s.config.Namespace,
 		Labels: map[string]string{
@@ -80,7 +83,7 @@ func (s *phase2Suite) backendNamespace() *corev1.Namespace {
 	}}
 }
 
-func (s *phase2Suite) backendDeployment(replicas int32) *appsv1.Deployment {
+func (s *openStackSuite) backendDeployment(replicas int32) *appsv1.Deployment {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: s.config.Namespace,
@@ -117,7 +120,7 @@ func (s *phase2Suite) backendDeployment(replicas int32) *appsv1.Deployment {
 	return deployment
 }
 
-func (s *phase2Suite) backendService() *corev1.Service {
+func (s *openStackSuite) backendService() *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: s.config.Namespace, Name: backendName},
 		Spec: corev1.ServiceSpec{
@@ -134,13 +137,13 @@ func (s *phase2Suite) backendService() *corev1.Service {
 	}
 }
 
-func (s *phase2Suite) waitForBackend(ctx context.Context, deployment *appsv1.Deployment, service *corev1.Service, replicas int32) error {
+func (s *openStackSuite) waitForBackend(ctx context.Context, deployment *appsv1.Deployment, service *corev1.Service, replicas int32) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		return s.backendReady(ctx, deployment, service, replicas)
 	})
 }
 
-func (s *phase2Suite) backendReady(ctx context.Context, deployment *appsv1.Deployment, service *corev1.Service, replicas int32) (bool, error) {
+func (s *openStackSuite) backendReady(ctx context.Context, deployment *appsv1.Deployment, service *corev1.Service, replicas int32) (bool, error) {
 	var currentDeployment appsv1.Deployment
 	if err := s.client.Get(ctx, client.ObjectKeyFromObject(deployment), &currentDeployment); err != nil {
 		return false, err
@@ -166,7 +169,7 @@ func backendDeploymentReady(deployment *appsv1.Deployment, replicas int32) bool 
 		deployment.Status.AvailableReplicas == replicas && deployment.Status.ReadyReplicas == replicas
 }
 
-func (s *phase2Suite) backendEndpointsReady(ctx context.Context, replicas int32) (bool, error) {
+func (s *openStackSuite) backendEndpointsReady(ctx context.Context, replicas int32) (bool, error) {
 	var slices discoveryv1.EndpointSliceList
 	if err := s.client.List(ctx, &slices,
 		client.InNamespace(s.config.Namespace),
@@ -208,14 +211,14 @@ func (s *phase2Suite) backendEndpointsReady(ctx context.Context, replicas int32)
 	return true, nil
 }
 
-func (s *phase2Suite) selectedBackendNodes(ctx context.Context) (map[string]struct{}, error) {
+func (s *openStackSuite) selectedBackendNodes(ctx context.Context) (map[string]struct{}, error) {
 	var nodes corev1.NodeList
 	if err := s.client.List(ctx, &nodes, client.MatchingLabels(s.config.BackendNodeSelector)); err != nil {
 		return nil, fmt.Errorf("list selected backend Nodes: %w", err)
 	}
 	selected := make(map[string]struct{})
 	for _, node := range nodes.Items {
-		if !node.DeletionTimestamp.IsZero() || node.Spec.Unschedulable {
+		if !node.DeletionTimestamp.IsZero() || node.Spec.Unschedulable || controller.NodePortNodeExcluded(&node) {
 			continue
 		}
 		for _, condition := range node.Status.Conditions {
@@ -234,7 +237,7 @@ func readyBackendEndpoint(endpoint discoveryv1.Endpoint) bool {
 		(endpoint.Conditions.Terminating == nil || !*endpoint.Conditions.Terminating)
 }
 
-func (s *phase2Suite) createGatewayClass(ctx context.Context) error {
+func (s *openStackSuite) createGatewayClass(ctx context.Context) error {
 	gatewayClass := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        s.gatewayClassName,
@@ -242,6 +245,7 @@ func (s *phase2Suite) createGatewayClass(ctx context.Context) error {
 		},
 		Spec: gatewayv1.GatewayClassSpec{
 			ControllerName: gatewayv1.GatewayController(s.config.ControllerName),
+			ParametersRef:  &gatewayv1.ParametersReference{Group: gatewayv1.Group(configv1alpha1.GroupName), Kind: gatewayv1.Kind(configv1alpha1.GatewayClassConfigKind), Name: s.gatewayClassName},
 		},
 	}
 	s.createdClass = true
@@ -252,7 +256,7 @@ func (s *phase2Suite) createGatewayClass(ctx context.Context) error {
 	return s.waitForGatewayClass(ctx)
 }
 
-func (s *phase2Suite) createGateway(ctx context.Context) error {
+func (s *openStackSuite) createGateway(ctx context.Context) error {
 	same := gatewayv1.NamespacesFromSame
 	gateway := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -280,7 +284,7 @@ func (s *phase2Suite) createGateway(ctx context.Context) error {
 	return s.waitForGateway(ctx, 0)
 }
 
-func (s *phase2Suite) createHTTPRoute(ctx context.Context) error {
+func (s *openStackSuite) createHTTPRoute(ctx context.Context) error {
 	sectionName := gatewayv1.SectionName(listenerName)
 	pathType := gatewayv1.PathMatchPathPrefix
 	path := "/"
@@ -316,7 +320,7 @@ func (s *phase2Suite) createHTTPRoute(ctx context.Context) error {
 	return s.waitForGateway(ctx, 1)
 }
 
-func (s *phase2Suite) waitForGatewayClass(ctx context.Context) error {
+func (s *openStackSuite) waitForGatewayClass(ctx context.Context) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		var gatewayClass gatewayv1.GatewayClass
 		if err := s.client.Get(ctx, client.ObjectKey{Name: s.gatewayClassName}, &gatewayClass); err != nil {
@@ -327,7 +331,7 @@ func (s *phase2Suite) waitForGatewayClass(ctx context.Context) error {
 	})
 }
 
-func (s *phase2Suite) waitForGateway(ctx context.Context, attachedRoutes int32) error {
+func (s *openStackSuite) waitForGateway(ctx context.Context, attachedRoutes int32) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		var gateway gatewayv1.Gateway
 		if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.config.Namespace, Name: gatewayName}, &gateway); err != nil {
@@ -372,7 +376,7 @@ func gatewayListenerConditionsReady(conditions []metav1.Condition, generation in
 		exactCondition(conditions, string(gatewayv1.ListenerConditionConflicted), metav1.ConditionFalse, string(gatewayv1.ListenerReasonNoConflicts), generation)
 }
 
-func (s *phase2Suite) waitForHTTPRoute(ctx context.Context) error {
+func (s *openStackSuite) waitForHTTPRoute(ctx context.Context) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		var route gatewayv1.HTTPRoute
 		if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.config.Namespace, Name: routeName}, &route); err != nil {
@@ -396,7 +400,7 @@ func (s *phase2Suite) waitForHTTPRoute(ctx context.Context) error {
 	})
 }
 
-func (s *phase2Suite) verifyExternalTraffic(ctx context.Context) error {
+func (s *openStackSuite) verifyExternalTraffic(ctx context.Context) error {
 	expectedBody := "gateway-api-openstack-e2e-" + s.config.RunID
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		address, err := s.gatewayAddress(ctx)
@@ -426,7 +430,7 @@ func (s *phase2Suite) verifyExternalTraffic(ctx context.Context) error {
 	})
 }
 
-func (s *phase2Suite) gatewayAddress(ctx context.Context) (string, error) {
+func (s *openStackSuite) gatewayAddress(ctx context.Context) (string, error) {
 	var gateway gatewayv1.Gateway
 	if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.config.Namespace, Name: gatewayName}, &gateway); err != nil {
 		return "", fmt.Errorf("read Gateway address: %w", err)

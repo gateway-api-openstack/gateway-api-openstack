@@ -85,6 +85,16 @@ archives:
           owner: root
           group: root
           mtime: "{{ .CommitDate }}"
+      - src: config/**/*.yaml
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+      - src: examples/*.yaml
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
 
 checksum:
   name_template: checksums.txt

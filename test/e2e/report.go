@@ -126,7 +126,7 @@ type e2eReport struct {
 func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 	report := &e2eReport{
 		FormatVersion:         reportFormatVersion,
-		Suite:                 "Phase 2 E2E foundations",
+		Suite:                 "OpenStack E2E foundations",
 		Status:                statusNotRun,
 		StartedAt:             startedAt.UTC(),
 		GatewayAPIBundle:      "v1.6.1 Standard Channel",
@@ -229,7 +229,7 @@ func renderMarkdownReport(report *e2eReport) []byte {
 }
 
 func renderMarkdownReportHeader(output *bytes.Buffer, report *e2eReport) {
-	_, _ = fmt.Fprintln(output, "# Phase 2 E2E foundations report")
+	_, _ = fmt.Fprintln(output, "# OpenStack E2E foundations report")
 	_, _ = fmt.Fprintln(output)
 	_, _ = fmt.Fprintf(output, "Status: %s\n\n", report.Status)
 	_, _ = fmt.Fprintf(output, "Started: %s\n\n", report.StartedAt.Format(time.RFC3339))

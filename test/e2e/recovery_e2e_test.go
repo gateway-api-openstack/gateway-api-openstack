@@ -51,7 +51,7 @@ type leaderProcessState struct {
 	restartCount int32
 }
 
-func (s *phase2Suite) deleteLeaderAndVerifyRecovery(ctx context.Context) error {
+func (s *openStackSuite) deleteLeaderAndVerifyRecovery(ctx context.Context) error {
 	leader, before, err := s.currentControllerLeader(ctx)
 	if err != nil {
 		return err
@@ -70,7 +70,7 @@ func (s *phase2Suite) deleteLeaderAndVerifyRecovery(ctx context.Context) error {
 	return s.verifyRecoveryAudit(ctx, "leader")
 }
 
-func (s *phase2Suite) currentControllerLeader(ctx context.Context) (*corev1.Pod, leaseState, error) {
+func (s *openStackSuite) currentControllerLeader(ctx context.Context) (*corev1.Pod, leaseState, error) {
 	if err := s.verifyControllerDeployment(ctx); err != nil {
 		return nil, leaseState{}, err
 	}
@@ -92,7 +92,7 @@ func (s *phase2Suite) currentControllerLeader(ctx context.Context) (*corev1.Pod,
 	return leader, lease, nil
 }
 
-func (s *phase2Suite) waitForLeaderReplacement(ctx context.Context, oldLeaderName string, before leaseState) error {
+func (s *openStackSuite) waitForLeaderReplacement(ctx context.Context, oldLeaderName string, before leaseState) error {
 	if err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		return s.leaderReplacementObserved(ctx, oldLeaderName, before)
 	}); err != nil {
@@ -101,7 +101,7 @@ func (s *phase2Suite) waitForLeaderReplacement(ctx context.Context, oldLeaderNam
 	return nil
 }
 
-func (s *phase2Suite) leaderReplacementObserved(ctx context.Context, oldLeaderName string, before leaseState) (bool, error) {
+func (s *openStackSuite) leaderReplacementObserved(ctx context.Context, oldLeaderName string, before leaseState) (bool, error) {
 	var old corev1.Pod
 	err := s.client.Get(ctx, client.ObjectKey{Namespace: s.config.ControllerNamespace, Name: oldLeaderName}, &old)
 	if !apierrors.IsNotFound(err) {
@@ -132,7 +132,7 @@ func leaseAdvanced(before, after leaseState) bool {
 	return after.holder != before.holder && after.transitions > before.transitions
 }
 
-func (s *phase2Suite) coldRestartAndVerifyRecovery(ctx context.Context) (retErr error) {
+func (s *openStackSuite) coldRestartAndVerifyRecovery(ctx context.Context) (retErr error) {
 	s.controllerScaled = true
 	defer func() {
 		if !s.controllerScaled {
@@ -168,7 +168,7 @@ func (s *phase2Suite) coldRestartAndVerifyRecovery(ctx context.Context) (retErr 
 	return s.verifyRecoveryAudit(ctx, "restart")
 }
 
-func (s *phase2Suite) controllerDeploymentStopped(ctx context.Context) (bool, error) {
+func (s *openStackSuite) controllerDeploymentStopped(ctx context.Context) (bool, error) {
 	var deployment appsv1.Deployment
 	key := client.ObjectKey{Namespace: s.config.ControllerNamespace, Name: s.config.ControllerDeployment}
 	if err := s.client.Get(ctx, key, &deployment); err != nil {
@@ -196,7 +196,7 @@ func controllerDeploymentHasStopped(deployment *appsv1.Deployment) bool {
 		deployment.Status.AvailableReplicas == 0
 }
 
-func (s *phase2Suite) controllerDeploymentPods(ctx context.Context, deployment *appsv1.Deployment) (corev1.PodList, error) {
+func (s *openStackSuite) controllerDeploymentPods(ctx context.Context, deployment *appsv1.Deployment) (corev1.PodList, error) {
 	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
 	if err != nil {
 		return corev1.PodList{}, fmt.Errorf("build controller Deployment selector: %w", err)
@@ -211,7 +211,7 @@ func (s *phase2Suite) controllerDeploymentPods(ctx context.Context, deployment *
 	return pods, nil
 }
 
-func (s *phase2Suite) verifyWorkloadAfterRecovery(ctx context.Context) error {
+func (s *openStackSuite) verifyWorkloadAfterRecovery(ctx context.Context) error {
 	if err := s.waitForGatewayClass(ctx); err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func (s *phase2Suite) verifyWorkloadAfterRecovery(ctx context.Context) error {
 	return s.verifyExternalTraffic(ctx)
 }
 
-func (s *phase2Suite) scaleController(ctx context.Context, replicas int32) error {
+func (s *openStackSuite) scaleController(ctx context.Context, replicas int32) error {
 	key := client.ObjectKey{Namespace: s.config.ControllerNamespace, Name: s.config.ControllerDeployment}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var deployment appsv1.Deployment
@@ -242,7 +242,7 @@ func (s *phase2Suite) scaleController(ctx context.Context, replicas int32) error
 	return nil
 }
 
-func (s *phase2Suite) restoreAndVerifyController(ctx context.Context) error {
+func (s *openStackSuite) restoreAndVerifyController(ctx context.Context) error {
 	if err := s.scaleController(ctx, s.config.ControllerReplicas); err != nil {
 		return err
 	}
@@ -253,7 +253,7 @@ func (s *phase2Suite) restoreAndVerifyController(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) waitForControllerHealthy(ctx context.Context) error {
+func (s *openStackSuite) waitForControllerHealthy(ctx context.Context) error {
 	if err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		if err := s.verifyControllerDeployment(ctx); err != nil {
 			return false, nil
@@ -265,7 +265,7 @@ func (s *phase2Suite) waitForControllerHealthy(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) currentLease(ctx context.Context) (leaseState, error) {
+func (s *openStackSuite) currentLease(ctx context.Context) (leaseState, error) {
 	var lease coordinationv1.Lease
 	key := client.ObjectKey{Namespace: s.config.ControllerNamespace, Name: s.config.LeaderLease}
 	if err := s.client.Get(ctx, key, &lease); err != nil {
@@ -333,7 +333,7 @@ func findContainerStatus(statuses []corev1.ContainerStatus, name string) (corev1
 	return corev1.ContainerStatus{}, false
 }
 
-func (s *phase2Suite) verifyConvergedNoOp(ctx context.Context) error {
+func (s *openStackSuite) verifyConvergedNoOp(ctx context.Context) error {
 	before, beforeLease, beforeProcess, err := s.scrapeCurrentLeaderMetrics(ctx)
 	if err != nil {
 		return err
@@ -368,7 +368,7 @@ func (s *phase2Suite) verifyConvergedNoOp(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) scrapeCurrentLeaderMetrics(ctx context.Context) (metricSnapshot, leaseState, leaderProcessState, error) {
+func (s *openStackSuite) scrapeCurrentLeaderMetrics(ctx context.Context) (metricSnapshot, leaseState, leaderProcessState, error) {
 	if err := s.verifyControllerDeployment(ctx); err != nil {
 		return metricSnapshot{}, leaseState{}, leaderProcessState{}, err
 	}
@@ -411,7 +411,7 @@ func (s *phase2Suite) scrapeCurrentLeaderMetrics(ctx context.Context) (metricSna
 	return snapshot, lease, process, nil
 }
 
-func (s *phase2Suite) triggerConvergedRouteObservation(ctx context.Context) error {
+func (s *openStackSuite) triggerConvergedRouteObservation(ctx context.Context) error {
 	key := client.ObjectKey{Namespace: s.config.Namespace, Name: routeName}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var route gatewayv1.HTTPRoute
@@ -436,7 +436,7 @@ func (s *phase2Suite) triggerConvergedRouteObservation(ctx context.Context) erro
 	return s.waitForGateway(ctx, 1)
 }
 
-func (s *phase2Suite) verifyActiveOwnershipInventoryAudit(ctx context.Context) error {
+func (s *openStackSuite) verifyActiveOwnershipInventoryAudit(ctx context.Context) error {
 	var fingerprint [32]byte
 	summary, err := s.runOwnershipAudit(ctx, false, &fingerprint)
 	if err != nil {
@@ -454,7 +454,7 @@ func (s *phase2Suite) verifyActiveOwnershipInventoryAudit(ctx context.Context) e
 	return nil
 }
 
-func (s *phase2Suite) verifyRecoveryAudit(ctx context.Context, stage string) error {
+func (s *openStackSuite) verifyRecoveryAudit(ctx context.Context, stage string) error {
 	if s.activeAudit == nil {
 		return nil
 	}
@@ -481,7 +481,7 @@ func (s *phase2Suite) verifyRecoveryAudit(ctx context.Context, stage string) err
 	return nil
 }
 
-func (s *phase2Suite) orderlyCleanup(ctx context.Context) error {
+func (s *openStackSuite) orderlyCleanup(ctx context.Context) error {
 	if err := s.waitForControllerHealthy(ctx); err != nil {
 		return fmt.Errorf("verify controller before finalizer-bound cleanup: %w", err)
 	}
@@ -497,7 +497,7 @@ func (s *phase2Suite) orderlyCleanup(ctx context.Context) error {
 	return s.deleteNamespace(ctx)
 }
 
-func (s *phase2Suite) ensureCleanup(ctx context.Context) error {
+func (s *openStackSuite) ensureCleanup(ctx context.Context) error {
 	if s.controllerScaled {
 		if err := s.restoreAndVerifyController(ctx); err != nil {
 			return fmt.Errorf("restore controller before finalizer-bound cleanup: %w", err)
@@ -520,7 +520,7 @@ func (s *phase2Suite) ensureCleanup(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) deleteHTTPRoute(ctx context.Context) error {
+func (s *openStackSuite) deleteHTTPRoute(ctx context.Context) error {
 	if !s.createdRoute {
 		return nil
 	}
@@ -532,7 +532,7 @@ func (s *phase2Suite) deleteHTTPRoute(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) deleteGateway(ctx context.Context) error {
+func (s *openStackSuite) deleteGateway(ctx context.Context) error {
 	if !s.createdGateway {
 		return nil
 	}
@@ -544,7 +544,7 @@ func (s *phase2Suite) deleteGateway(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) deleteGatewayClass(ctx context.Context) error {
+func (s *openStackSuite) deleteGatewayClass(ctx context.Context) error {
 	if !s.createdClass {
 		return nil
 	}
@@ -556,7 +556,7 @@ func (s *phase2Suite) deleteGatewayClass(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) deleteNamespace(ctx context.Context) error {
+func (s *openStackSuite) deleteNamespace(ctx context.Context) error {
 	if !s.createdNamespace {
 		return nil
 	}
@@ -568,7 +568,7 @@ func (s *phase2Suite) deleteNamespace(ctx context.Context) error {
 	return nil
 }
 
-func (s *phase2Suite) deleteMarkedAndWait(ctx context.Context, object client.Object, expectedUID *types.UID) error {
+func (s *openStackSuite) deleteMarkedAndWait(ctx context.Context, object client.Object, expectedUID *types.UID) error {
 	key := client.ObjectKeyFromObject(object)
 	fresh, found, err := s.cleanupObject(ctx, object, key)
 	if err != nil {
@@ -587,7 +587,7 @@ func (s *phase2Suite) deleteMarkedAndWait(ctx context.Context, object client.Obj
 	return s.waitForCleanupObjectDeletion(ctx, object, key, uid)
 }
 
-func (s *phase2Suite) cleanupObject(ctx context.Context, object client.Object, key client.ObjectKey) (client.Object, bool, error) {
+func (s *openStackSuite) cleanupObject(ctx context.Context, object client.Object, key client.ObjectKey) (client.Object, bool, error) {
 	fresh := object.DeepCopyObject().(client.Object)
 	if err := s.client.Get(ctx, key, fresh); apierrors.IsNotFound(err) {
 		return nil, false, nil
@@ -597,7 +597,7 @@ func (s *phase2Suite) cleanupObject(ctx context.Context, object client.Object, k
 	return fresh, true, nil
 }
 
-func (s *phase2Suite) validateCleanupObject(fresh client.Object, expectedUID *types.UID) (types.UID, error) {
+func (s *openStackSuite) validateCleanupObject(fresh client.Object, expectedUID *types.UID) (types.UID, error) {
 	if fresh.GetAnnotations()[runAnnotation] != s.config.RunID {
 		return "", fmt.Errorf("refuse cleanup because the object lacks the exact run annotation")
 	}
@@ -612,20 +612,20 @@ func (s *phase2Suite) validateCleanupObject(fresh client.Object, expectedUID *ty
 	return uid, nil
 }
 
-func (s *phase2Suite) deleteCleanupObject(ctx context.Context, object client.Object, uid types.UID) error {
+func (s *openStackSuite) deleteCleanupObject(ctx context.Context, object client.Object, uid types.UID) error {
 	if err := s.client.Delete(ctx, object, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
 }
 
-func (s *phase2Suite) waitForCleanupObjectDeletion(ctx context.Context, object client.Object, key client.ObjectKey, uid types.UID) error {
+func (s *openStackSuite) waitForCleanupObjectDeletion(ctx context.Context, object client.Object, key client.ObjectKey, uid types.UID) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		return s.cleanupObjectDeletionObserved(ctx, object, key, uid)
 	})
 }
 
-func (s *phase2Suite) cleanupObjectDeletionObserved(ctx context.Context, object client.Object, key client.ObjectKey, uid types.UID) (bool, error) {
+func (s *openStackSuite) cleanupObjectDeletionObserved(ctx context.Context, object client.Object, key client.ObjectKey, uid types.UID) (bool, error) {
 	copy := object.DeepCopyObject().(client.Object)
 	err := s.client.Get(ctx, key, copy)
 	if apierrors.IsNotFound(err) {
@@ -640,7 +640,7 @@ func (s *phase2Suite) cleanupObjectDeletionObserved(ctx context.Context, object 
 	return false, nil
 }
 
-func (s *phase2Suite) runOwnershipAudit(ctx context.Context, requireEmpty bool, fingerprint *[32]byte) (auditSummary, error) {
+func (s *openStackSuite) runOwnershipAudit(ctx context.Context, requireEmpty bool, fingerprint *[32]byte) (auditSummary, error) {
 	var report audit.Report
 	err := s.withAuthenticatedAuditCloudsYAML(ctx, func(path string) error {
 		observed, err := auditexec.Run(ctx, auditexec.Config{
@@ -712,7 +712,7 @@ func sanitizeAuditSummary(report audit.Report) auditSummary {
 	}
 }
 
-func (s *phase2Suite) verifyPostCleanupAudit(ctx context.Context) error {
+func (s *openStackSuite) verifyPostCleanupAudit(ctx context.Context) error {
 	var observed auditSummary
 	err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		summary, err := s.runOwnershipAudit(ctx, true, nil)

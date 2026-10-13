@@ -45,7 +45,7 @@ func TestDeleteMarkedAndWaitUsesRunMarkerAndUID(t *testing.T) {
 		UID:         routeUID,
 		Annotations: map[string]string{runAnnotation: "run-1234"},
 	}}
-	suite := &phase2Suite{
+	suite := &openStackSuite{
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build(),
 		config: e2eConfig{RunID: "run-1234", PollInterval: time.Millisecond},
 	}
@@ -69,7 +69,7 @@ func TestDeleteMarkedAndWaitRefusesForeignObject(t *testing.T) {
 		UID:         types.UID("foreign-uid"),
 		Annotations: map[string]string{runAnnotation: "different-run"},
 	}}
-	suite := &phase2Suite{
+	suite := &openStackSuite{
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build(),
 		config: e2eConfig{RunID: "run-1234", PollInterval: time.Millisecond},
 	}
@@ -103,7 +103,7 @@ func TestEnsureCleanupStopsAtFirstDependencyFailure(t *testing.T) {
 		UID:         namespaceUID,
 		Annotations: map[string]string{runAnnotation: "run-1234"},
 	}}
-	suite := &phase2Suite{
+	suite := &openStackSuite{
 		client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(gatewayClass, namespace).Build(),
 		config:           e2eConfig{RunID: "run-1234", Namespace: namespace.Name, PollInterval: time.Millisecond},
 		gatewayClassName: gatewayClass.Name,

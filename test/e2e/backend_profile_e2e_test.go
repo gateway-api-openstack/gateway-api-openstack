@@ -35,7 +35,7 @@ import (
 
 func TestBackendProfileRestrictsPlacementAndLocalMembers(t *testing.T) {
 	selector := map[string]string{"e2e.example.test/backend": "true"}
-	suite := &phase2Suite{config: e2eConfig{
+	suite := &openStackSuite{config: e2eConfig{
 		Namespace:                    "test-backend",
 		BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal,
 		BackendNodeSelector:          selector,
@@ -64,7 +64,7 @@ func TestBackendProfileRestrictsPlacementAndLocalMembers(t *testing.T) {
 }
 
 func TestDefaultBackendProfileKeepsClusterBehavior(t *testing.T) {
-	suite := &phase2Suite{config: e2eConfig{BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster}}
+	suite := &openStackSuite{config: e2eConfig{BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster}}
 	podSpec := suite.backendDeployment(2).Spec.Template.Spec
 	if len(podSpec.NodeSelector) != 0 || podSpec.Affinity != nil ||
 		suite.backendService().Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
@@ -110,6 +110,22 @@ func TestSelectedBackendRequiresTwoEligibleNodesBeforeCreation(t *testing.T) {
 	}
 	if len(namespaces.Items) != 0 || suite.createdNamespace {
 		t.Fatal("backend preflight created resources before proving two selected Nodes are eligible")
+	}
+}
+
+func TestSelectedBackendExcludesControlPlaneAndExcludedNodes(t *testing.T) {
+	worker := selectedBackendTestNode("worker")
+	controlPlane := selectedBackendTestNode("control-plane")
+	controlPlane.Labels["node-role.kubernetes.io/control-plane"] = ""
+	excluded := selectedBackendTestNode("excluded-worker")
+	excluded.Labels[corev1.LabelNodeExcludeBalancers] = "true"
+	suite := selectedBackendTestSuite(t, worker, controlPlane, excluded)
+	nodes, err := suite.selectedBackendNodes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(nodes, map[string]struct{}{"worker": {}}) {
+		t.Fatalf("selected backend Nodes = %v", nodes)
 	}
 }
 
@@ -164,7 +180,7 @@ func selectedBackendTestNode(name string) *corev1.Node {
 	}
 }
 
-func selectedBackendTestSuite(t *testing.T, objects ...client.Object) *phase2Suite {
+func selectedBackendTestSuite(t *testing.T, objects ...client.Object) *openStackSuite {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, discoveryv1.AddToScheme} {
@@ -172,7 +188,7 @@ func selectedBackendTestSuite(t *testing.T, objects ...client.Object) *phase2Sui
 			t.Fatal(err)
 		}
 	}
-	return &phase2Suite{
+	return &openStackSuite{
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
 		config: e2eConfig{
 			Namespace:                    "test-backend",
