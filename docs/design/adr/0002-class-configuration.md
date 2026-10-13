@@ -41,7 +41,7 @@ Do not retain infrastructure flags as a fallback and do not add per-Gateway conf
 
 The class API selects existing VIP and member subnets, an optional external network for allocating a new Floating IP, a Node address type, bounded HTTP health monitor settings, and optional Amphora flavor and availability zone placement.
 References use one UUID, one exact name, or an AND tag selector that resolves to exactly one resource.
-The configuration API and its schema define the fields, defaults, limits, and minimum microversions.
+The [configuration reference](../../reference/class-configuration.md) defines the fields, defaults, limits, and minimum microversions.
 
 Credentials, authenticated project, cluster identity, region, controller identity, and client request limits remain deployment concerns.
 The class cannot change their scope.
@@ -144,11 +144,12 @@ API acceptance and local test success do not establish conformance or OpenStack 
 
 ## Test and evidence
 
-The foundation tests cover schema validation, defaults, read-only topology resolution, and frozen configuration serialization.
-Controller activation follows in the runtime integration change.
-Before release, validate binding checkpoints, class changes and deletion, worker eligibility, cleanup, and restart through controller tests and envtest.
+The implementation has unit and adapter tests for selector ambiguity, project scope, read-only capability discovery, optional profile validation, frozen bindings, worker membership, and redacted provider failures.
+Schema tests and envtest exercise defaults and validation through the Kubernetes API server.
+Controller tests cover binding before cloud creation, parameter changes and deletion, retention through graph replacement, and finalization from the stored configuration.
+Local verification, race tests, lint, build checks, and envtest passed before this record was written.
 
-The earlier Phase 2 OpenStack E2E result does not validate this API.
+The earlier Phase 2 OpenStack E2E result does not validate the Phase 3 API or graph writer.
 A new live run and the pinned Gateway API conformance gap analysis remain required evidence under the roadmap.
 No public release or compatibility claim follows from accepting this ADR.
 

@@ -27,7 +27,8 @@ Five fault checks were `Not run`: external deletion of an owned child, blocked f
 A separate VIP diagnostic request timed out.
 Its timing was not synchronized with teardown, so the cause remains unresolved.
 
-Dependencies and the test harness changed after this run, so it does not establish live validation of the current revision.
+The class API, graph writer, worker selection, dependencies, and test harness changed after this run.
+It does not establish live validation of the Phase 3 revision.
 Detailed records remain local under the [test evidence policy](../reports/README.md).
 This development result does not establish a supported environment profile or Gateway API conformance.
 
@@ -41,6 +42,7 @@ This development result does not establish a supported environment profile or Ga
 | Floating IP allocation | Phase 0 probe and adapter ownership tests passed | E2E tests with and without a Floating IP, quota failure, detach recovery, and cleanup | Only Floating IPs created by the controller. Existing addresses are not adopted |
 | Reconciliation failure recovery | [Development E2E leader and cold restart recovery](#development-validation) passed. Unit and adapter tests cover typed failures, safe status and Events, jittered retries, periodic resync, shared client throttling, selected resource recreation, semantic status no-ops, finalizer retention, and the read-only ownership audit. API server envtest covers stale binding conflicts, finalizer checkpoints, progressing cleanup, and finalization with a fresh reconciler | Restart, leader change, `PENDING_*`, timeout, quota, rate limit, external deletion, fault injection after partial creation, and the blocked finalization workflow in OpenStack | Ownership conflict stops mutation and uses a slower retry interval |
 | Gateway API bundle handling | Unit tests cover exact, missing, and mixed CRD bundle versions, event filtering, mutation blocking, and cleanup during a mismatch. API server envtest loads the pinned Standard Channel CRDs and exercises the status subresource | Upgrade testing with the pinned Standard Channel manifests | This release accepts only the v1.6.1 bundle and does not advertise Gateway or HTTPRoute conformance |
+| Class configuration and worker selection | Local schema, controller, adapter, race, and API server tests cover typed references, frozen topology, class dependency watches, worker eligibility, and complete graph writes | E2E for the selected Phase 3 revision, multiple class topologies, parameter changes, worker membership transitions, and leak checks | Read-only topology acceptance does not prove write permissions, quota, backend connectivity, or conformance |
 | Network and backend security automation | Not implemented | A documented network selection procedure and repeatable end-to-end tests for `Referenced`, `Unmanaged`, and any approved `Managed` mode | The controller does not own networks, subnets, routers, foreign security groups, or worker ports |
 | Terminated HTTPS and Barbican | Not implemented | Tests for authorized Secret references, certificate creation and rotation, restart recovery, deletion, SNI, and orphan cleanup | Requires Barbican and a certificate lifecycle that verifies ownership before mutation or deletion |
 | Pod IP members | Not implemented | Tests that cover CNI routability, EndpointSlice lifecycle, draining, security, and source IP behavior | If added, this mode will remain experimental and require explicit opt-in. NodePort remains the default mode with the broadest compatibility |

@@ -3,6 +3,8 @@
 This guide covers end-to-end checks for the current HTTP and NodePort implementation.
 The checks use a real Kubernetes API server and an OpenStack Amphora data plane.
 They do not run the Gateway API conformance suite and they do not establish general OpenStack compatibility.
+The Phase 3 implementation still requires a new live run.
+Earlier milestone results do not validate the current revision.
 
 Keep detailed run artifacts locally and summarize the results in the PR using the [validation template](reports/openstack-e2e-template.md).
 The [test evidence policy](reports/README.md) explains what to retain and publish.
@@ -17,8 +19,9 @@ The runner cannot prove that no one else uses the cluster.
 Prepare all of the following:
 
 - Gateway API v1.6.1 Standard Channel CRDs on the cluster.
+- The OpenStackGatewayClassConfig CRD from the revision under test, installed by the operator before starting the runner.
 - A kubeconfig and explicit context that can create, inspect, update, and delete the run-scoped workloads, controller objects, and cluster-scoped RBAC.
-  The test gets the run-scoped Namespaces, ConfigMaps, and Secrets, lists GatewayClasses, and reads Gateway API CRDs, Gateways, HTTPRoutes, EndpointSlices, ReplicaSets, Pods, and the leader Lease.
+  The test gets the run-scoped Namespaces, ConfigMaps, and Secrets, lists GatewayClasses, creates and deletes its OpenStackGatewayClassConfig, and reads both configuration and Gateway API CRDs, Gateways, HTTPRoutes, EndpointSlices, ReplicaSets, Pods, and the leader Lease.
   The optional backend Node selector also requires permission to list Nodes.
   It deletes the current leader Pod, updates the controller Deployment, uses the `pods/proxy` subresource for metrics, and lists Gateways and HTTPRoutes for the audit.
 - An OpenStack project with Amphora and enough quota for the Gateway graph and an optional Floating IP.
@@ -29,6 +32,21 @@ Prepare all of the following:
 - A redacted project-wide inventory recorded before the run.
 
 Do not put a populated `clouds.yaml`, application credential, token, kubeconfig, certificate, or unredacted inventory in the repository or command output.
+
+Install the configuration CRD using the intended test context:
+
+```sh
+kubectl --kubeconfig /absolute/path/to/e2e.kubeconfig \
+  --context openstack-e2e apply -k config/crd
+kubectl --kubeconfig /absolute/path/to/e2e.kubeconfig \
+  --context openstack-e2e wait --for=condition=Established \
+  crd/openstackgatewayclassconfigs.gateway-api-openstack.github.io
+```
+
+The runner verifies the CRD's group, kind, cluster scope, served and storage version, structural schema presence, and Established condition.
+It does not install, modify, or remove this cluster API.
+The configuration API is `gateway-api-openstack.github.io/v1alpha1`.
+See the [class configuration reference](reference/class-configuration.md) for its fields and lifecycle.
 
 ## Prepare one configuration file
 
@@ -68,7 +86,8 @@ They state what the operator has checked and do not change Keystone permissions.
 Both modes still require the dedicated Kubernetes cluster acknowledgement.
 
 Shared mode narrows the controller and audit to a unique logical identity, but the credential can still consume project quota, use Octavia and Neutron API capacity, allocate a Floating IP, and reach anything its roles permit.
-Do not run quota, fault injection, security group, or destructive recovery cases in a shared project.
+Do not run load tests, quota exhaustion, OpenStack fault injection, security group changes, or destructive cloud recovery cases in a shared project.
+Keep the run within the approved Gateway graph and use existing network and worker access rules.
 Have the project users review and attribute the project-wide inventory difference after the run.
 
 ### Set the project and network inputs
@@ -83,6 +102,8 @@ The runner fixes the provider to Amphora, the member mode to NodePort, the Node 
 Set `openstack.vipSubnetID` and `openstack.memberSubnetID` to the approved network IDs.
 Set `openstack.externalNetworkID` to an exact external network ID when the test should allocate a Floating IP, or to the literal `none` when it should not.
 The runner does not choose networks, reserve quota, or prove that the network path is safe.
+It creates one OpenStackGatewayClassConfig for the run using these exact subnet and external network IDs.
+The test GatewayClass references this object through `spec.parametersRef`.
 
 ### Set the credentials
 
@@ -112,8 +133,13 @@ The runner refuses to overwrite an existing run directory.
 ### Restrict a test backend to selected Nodes
 
 The default backend uses `externalTrafficPolicy: Cluster` and does not restrict Pod placement.
-The current controller does not honor `node.kubernetes.io/exclude-from-external-load-balancers`, so a worker label or backend Pod placement alone does not exclude control plane Nodes from Cluster members.
-To test with selected worker Nodes, add Local endpoint selection and a Node selector to the existing `backend` configuration:
+The controller excludes Nodes with either `node-role.kubernetes.io/control-plane` or the legacy `node-role.kubernetes.io/master` label, regardless of the label value.
+It does not require a worker role label.
+It also honors `node.kubernetes.io/exclude-from-external-load-balancers` in both Cluster and Local modes.
+An absent exclusion label or a value that parses as false permits the Node, while true, empty, and invalid values exclude it.
+
+Cluster mode can register every eligible worker even when backend Pods run on only a few Nodes.
+For a shared project test restricted to selected workers, keep Local endpoint selection and a Node selector in the `backend` configuration:
 
 ```yaml
 backend:
@@ -126,13 +152,14 @@ Replace the example label with one applied only to the intended worker Nodes, an
 The runner reads Node labels but does not change them.
 It rejects a nonempty `backend.nodeSelector` unless `backend.externalTrafficPolicy` is `Local`.
 
-The suite requires at least two matching Ready, schedulable Nodes before it creates the backend.
+The suite requires at least two matching Ready, schedulable worker Nodes that pass the controller's exclusion rules before it creates the backend.
 Required Pod anti-affinity places the two replicas on distinct selected Nodes.
 Before creating the Gateway, the suite checks that EndpointSlices contain ready endpoints on those Nodes.
 Local mode registers only Nodes with eligible local endpoints.
 The operator must still verify the Amphora-to-NodePort path for the selected Nodes.
 
-A Local run provides no evidence for Cluster member selection or the deferred standard exclusion label behavior.
+A Local run provides no live evidence for Cluster member selection.
+Local tests cover worker eligibility and exclusion label transitions, but they do not replace OpenStack validation of each traffic policy.
 
 ## Run the suite
 
@@ -143,6 +170,7 @@ make test-e2e E2E_CONFIG="$PWD/_artifacts/e2e-config/openstack.yaml"
 ```
 
 The target builds the ownership audit, compiles the runner and tagged E2E suite, installs a controller dedicated to the run, and executes the live checks.
+The runner selects `TestOpenStackE2E` in `test/e2e/openstack_e2e_test.go`.
 The YAML file is the source of truth.
 Inherited `GATEWAY_OPENSTACK_*` and `OS_*` variables do not override the generated test environment.
 
@@ -153,24 +181,30 @@ make test-e2e-unit
 make test-e2e-compile
 ```
 
-Live E2E remains opt-in and is not part of `make verify` or a scheduled workflow.
+Live E2E remains opt-in and is not part of `make verify`.
+A scheduled cloud job still needs a dedicated environment and an agreed controller image registry.
 
 ## What the runner checks
 
 The runner performs these operations in order:
 
 1. Validate the strict configuration, local files, image digests, source revision, kubeconfig, and artifact path.
-2. Generate one run identity and derive the workload Namespace, GatewayClass, controller name, cluster ID, controller Namespace, and RBAC names.
-3. Require the derived Namespaces, GatewayClass identity, ClusterRole, and ClusterRoleBinding to be absent.
+2. Generate one run identity and derive the workload Namespace, GatewayClass, OpenStackGatewayClassConfig, controller name, cluster ID, controller Namespace, and RBAC names.
+3. Verify the operator-installed configuration CRD and require the derived Namespaces, GatewayClass identity, OpenStackGatewayClassConfig, ClusterRole, and ClusterRoleBinding to be absent.
 4. Authenticate an isolated exact copy of the controller credential and the audit configuration against the expected project.
 5. Run the ownership audit and require a complete, empty result for the exact controller name and cluster ID.
-6. Create the Namespace, ServiceAccount, unique ClusterRole and ClusterRoleBinding, immutable ConfigMap and Secret, and controller Deployment with create-only writes.
+6. Create the Namespace, ServiceAccount, unique ClusterRole and ClusterRoleBinding, immutable ConfigMap and Secret, OpenStackGatewayClassConfig, and controller Deployment with create-only writes.
 7. Bind the Pod template to the ConfigMap and Secret UID and `resourceVersion`, then require two Ready controller Pods, the expected image digest, and a live leader Lease.
 8. Run the foundations scenarios, ordered cleanup, and the final ownership audit.
 9. Remove the run-scoped controller installation only after the workload graph is gone and the exact audit scope is empty again.
 
 No controller object is created before both credentials and the empty audit baseline pass.
 Names, tags, and the scoped audit are safety signals, not an OpenStack authorization boundary.
+
+The installation inventory records the UID and run annotation of the class configuration along with the other created objects.
+The suite checks the configuration's run identity, approved topology, and GatewayClass reference during installation and recovery validation.
+Successful cleanup removes the configuration only after the workload GatewayClass and cloud graph are gone.
+The runner validates every retained installation object's UID and run annotation before deleting any of them, then uses UID preconditions for deletion.
 
 ## Foundations scenarios
 

@@ -1,8 +1,10 @@
 # Getting started with the current controller
 
 The controller is pre-alpha.
-Phase 2 is complete as a development milestone following the baseline OpenStack E2E run for the constrained HTTP and NodePort path.
-See the [development validation record](providers/compatibility.md#development-validation) for its tested revision, scope, and limitations, and the [roadmap](../ROADMAP.md#work-carried-into-phase-3) for the work carried into Phase 3.
+Phase 3 implements typed class configuration, a shared Gateway graph writer, and worker NodePort members.
+The earlier Phase 2 OpenStack E2E run covers the previous HTTP and NodePort baseline.
+It does not validate the Phase 3 changes.
+See the [development validation record](providers/compatibility.md#development-validation) for the evidence and the [roadmap](../ROADMAP.md) for the remaining live validation and conformance work.
 No supported controller environment profile has been published.
 No release image is available.
 
@@ -29,9 +31,11 @@ Follow the [OpenStack E2E test guide](testing-openstack-e2e.md) for either proje
 - A controller container image built from the source revision being deployed.
   The repository does not currently publish a supported image.
 
-The member subnet ID is always required.
+Each class must select a VIP subnet and a member subnet through an OpenStackGatewayClassConfig.
 `InternalIP` is the default Node address type.
 Select `ExternalIP` only when those addresses belong to the configured member network and are reachable from Amphora.
+Only eligible worker Nodes become members.
+See the [class configuration reference](reference/class-configuration.md#worker-nodeport-members) for control plane exclusions and traffic policy behavior.
 
 The current controller does not create networks, subnets, routers, or backend security groups and does not attach security groups to worker ports.
 Operators must establish that connectivity before creating a Gateway.
@@ -86,27 +90,38 @@ The Secret is mounted read-only and credentials are not copied into ConfigMaps, 
 
 Edit `config/manager/controller-config.yaml` before applying it:
 
-- Replace the example controller name with one under a domain controlled by the operator.
+- Keep the default controller name, or choose an installation identity before creating managed resources.
 - Set the cluster ID to a value that is unique to this cluster, and do not change it while managed resources exist.
-- Set the VIP and member subnet IDs.
-- Set the external network ID if the controller should allocate Floating IPs.
 - Set `OS_CLOUD` to the entry in the mounted `clouds.yaml`.
 - Set `OS_REGION_NAME` only when it should override `region_name` in that file.
 
-The same controller name must be used in every managed `GatewayClass.spec.controllerName`, including `examples/basic.yaml`.
+The default controller name is `gateway-api-openstack.github.io/gateway-api-openstack`.
+The same value must appear in every managed `GatewayClass.spec.controllerName`, including `examples/basic.yaml`.
+The API group `gateway-api-openstack.github.io` uses the project organization's domain.
+[ADR 0003](design/adr/0003-project-organization.md) records the repository and identity change.
+This alpha API has no automatic conversion from the earlier personal API group.
+Finish cleanup with the original controller before replacing an existing development installation.
+
+Configure VIP and member placement in the OpenStackGatewayClassConfig in `examples/basic.yaml`.
+Replace its synthetic subnet IDs with existing resources in the controller project.
+Keep `floatingIP.mode: None` to publish the VIP, or use `Allocate` with an explicit external network reference.
+The [class configuration reference](reference/class-configuration.md) covers selectors, health monitor defaults, optional placement, and required reads.
+The controller does not use deployment topology flags when class parameters are missing.
 
 Build and push an image from the exact source revision you are deploying, then edit the image override in `config/default/kustomization.yaml`.
 The image reference in the repository uses `example.invalid` and is intentionally unusable, so it cannot be mistaken for a published release.
 
 ```sh
 make container-build \
-  IMAGE=registry.example/openstack-gateway-controller:v0.2.0-dev \
-  VERSION=v0.2.0-dev
-docker push registry.example/openstack-gateway-controller:v0.2.0-dev
+  IMAGE=registry.example/openstack-gateway-controller:v0.3.0-dev \
+  VERSION=v0.3.0-dev
+docker push registry.example/openstack-gateway-controller:v0.3.0-dev
 ```
 
 Set `CONTAINER_TOOL=podman` on the `make` command when Podman is preferred.
 
+The base installation includes the cluster-scoped OpenStackGatewayClassConfig CRD.
+Inspect its effect on any other installation using this API before applying or removing the base manifests.
 Render and inspect the resources, then install them:
 
 ```sh
@@ -122,22 +137,16 @@ Port 8080 exposes controller-runtime metrics and bounded OpenStack request, dura
 These OpenStack metrics are process-local and reset when the controller process restarts.
 The base manifests do not expose metrics through a Service.
 
-## Current configuration reference
+## Deployment settings
 
-The ConfigMap contains no secrets.
-It uses the environment variables accepted by the controller binary.
+The ConfigMap contains process identity and operational settings, with no secrets.
+Infrastructure choices belong to the class API.
+The ConfigMap uses the environment variables accepted by the controller binary.
 
 | Setting | Environment variable | Current behavior |
 | --- | --- | --- |
-| Controller identity | `GATEWAY_OPENSTACK_CONTROLLER_NAME` | Required. Must exactly match GatewayClass |
-| Cluster identity | `GATEWAY_OPENSTACK_CLUSTER_ID` | Required and stable |
-| Octavia provider | `GATEWAY_OPENSTACK_OCTAVIA_PROVIDER` | Required and fixed to `amphora`. Other providers are not supported |
-| VIP subnet | `GATEWAY_OPENSTACK_VIP_SUBNET_ID` | Required |
-| External network | `GATEWAY_OPENSTACK_EXTERNAL_NETWORK_ID` | Optional Floating IP allocation |
-| Member subnet | `GATEWAY_OPENSTACK_MEMBER_SUBNET_ID` | Required. Contains selected Node addresses |
-| Member mode | `GATEWAY_OPENSTACK_MEMBER_MODE` | Must be `NodePort` |
-| Node address | `GATEWAY_OPENSTACK_NODE_ADDRESS_TYPE` | `InternalIP` or `ExternalIP` |
-| Monitor path | `GATEWAY_OPENSTACK_HEALTH_PATH` | Absolute HTTP path. Defaults to `/` |
+| Controller identity | `GATEWAY_OPENSTACK_CONTROLLER_NAME` | Defaults to `gateway-api-openstack.github.io/gateway-api-openstack`. Must exactly match GatewayClass. |
+| Cluster identity | `GATEWAY_OPENSTACK_CLUSTER_ID` | Required and stable. |
 | OpenStack resync | `GATEWAY_OPENSTACK_RESYNC_INTERVAL` | Base interval for observing converged resources again. Defaults to `10m` |
 | OpenStack request rate | `GATEWAY_OPENSTACK_API_QPS` | Average request limit shared by Keystone, Octavia, and Neutron. Defaults to `10` per second |
 | OpenStack request burst | `GATEWAY_OPENSTACK_API_BURST` | Short request burst allowed for the process. Defaults to `20` |
@@ -156,6 +165,7 @@ Both request settings must be greater than zero.
 The equivalent command line flags are `--openstack-api-qps` and `--openstack-api-burst`.
 
 The base Deployment also sets these binary flags: leader election enabled, metrics on `:8080`, probes on `:8081`, and Octavia microversion `2.5`.
+Optional flavor and availability zone placement require higher microversions and additional profile reads, as described in the [configuration reference](reference/class-configuration.md#validation-and-permissions).
 The binary additionally supports `--openstack-operation-timeout` and `--openstack-poll-interval`.
 The manifests do not override these two flags, so the binary uses defaults of 10 minutes and 2 seconds.
 The timeout limits each provider reconciliation call, including all OpenStack requests made by that call.
@@ -163,17 +173,20 @@ After starting an asynchronous Octavia change, the controller returns and observ
 
 ## Apply the basic example
 
-Ensure the controller name in `examples/basic.yaml` matches the ConfigMap, then apply it:
+Confirm the controller name and class subnet references in `examples/basic.yaml`, then apply it:
 
 ```sh
 kubectl apply -f examples/basic.yaml
+kubectl get openstackgatewayclassconfig openstack -o yaml
 kubectl get gatewayclass openstack -o yaml
 kubectl -n gateway-api-openstack-demo get gateway edge -o yaml
 kubectl -n gateway-api-openstack-demo get httproute basic -o yaml
 ```
 
 The example intentionally uses one Gateway, one HTTP listener, one HTTPRoute, one rule, one PathPrefix match, and one NodePort Service backend.
-Wait until the Gateway's `Accepted` and `Programmed` conditions are `True`.
+First check that GatewayClass reports `Accepted=True`.
+This verifies the class inputs and read-only cloud checks, not network connectivity or provisioning permissions.
+Then wait until the Gateway's `Accepted` and `Programmed` conditions are `True`.
 In the HTTPRoute parent status, wait for `Accepted`, `ResolvedRefs`, and the `<controller-domain>/Programmed` condition defined by this controller to become `True`.
 The address is published at `Gateway.status.addresses[0].value`.
 
@@ -193,7 +206,11 @@ A VIP without a Floating IP may not be reachable from the public Internet.
 - Each HTTPRoute has one rule, at most one exact hostname, at most one Exact or PathPrefix match, and one Service backend in the same namespace.
 - Backend Services must be `type: NodePort`.
   Both `externalTrafficPolicy: Cluster` and `Local` are handled, but Local requires ready EndpointSlices to identify their Nodes.
-- Filters, headers, query parameters, methods, regular expressions, backend weights of zero, cross-namespace references, and `parametersRef` are rejected in status.
+- Filters, headers, query parameters, methods, regular expressions, backend weights of zero, and cross-namespace references are rejected in status.
+- GatewayClass requires the supported class `parametersRef`.
+  Gateway `spec.infrastructure.parametersRef` overrides are rejected.
+- Bound Gateway configuration is fixed for its UID, including after parameter changes or deletion.
+  Use a new Gateway to apply different class settings.
 - Existing OpenStack resources are never adopted.
 
 ## Safe removal

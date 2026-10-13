@@ -69,10 +69,10 @@ envtest suite installs the Gateway API Standard Channel CRDs pinned by this
 repository. It does not run Octavia, send traffic, or provide Gateway API
 conformance evidence.
 
-Run `make lint` when `golangci-lint` is installed. Use `make fmt` for Go source
-formatting. Do not run `make manifests`, `make generate`, or Kubebuilder
-scaffolding commands. This repository consumes the upstream Gateway API types
-and maintains its Kustomize and RBAC files by hand.
+Run `make lint` when `golangci-lint` is installed.
+Use `make fmt` for Go source formatting.
+Do not run `make manifests`, `make generate`, or Kubebuilder scaffolding commands.
+This repository consumes upstream Gateway API types and maintains its class configuration API, CRD, Kustomize, and RBAC files by hand.
 
 Never put `clouds.yaml`, application credential secrets, tokens, certificates,
 private addresses, project IDs, or customer information in an issue, test
@@ -91,8 +91,7 @@ Follow the dependency boundaries in the architecture document:
 - `internal/controller/gatewayclass`, `internal/controller/gateway`, and
   `internal/controller/httproute` own their reconciler lifecycle and status
   behavior
-- `internal/controller/graph` owns only process-local coordination by Gateway
-  UID; it is not the proposed single graph writer
+- `internal/controller/graph` owns the shared graph writer and coordination by Gateway UID
 - `internal/cloud` defines provider-neutral values and interfaces
 - `internal/cloud/openstack` is the command-facing OpenStack facade
 - packages below `internal/cloud/openstack` own clients, service operations,
