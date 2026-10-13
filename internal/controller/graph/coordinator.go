@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package graph serializes provider operations that target the same Gateway
-// UID. It does not implement the proposed complete-graph writer.
+// Package graph builds and reconciles complete Gateway graphs under a lock
+// keyed by Gateway UID.
 package graph
 
 import (

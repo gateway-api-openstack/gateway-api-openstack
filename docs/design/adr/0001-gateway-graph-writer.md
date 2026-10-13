@@ -1,54 +1,50 @@
 # ADR 0001: One writer for each Gateway graph
 
-Status: Proposed
+Status: Accepted
 
 Date: 2026-08-18
 
-Owners: `jihyun-huh`
+Accepted: 2026-10-09
 
-Review issue: Not opened. Open and link a public design issue before review or
-acceptance.
+Owner: `jihyun-huh`
+
+The repository owner approved this direction for Phase 3 implementation.
+This record does not claim independent review or upstream consensus.
 
 ## Context
 
-A Gateway and its attached HTTPRoute change the same Octavia load balancer.
-Today the Gateway reconciler calls `EnsureGateway` and the HTTPRoute reconciler
-calls `EnsureRoute`. The process-local `graph.Coordinator` makes those calls
-take turns for one Gateway UID, but each reconciler still observes a different
-part of the graph and creates its own mutation plan.
+Gateway and HTTPRoute reconciliation change the same Octavia load balancer.
+The previous implementation serialized separate `EnsureGateway` and `EnsureRoute` calls with a process-local coordinator.
+Each call still observed part of the graph and built its own mutation plan.
+Serialization alone could not make route detach intent durable or give either caller a complete view of the desired graph.
 
-That arrangement closes the immediate concurrent mutation race. It does not
-give the controller one complete desired graph. A restart between route detach
-and route attach can also lose the reason that one reconciler intended to
-delete a route while another still sees a valid binding and recreates it.
+The replacement must preserve these invariants:
 
-The writer must preserve the current safety rules:
+- Persist bindings before cloud creation.
+- Persist status that reports replacement or rejection before cleanup.
+- Keep route cleanup separate from deletion of its Gateway infrastructure.
+- Validate the complete owned graph before whole-Gateway deletion.
+- Perform at most one OpenStack mutation in each graph reconciliation.
+- Rebuild desired state after restart without an in-memory fragment registry.
+- Preserve the current route selection rule and exact HTTPRoute ownership identity.
 
-- Gateway and HTTPRoute bindings are durable before cloud creation.
-- Status that reports a replacement or rejection is durable before cleanup.
-- A route cleanup cannot delete the Gateway load balancer or listener.
-- Whole-Gateway deletion validates and removes the complete owned graph.
-- One reconciliation performs at most one OpenStack mutation.
-- A restart or leader change does not require an in-memory fragment registry.
-- Current route selection and exact HTTPRoute identity remain unchanged.
-
-This ADR defines the writer and route fragment contract. It does not add
-multiple routes, change precedence, or accept a new public configuration API.
+This decision does not add multiple routes, change route precedence, or introduce shared pools.
+[ADR 0002](0002-class-configuration.md) defines the separate class configuration API and worker eligibility contract.
 
 ## Decision
 
 ### One shared writer
 
-The manager constructs one `GatewayGraphWriter` and passes the same instance to
-the Gateway and HTTPRoute reconcilers. The writer owns the Gateway UID
-coordinator, final live ownership checks, complete graph construction, and the
-only call to the provider's graph reconciliation method.
+The manager constructs one `graph.Writer` and passes it to both reconcilers.
+The writer acquires the Gateway UID coordinator, collects current Kubernetes inputs through the resource packages, validates the resulting snapshot, and calls `cloud.Provider.ReconcileGatewayGraph`.
+It is the only Kubernetes-facing cloud mutation boundary.
+The provider also exposes the read-only `GetGateway` operation.
 
-Reconcilers continue to decide Gateway API acceptance and update only the
-status fields they own. They may ask the writer to reconcile a Gateway graph,
-but they do not call Gateway or route cloud mutation methods directly.
+Gateway and HTTPRoute reconcilers retain acceptance, binding checkpoints, finalization, and their own status fields.
+The writer does not patch Kubernetes objects.
+Neither reconciler calls a separate Gateway or route mutation method.
 
-The cloud boundary becomes one operation shaped like:
+The provider input contains a Gateway identity, one Gateway node, and the complete known route fragment set:
 
 ```go
 type GatewayGraphSpec struct {
@@ -56,273 +52,156 @@ type GatewayGraphSpec struct {
     Gateway  GatewayGraphNode
     Routes   []RouteGraphNode
 }
-
-type Provider interface {
-    ReconcileGatewayGraph(
-        context.Context,
-        GatewayGraphSpec,
-    ) (GatewayGraphResult, error)
-}
 ```
 
-The exact Go names may change during implementation. The single graph input,
-component results, and one provider mutation entry point are part of this
-decision.
+The result contains a whole-graph outcome and separate Gateway and route outcomes.
+`cloud.GraphError` identifies the affected component when it is known.
 
 ### Complete graph and dispositions
 
-The graph has explicit authority for the Gateway and every known route
-fragment. A node uses one of these dispositions:
+Each node has explicit authority:
 
-- `Ensure` means the object is desired and its complete provider-neutral model
-  is available.
-- `Preserve` means the writer may observe and validate the component but must
-  not create, update, or delete it.
-- `Delete` means a durable Kubernetes checkpoint authorizes deletion of the
-  exact owned component.
+| Disposition | Authority |
+| --- | --- |
+| `Ensure` | Reconcile the component against its complete desired model. |
+| `Preserve` | Observe and validate the component without creating, updating, or deleting it. |
+| `Delete` | Remove the exact owned component using a durable Kubernetes cleanup checkpoint. |
 
-HTTPRoute finalization uses `Gateway=Preserve` with its exact route fragment set
-to `Delete`. It can never delete the load balancer or listener. Gateway
-finalization uses `Gateway=Delete` and may remove the complete graph after the
-existing whole-graph identity validation succeeds.
+HTTPRoute finalization uses `Gateway=Preserve` and marks detaching route fragments `Delete`.
+It cannot delete the load balancer, Floating IP, or listener.
+Gateway finalization uses `Gateway=Delete` and removes the complete graph only after validating its ownership and dependencies.
 
-If the writer cannot build a complete and unambiguous graph, it holds the graph
-without mutation. A partial Kubernetes read, an invalid durable binding, an
-unknown route-scoped child, or a fragment whose lifecycle cannot be decided is
-not interpreted as permission to clean up.
+A partial read, invalid binding, ambiguous lifecycle, or unaccounted route-scoped cloud resource blocks mutation.
+A model error is not permission to delete an attached fragment.
 
-### Route fragments
+### Route fragments and lifecycle
 
-A route fragment contains the exact HTTPRoute identity and the desired pool,
-member, health monitor, L7 policy, and L7 rule inputs. It does not contain
-cached Octavia IDs. Load balancer, Floating IP, and listener fields belong to
-the Gateway part of the graph.
+A fragment identifies one HTTPRoute and its desired pool, members, health monitor, L7 policies, and L7 rules.
+The current HTTP profile permits at most one ensured route, alongside fragments that are being preserved or detached.
+Gateway infrastructure belongs to the Gateway component.
+Cached cloud IDs can assist observation but never establish ownership.
+Fragments and their resource plans have deterministic ordering.
 
-For the current HTTP profile, the graph contains at most one desired route fragment.
-The controller keeps the current selection rule and exact route identity tags.
-Changing selection, priority across several routes, or shared route resources
-requires another ADR.
+Each bound HTTPRoute records one controller-owned lifecycle annotation:
 
-The writer sorts fragments and every resource derived from them before it
-assigns policy positions or builds a provider plan. Duplicate route identities
-or two fragments claiming the same owned role are ownership conflicts.
+- `Attached` means the fragment participates in the desired graph.
+- `Detaching` means the exact fragment must be removed before its binding can be cleared.
 
-### Durable fragment lifecycle
+The HTTPRoute reconciler first makes rejection or replacement status durable when a ParentRef remains.
+It does not invent a ParentStatus after that ParentRef has been removed.
+It then validates the live cleanup decision and persists `Detaching` before calling the writer for deletion.
+A deletion timestamp also requires this lifecycle checkpoint before cloud mutation.
 
-The controller stores a fragment lifecycle marker with the existing HTTPRoute
-binding. It has two durable states:
+`Detaching` remains in effect across restarts and later spec changes.
+The controller clears the marker, binding, and finalizers only after the provider confirms that the fragment is absent.
+A Gateway event cannot recreate a fragment while that marker remains.
 
-- `Attached` means the exact route fragment remains part of the desired graph.
-- `Detaching` means the rejection, replacement, or deletion checkpoint is
-  durable and the exact route fragment must be removed.
-
-A binding written by an older controller has no lifecycle marker. It is read as
-`Attached` for upgrade compatibility. If its current desired model cannot be
-built, the writer holds the graph. When the ParentRef still exists, the
-HTTPRoute reconciler first publishes the appropriate ParentStatus. When the
-ParentRef has been removed, it does not invent a new ParentStatus and uses the
-existing cleanup reason annotation as the checkpoint. It confirms the relevant
-checkpoint with a live read, then writes `Detaching` in a separate
-reconciliation. It must not infer deletion from a model error inside the
-writer.
-
-`Detaching` is sticky across restart and spec changes. The controller clears it
-only after the provider confirms that the exact route graph is absent and the
-route binding and finalizers can be removed. A normal object deletion may use
-its durable deletion timestamp as the user-visible checkpoint, but it still
-records the fragment lifecycle before the provider mutation.
-
-The lifecycle marker is metadata owned by this controller and uses the same
-controller-derived domain as the existing binding. Its literal key is defined
-with the implementation and follows the controller identity migration policy.
+Missing or invalid lifecycle markers on bound fragments are rejected.
+The repository owner explicitly waived Phase 2 migration compatibility for this pre-alpha implementation.
+There is no implicit `Attached` fallback, compatibility release, staged rollout, or supported downgrade path to the previous implementation with separate writers.
 
 ### Live graph construction
 
-The writer acquires the Gateway UID coordinator before its final snapshot. It
-then reads the Gateway, GatewayClass, and candidate HTTPRoutes again through the
-uncached API reader. It validates UIDs, generations, deletion state, finalizers,
-bindings, controller ownership, and the installed Gateway API bundle before the
-provider call.
+The writer acquires the Gateway UID lock before collecting its final snapshot.
+The Gateway source checks the current object, binding, controller selection, and supported Gateway API bundle for provisioning.
+It uses the topology already frozen in a bound Gateway rather than resolving a new class template.
+The frozen topology survives replacement of the cloud graph for the same Gateway UID.
 
-Cached indexes may find candidate keys, but an index over the cache is not
-proof that an uncached list is complete. The current same-namespace profile may
-list the Gateway namespace through the live reader and filter it. A later
-multi-namespace design needs an explicit completeness strategy before it can
-use only indexed candidate keys.
+The route source lists the entire Gateway namespace through the uncached API reader.
+It includes bound fragments even after their ParentRef is removed, and unbound candidates whose presence can change route selection.
+Cached indexes are useful for event mapping but do not prove that this inventory is complete.
+A future cross-namespace profile needs a new completeness strategy.
 
-Desired fragments are rebuilt from Kubernetes resources on every graph
-reconciliation. The writer keeps no route fragment registry across calls.
-The keyed coordinator remains a process-local serialization tool; it is not
-the source of desired state and it does not need recovery after a restart.
+Before the provider call, the source reads the inventory again and compares route UIDs and resource versions.
+It also applies the required per-object checks for generation, deletion state, finalizers, binding, lifecycle, controller ownership, and installed API version.
+The reads remain separate Kubernetes operations.
+The writer rejects changes detected between them.
 
-A missing Gateway blocks normal `Ensure` work. It does not erase cleanup
-authority already recorded on a bound HTTPRoute. When an HTTPRoute has a
-complete durable binding and a confirmed `Detaching` marker, and the referenced
-Gateway is `NotFound`, the writer builds a cleanup-only graph from that exact
-identity. This covers deletion, controller handoff, invalid input, and loss of
-route selection after their checkpoint is durable. The writer uses
-`Gateway=Preserve` and `Route=Delete`, never creates a component, and never
-deletes the load balancer or listener. An incomplete or conflicting binding
-still holds the graph without mutation.
+The writer stores no fragment registry or mutation plan between calls.
+The coordinator serializes work within one process, and leader election prevents multiple active mutating replicas.
+Restart and leader change require fresh observation, not lock recovery.
+
+A missing or replaced Gateway blocks normal `Ensure` work but does not erase a bound HTTPRoute's cleanup authority.
+A complete binding and durable `Detaching` marker permit `Gateway=Preserve` with `Route=Delete` for the recorded Gateway UID.
+That path never creates infrastructure or deletes the Gateway component.
 
 ### Provider observation and planning
 
-The OpenStack adapter observes the load balancer, Floating IP, listener, and all
-known route descendants as one graph. It validates the full desired input and
-the complete observed ownership graph before the first mutation.
+The OpenStack adapter validates the entire desired input, observes the relevant cloud graph, and validates ownership before executing a mutation.
+For an active load balancer, observation accounts for every route descendant rather than only the triggering HTTPRoute.
+An unexpected route-scoped child cannot be adopted or garbage collected.
+While Octavia reports `PENDING_*`, the adapter returns progress without mutation and observes again on a later call.
 
-It builds one deterministic ordered plan. Normal ordering is:
+The adapter builds one ordered plan:
 
 1. Reconcile Gateway prerequisites.
-2. Remove a fragment marked `Delete`.
-3. Reconcile an attached route fragment.
+2. Remove detaching fragments.
+3. Reconcile the attached fragment.
 4. Restore listener administrative state.
 5. Restore load balancer administrative state.
 
-Whole-Gateway deletion uses the validated reverse dependency order. The
-adapter executes only the first plan step and returns. A later reconciliation
-observes the result again. It must not implement the graph call as sequential
-opaque calls to the existing `EnsureGateway` and `EnsureRoute` methods, because
-that would retain separate observations and could perform two mutations.
+It executes only the first step.
+Whole-Gateway deletion uses validated reverse dependency order.
+The graph operation does not delegate to sequential `EnsureGateway` and `EnsureRoute` calls.
+A converged second pass makes no mutating OpenStack call.
 
-During normal `Ensure`, an unexpected route-scoped resource that matches the
-Gateway tuple but cannot be assigned to an exact desired or detaching route
-identity is an ownership conflict. It is not adopted or garbage collected.
+The adapter discovers Floating IPs independently of the load balancer by listing the authenticated project and checking the complete Gateway identity.
+This finds a detached owned address even when the load balancer still exists and detects foreign addresses on its VIP port.
+Normal provisioning stops when an owned address is detached or its load balancer is absent, preventing duplicate allocation.
+It does not reconnect the address automatically.
+Whole-Gateway deletion may remove a uniquely owned, fully detached address after validating any remaining load balancer graph.
+Duplicate candidates, inconsistent identity, and unexpected port, fixed-address, or router associations block mutation.
+Route-only cleanup preserves the Gateway's Floating IP.
 
 ### Component results and status
 
-The graph result has a whole-call outcome for scheduling and separate Gateway
-and route component results. Errors identify the affected component when one is
-known. A route failure found during a Gateway-triggered write is not reported as
-a Gateway provisioning failure.
+The whole-call outcome drives scheduling while component outcomes describe the Gateway and each route.
+A route error discovered during a Gateway-triggered write is not reported as a Gateway provisioning failure.
+A pending route change does not clear an otherwise valid Gateway `Programmed` condition.
 
-Gateway and HTTPRoute reconcilers translate those component results into their
-existing status contracts. The writer does not patch Kubernetes objects and
-does not overwrite another controller's HTTPRoute parent status. A route
-transition does not make Gateway `Programmed=False` when the Gateway component
-itself remains programmed.
+Reconcilers translate the results into their existing status contracts and preserve other controllers' HTTPRoute parent entries.
+Component results do not claim backend health or uninterrupted traffic.
+Replacing every member still uses ordered deletion before creation and can leave a pool empty between reconciliations.
 
 ## Consequences
 
-There is one place to enforce complete observation, minimal diff, mutation
-ordering, and one-mutation-per-reconcile. Gateway and HTTPRoute event order no
-longer selects a different cloud mutation path. The same desired graph can be
-rebuilt after process restart.
+Gateway and HTTPRoute events use the same observation and mutation boundary.
+The complete desired graph is reconstructible after restart, and detach intent remains durable.
+The cost is a complete live route inventory and an additional metadata checkpoint before route deletion.
 
-The change is larger than a wrapper around the current Provider interface. The
-adapter needs a combined observation and plan, controller tests need a graph
-provider fake, and status handling needs component-scoped results. Reconciliation
-may use extra live reads to prove that the candidate set is complete.
-
-The durable lifecycle adds one controller-owned annotation and one extra
-checkpoint when a route starts detaching. That cost keeps status-before-cleanup
-ordering and restart recovery from depending on process memory.
+Pure desired-model and diff functions remain separate from Kubernetes reads and provider I/O.
+Event mappers may reuse dependency reads within one event, but those observations never authorize cloud mutation.
+Writer metrics separate lock wait, Gateway input, route input, validation, and provider duration.
+The provider duration includes local waits during one call and does not measure asynchronous Octavia convergence.
 
 ## Alternatives considered
 
-### Keep the two writers behind the current coordinator
+### Keep separate mutations behind a coordinator
 
-This prevents overlapping calls but leaves two desired snapshots and two cloud
-entry points. Restart behavior and global L7 ordering would still depend on
-which reconciler runs.
+This prevents overlap but retains independent desired snapshots and mutation plans.
 
-### Add an `EnsureGraph` facade around the current provider methods
+### Wrap the existing provider methods
 
-Calling `EnsureGateway` and then `EnsureRoute` under another name preserves the
-two observations and plans. It can also perform more than one mutation in a
-single graph reconciliation. This is not the selected design.
+Calling Gateway and route methods in sequence retains separate observations and can perform more than one mutation.
 
-### Store route fragments only in memory
+### Store fragments in memory or a separate CRD
 
-An in-memory registry is simple while one process is running, but a leader
-change loses detach intent and fragment completeness. It is not a source of
-truth for a level-based controller.
+An in-memory registry loses cleanup intent after restart.
+A separate fragment CRD adds an unnecessary API and lifecycle for the current HTTP profile.
+The durable HTTPRoute binding supplies the required state.
 
-### Add a separate fragment CRD
+### Make only Gateway reconciliation drive progress
 
-A CRD could make fragments durable, but it adds a public API, upgrade contract, and garbage-collection lifecycle alongside the planned GatewayClass API.
-The existing HTTPRoute binding is sufficient for the current one-route profile.
+This makes HTTPRoute cleanup and component status depend on another controller's scheduling.
+The shared writer permits either reconciler to drive progress while retaining one mutation boundary.
 
-### Let only the Gateway reconciler write and make HTTPRoute status implicit
+## Validation and remaining evidence
 
-This removes one caller but makes route finalization and component status hard
-to recover without another observation contract. The selected shared writer
-keeps one mutation boundary while allowing either reconciler to drive progress.
+The graph contract and shared writer have local tests for input validation, component errors, keyed serialization, and stage metrics.
+OpenStack graph execution and reconciler activation follow in the runtime integration change.
+Before release, validate complete live inventories, durable cleanup checkpoints, minimal mutations, restart, drift, and component status through adapter tests, controller tests, race tests, and envtest.
 
-## Safety and recovery
-
-Every provider call occurs after the Gateway UID lock and a fresh validation of
-the complete Kubernetes snapshot. The provider validates immutable project,
-cluster, controller, Gateway, route, and resource-role identity before mutation.
-Names and cached IDs remain discovery hints only.
-
-After a lost response, timeout, `PENDING_*` state, restart, or leader change,
-the next call observes the complete graph again. It never resumes from an
-in-memory plan. A foreign or duplicate resource stops all graph mutation with
-an ownership conflict.
-
-The `Detaching` marker prevents a Gateway event from recreating a route during
-cleanup. Separate Gateway and route dispositions prevent route cleanup from
-expanding into whole-Gateway deletion.
-
-## API and upgrade impact
-
-This decision does not change Gateway API resources, route selection, supported
-features, or OpenStack identity tags. Existing route bindings remain valid and
-are read as `Attached`. The implementation checkpoints the explicit lifecycle
-before it removes the old provider methods.
-
-The provider-neutral Go interface changes and is internal to this repository.
-The existing controller-derived metadata domain remains in use. Migration to a
-canonical controller name or API domain is handled by the separate public
-identity ADR.
-
-The lifecycle marker needs a staged rollout. A compatibility release first
-learns to read `Detaching` and routes it only through the existing cleanup path;
-that release does not write the marker or change the provider boundary. The
-writer release can then record `Detaching` and still roll back to the
-compatibility release without recreating the route. Downgrading to an earlier
-release is allowed only after a preflight confirms that no HTTPRoute binding is
-marked `Detaching`. Release notes must state the tested forward and rollback
-path and the command used for that preflight.
-
-## Test and evidence plan
-
-Controller tests must cover:
-
-- Gateway and HTTPRoute events in both orders producing the same graph
-- binding before the first create and status before `Detaching`
-- cancellation while waiting for the Gateway UID lock
-- a changed live snapshot after lock acquisition
-- restart with a newly constructed writer during partial create and delete
-- route cleanup preserving the Gateway component
-- a bound `Detaching` HTTPRoute cleanup when the Gateway is `NotFound`
-- normal `Ensure` holding when the Gateway is `NotFound`
-- whole-Gateway cleanup removing the validated complete graph
-- unsupported Gateway API bundle cleanup
-- component status and foreign HTTPRoute parent status preservation
-- compatibility-release cleanup and downgrade preflight for `Detaching`
-
-OpenStack adapter tests must cover:
-
-- complete desired validation before mutation
-- deterministic ordering with an attached and detaching fragment
-- at most one mutation when several components need work
-- zero mutation on a converged second pass
-- pending state, timeout, lost create response, and a new Provider instance
-- duplicate, foreign, and unaccounted descendants
-- listener then load balancer administrative repair
-- whole-graph reverse deletion and lifecycle-specific `404` handling
-
-The graph writer and its OpenStack validation are part of the [work carried into Phase 3](../../../ROADMAP.md#work-carried-into-phase-3).
-The earlier baseline E2E run did not test this proposed writer.
-Accepting this ADR and passing local tests do not prove compatibility or conformance.
-
-## Follow-up work
-
-- Open the public design issue and review this proposal before acceptance.
-- Implement the durable route fragment lifecycle and migration checkpoint.
-- Replace the Provider methods with the complete graph operation.
-- Move the adapter to one desired graph, observation, plan, and mutation path.
-- Retarget current coordinator, transition, deletion, and lost-response tests.
-- Validate the implemented writer in OpenStack and publish the conformance gap report under the [test evidence policy](../../reports/README.md).
+The previous baseline OpenStack E2E run predates this writer.
+Local tests and ADR acceptance do not establish compatibility or Gateway API conformance.
+Fresh live OpenStack evidence and the conformance gap analysis remain required under the [test evidence policy](../../reports/README.md).
+Public image publication and scheduled live validation remain release work described in the [roadmap](../../../ROADMAP.md).
