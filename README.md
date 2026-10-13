@@ -9,7 +9,7 @@ It currently supports a limited set of HTTP features.
 Its goal is reliable HTTP and terminated HTTPS support without requiring an in-cluster proxy data plane.
 
 The project lives at [gateway-api-openstack/gateway-api-openstack](https://github.com/gateway-api-openstack/gateway-api-openstack).
-Its Go module is `github.com/gateway-api-openstack/gateway-api-openstack`.
+Its class configuration API group is `gateway-api-openstack.github.io`, and its Go module is `github.com/gateway-api-openstack/gateway-api-openstack`.
 
 The controller uses Octavia directly and supports only the Amphora provider. It
 reconciles GatewayClass, Gateway, and HTTPRoute resources into Octavia load
@@ -72,8 +72,7 @@ ownership contract and proposed target resource mapping.
 ## Product direction
 
 The goal is to make common HTTP and terminated HTTPS Gateway setups reliable
-on Amphora. Planned work covers multiple Gateways, listeners, routes,
-namespaces, backends, certificates, and Floating IPs. It also includes
+on Amphora. Planned work covers multiple listeners, routes, namespaces, backends, and certificates. It also includes
 deterministic network selection and reviewed security modes in tested
 OpenStack topologies. Referenced and operator-managed connectivity comes before
 any opt-in mode that would change a worker port owned by another component.
@@ -94,12 +93,14 @@ deployment paths. This controller does not install or manage them.
 The controller currently supports:
 
 - GatewayClass, Gateway, and HTTPRoute
+- cluster-scoped OpenStackGatewayClassConfig parameters, with resolved configuration stored on each Gateway
+- separate topologies for multiple GatewayClasses in one authenticated project
 - HTTP listeners
 - one exact hostname, with either an Exact path match or a PathPrefix match on
   complete path elements
 - one selected HTTPRoute in the same namespace as the Gateway, with one rule
   and one NodePort Service backend in the same namespace as the route
-- NodePort members discovered from ready Nodes and EndpointSlices
+- NodePort members on eligible worker Nodes, honoring control-plane and load balancer exclusion labels
 - one Octavia load balancer per Gateway
 - Octavia listeners, L7 policies and rules, pools, members, and health monitors
 - Floating IP allocation
@@ -107,6 +108,7 @@ The controller currently supports:
 - validation of the installed Gateway API v1.6.1 CRD bundle through the
   GatewayClass `SupportedVersion` condition
 - the Amphora provider in Octavia as the only accepted provider
+- one serialized graph writer, durable route detach intent, and minimal cloud mutations
 
 The first release will not claim Gateway API conformance. Amphora
 capabilities still vary by Octavia version, enabled services, API
@@ -128,13 +130,16 @@ features must be rejected explicitly in resource status rather than ignored.
 
 ## Project status
 
-Current milestone: **Phase 3 prerequisite work and API design**.
+Current milestone: **Phase 3 implementation complete, with release validation pending**.
 
-Phase 2 is complete as a development milestone, with the HTTP and NodePort reliability foundations implemented and the baseline OpenStack E2E checks passing in one development environment.
-The [development validation record](docs/providers/compatibility.md#development-validation) identifies the tested revision, scope, and remaining limitations.
+Phase 3 adds the typed class configuration API, frozen Gateway settings, a complete Gateway graph writer, and worker NodePort member selection.
+Local unit, race, envtest, model benchmarks, and release packaging checks cover the implementation.
+The [class configuration reference](docs/reference/class-configuration.md) describes the development API and its limits.
 
-Phase 3 starts with the Gateway graph writer, public identity and class API contracts, and worker NodePort member selection.
-The [work carried into Phase 3](ROADMAP.md#work-carried-into-phase-3) remains open, and changes to ownership or the public API still require accepted ADRs.
+The earlier [development OpenStack run](docs/providers/compatibility.md#development-validation) covered the Phase 2 HTTP and NodePort baseline.
+It does not validate the new Phase 3 revision.
+The next work is the pinned conformance gap analysis and a new OpenStack run, followed by outside testing with an immutable image and approved scheduled test infrastructure.
+The [remaining validation gates](ROADMAP.md#work-carried-into-phase-3) are still open.
 The project remains pre-alpha, with no supported environment profile or Gateway API conformance claim.
 
 See [the current development priorities](docs/development-priorities.md) for the remaining work and [ROADMAP.md](ROADMAP.md) for the phased plan.
@@ -179,8 +184,7 @@ decisions are described in [GOVERNANCE.md](GOVERNANCE.md), and the current
 support boundary is in [SUPPORT.md](SUPPORT.md). GitHub issues and pull requests
 are the only project discussion channels at present.
 
-Until the first architecture decision records are accepted, substantial API or
-controller changes should begin as a design issue.
+Changes to public APIs, ownership, or recovery contracts follow the [ADR process](docs/design/adr/README.md).
 
 Changes to controller patching, finalizers, or cache indexes should also run:
 
@@ -190,8 +194,8 @@ make test-envtest
 ```
 
 The first command downloads pinned Kubernetes 1.36.2 control plane binaries.
-The test loads the Gateway API v1.6.1 Standard CRDs and does not need Kind, a
-kubeconfig, or OpenStack access. It is not an OpenStack end-to-end test or
+The test loads the Gateway API v1.6.1 Standard CRDs and this project's class configuration CRD.
+It does not need Kind, a kubeconfig, or OpenStack access. It is not an OpenStack end-to-end test or
 Gateway API conformance evidence.
 
 Maintainers preparing a release must follow the

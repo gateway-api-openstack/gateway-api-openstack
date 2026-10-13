@@ -1,269 +1,135 @@
 # Architecture
 
-Status: proposed.
-Each section identifies the current behavior.
+Status: current implementation and future design boundaries.
 
-Audience: contributors, reviewers, OpenStack operators, Gateway API implementers
+Audience: contributors, reviewers, OpenStack operators, and Gateway API implementers.
 
-This document contains both the current ownership contract and the intended
-HTTP/HTTPS architecture. Tables and sections say when behavior is only planned.
-Accepted [architecture decision records](adr/README.md) are the source of truth
-when they differ from this proposal. There are no accepted ADRs yet.
+This document describes the constrained HTTP implementation and identifies features that remain planned.
+Accepted [architecture decision records](adr/README.md) define the graph writer and class configuration contracts.
+The project remains pre-alpha and does not claim production readiness or Gateway API conformance.
 
 ## Problem statement
 
-Kubernetes clusters on OpenStack need a Gateway API implementation that can
-provision an HTTP and HTTPS data path backed directly by Octavia without tying
-Gateway lifecycle to the cloud-provider-openstack Service controller or
-requiring an in-cluster proxy.
+Kubernetes clusters on OpenStack need a Gateway API implementation backed directly by Octavia without coupling Gateway lifecycle to the cloud-provider-openstack Service controller or requiring an in-cluster proxy.
+This controller supports only Octavia's Amphora provider.
+It currently manages HTTP through Octavia and Neutron.
+Terminated HTTPS and Barbican integration are planned.
 
-gateway-api-openstack is designed only for Octavia's Amphora provider. It
-translates Kubernetes Gateway API intent into Octavia, Neutron, and Barbican
-resources. It does not try to support every Octavia provider or Gateway API
-feature.
-
-cloud-provider-openstack's Octavia Ingress Controller is related prior art, but
-it reconciles the Ingress API and owns a separate resource graph.
-gateway-api-openstack is not its successor and does not adopt or migrate its
-resources.
+cloud-provider-openstack's Octavia Ingress Controller is related prior art with a separate API and ownership graph.
+This project does not adopt or migrate its resources.
 
 ## Product contract
 
-- Users configure the controller through Gateway API resources.
-- Octavia's Amphora provider is the only load balancing data plane.
-- One Gateway owns one Octavia load balancer and all of its dependent
-  resources.
-- HTTP and terminated HTTPS are in scope.
-- By default, Amphora reaches backends through NodePorts. Pod IP may be enabled
-  later only when topology checks prove that Amphora can reach Pod addresses.
-- One controller deployment uses one OpenStack cloud, region, project, and
-  credential scope.
-- The controller coexists with cloud-provider-openstack but never shares a
-  load balancer graph with it.
-- Existing OpenStack resources are not adopted into controller ownership.
-- Behavior that the public Octavia API cannot represent exactly is rejected in
-  status.
-- The controller does not manage Traefik, Envoy, Ingress, other Octavia
-  providers, or Gateway API route kinds other than HTTPRoute.
+- Users configure routing through Gateway API resources and infrastructure defaults through OpenStackGatewayClassConfig.
+- One Gateway owns one Amphora load balancer and its dependent resources.
+- One deployment uses one OpenStack cloud, region, authenticated project, and credential scope.
+- User-provided NodePort Services supply backends.
+- This controller never shares a cloud resource graph with the OpenStack Cloud Controller Manager (OCCM) or another controller.
+- Existing OpenStack resources are not adopted.
+- Unsupported or unrepresentable behavior is rejected through status.
 
-The target design is intended to let users configure multiple Gateways,
-listeners, routes, namespaces, backends, and certificates through standard
-Gateway API resources on tested OpenStack topologies. The current implementation
-supports the smaller graph shown below.
+The current profile supports one HTTP listener, one selected HTTPRoute in the Gateway namespace, one rule, and one Service backend in the route namespace.
+It supports an exact hostname with Exact or PathPrefix matching.
+Multiple listeners, multiple desired routes, TLS, ReferenceGrant, ClusterIP backends, Pod IP members, requested addresses, and backend policies remain unsupported.
 
 ## Design principles
 
-1. **Gateway API is the contract.** Standard resources, status conditions,
-   feature discovery, and conformance tests for the supported version drive
-   behavior.
-2. **The controller supports only Amphora.** A provider field is not an
-   extension point. Environment capability still varies with Octavia version,
-   microversion, enabled services, project permissions, and topology.
-3. **Ownership is exclusive.** No cloud resource graph may be reconciled by
-   both this project and the OpenStack Cloud Controller Manager (OCCM) or
-   another controller.
-4. **One Gateway has one desired graph.** Listener and route changes are
-   compiled together before the graph is mutated.
-5. **Reconciliation is idempotent.** Restart, retry, cache lag, and external
-   deletion are expected events that reconciliation must handle.
-6. **Deletion requires complete ownership checks.** A name, cached ID, or
-   attached port is never sufficient authority to delete a cloud resource.
-7. **Cloud mutations are minimal.** A converged reconciliation performs no
-   OpenStack mutation.
-8. **Advertised capabilities are tested.** Unsupported or untested behavior is
-   reported, never guessed or silently approximated.
-9. **OpenStack access uses Gophercloud.** Controller code does not shell out to
-   the OpenStack CLI.
+Gateway API defines the public routing and status contract.
+Amphora is the only data plane, and unknown environment capabilities are unsupported.
+Every Gateway has one complete desired graph and one mutation boundary.
+Reconciliation rebuilds that graph after retries, cache changes, and process restarts.
+
+Ownership checks precede mutations, and a converged observation issues no mutating OpenStack call.
+Names and cached IDs can locate resources but cannot authorize changes.
+The controller uses Gophercloud rather than shelling out to the OpenStack CLI.
 
 ### Installed Gateway API version
 
-The controller is built and tested against the Gateway API v1.6.1 Standard
-Channel. It reads the `gateway.networking.k8s.io/bundle-version` annotation from
-the installed Gateway API CRDs and records the result in the GatewayClass
-`SupportedVersion` condition. Missing annotations, missing required CRDs, and
-mixed bundle versions are unsupported.
+The controller uses Gateway API v1.6.1 Standard Channel.
+It checks installed Gateway API CRD bundle annotations and reports the result through GatewayClass `SupportedVersion`.
+A missing required CRD, missing version annotation, or mixed bundle blocks new bindings, provisioning, and repair.
+It does not authorize deletion of an existing graph or prevent explicit finalization and cleanup after controller handoff.
 
-An unsupported bundle makes the GatewayClass unaccepted and stops new
-bindings, OpenStack provisioning, and drift repair. The controller does not
-delete a bound graph merely because CRDs are being upgraded. Explicit deletion
-and cleanup after a controller handoff still use the stored identity and remain
-available. A CRD watch starts normal reconciliation again when the complete
-bundle matches the supported version.
-
-The normal path uses the GatewayClass condition as its cached signal. Before a
-new binding or an OpenStack mutation, the controller checks an uncached,
-metadata-only view of the CRDs and verifies the live GatewayClass ownership.
-The CRD informer also keeps metadata only, so large validation schemas are not
-duplicated in the controller cache. An unsupported GatewayClass checks the
-bundle again on a slow, stable interval. A Gateway or HTTPRoute uses the same
-fallback only when its live check sees a mismatch before the class condition
-changes. This avoids a cluster-wide CRD read from every dependent object during
-a long upgrade.
-Cleanup also rebuilds the live route decision before deleting an active graph,
-so a stale Gateway, Service, endpoint, Node, or competing Route does not turn
-cache lag into a deletion.
+Normal reconciliation uses the GatewayClass condition as its cached signal.
+Before acquiring a binding or mutating the cloud, the controller checks the live controller selection and a metadata-only view of installed CRDs.
+CRD watches and a slow retry on the GatewayClass restore progress after an upgrade.
+A dependent object needs its own fallback only when the live check finds a mismatch before the class status changes.
 
 ## Ownership contract
 
-### cloud-provider-openstack owns
+### OCCM owns Service load balancers
 
-- cloud node lifecycle and other cloud controller manager responsibilities
-- Kubernetes Services of type `LoadBalancer`
-- every Octavia and Neutron resource created for those Services
+OCCM owns Services of type `LoadBalancer` and the OpenStack resources it creates for them.
+This controller does not use those Services as provisioning sources, create helper LoadBalancer Services, or depend on OCCM finalizers.
+It does not manage Ingress, Traefik, Envoy, or another proxy controller.
 
-### openstack-gateway-controller owns
+### This controller owns its Gateway graph
 
-- Gateway API objects whose `GatewayClass.spec.controllerName` exactly matches
-  the configured controller name
-- cleanup of an object that no longer selects the controller when a durable
-  finalizer or binding proves that this controller previously managed it
-- Octavia load balancers and their listeners, pools, members, health monitors,
-  L7 policies, and L7 rules created for those Gateways
-- Neutron Floating IPs it creates for a Gateway
-- future security groups and rules it creates under an accepted architecture
-  decision record (ADR)
-- future Barbican secrets or containers it can identify and delete safely
+An exact match with `GatewayClass.spec.controllerName` permits new provisioning.
+Ownership of a Kubernetes resource covers only this controller's finalizers, binding annotations, and status fields.
+Other controllers' fields and HTTPRoute parent status entries are preserved.
 
-Ownership of a Kubernetes object means ownership only of the controller's
-finalizers, annotations, and status fields. It does not grant authority over
-another controller's fields or status entries.
+The cloud graph contains the Gateway's load balancer, listener, optional Floating IP, and route pools, members, health monitors, L7 policies, and L7 rules.
+A resource that stops selecting this controller remains its cleanup responsibility when a durable finalizer or binding records prior ownership.
+That responsibility permits cleanup of the recorded graph, not provisioning for the new controller.
 
-Selection by controller name authorizes new provisioning. A previously bound
-object that stops selecting this controller does not authorize a new graph, but
-cleanup remains its responsibility until it has validated the stored graph,
-confirmed that the graph is absent, and removed its finalizer.
+Reading a Service, EndpointSlice, Node, class parameter, or OpenStack network does not confer ownership.
+The controller does not create tenant networks, subnets, routers, or routes as a side effect of a Gateway.
+Secrets, ReferenceGrants, security group policies, and Barbican resources enter the graph only when their future feature contracts are implemented.
 
-### openstack-gateway-controller may read
+### Shared fields require a separate decision
 
-- Service, EndpointSlice, Secret, ReferenceGrant, and Node objects
-  needed by a managed graph
-- GatewayClass parameters and future backend policy resources
-- OpenStack networks, subnets, routers, ports, security groups, quotas, and
-  service capabilities
-- provider configuration and credentials
+A worker's Neutron port belongs to CAPO, another controller, or the operator.
+Attaching a controller-created security group would still modify that foreign port's shared `security_groups` field.
+The current implementation does not perform this operation.
 
-Reading or resolving an object does not give this controller ownership of it.
-
-### openstack-gateway-controller must never
-
-- watch Services of type `LoadBalancer` as a provisioning source
-- add, remove, or rely on OCCM finalizers
-- create a Service of type `LoadBalancer` for the direct Octavia data path
-- adopt an existing cloud resource because its name, address, or tags look
-  familiar
-- mutate or delete a cloud resource whose complete immutable identity cannot
-  be proven
-- replace an association with a foreign security group or modify a rule owned
-  by another component
-- create or delete tenant networks, subnets, routers, or routes as an implicit
-  consequence of a Gateway
-- install or manage a proxy controller as part of reconciliation
-
-### Mutating shared fields requires a separate contract
-
-Attaching a security group created by this controller to a worker Neutron port
-still mutates a port owned by Cluster API Provider OpenStack (CAPO), another
-controller, or the operator. It is not covered by ownership of the security
-group.
-
-Managed backend security therefore requires an accepted ADR and explicit
-GatewayClass opt-in. The contract must preserve all foreign group IDs and add
-or remove only the ID added by this controller. Before accepting a mapping from
-a Node to a Neutron port, it must validate the project, Nova server UUID,
-`device_owner`, `device_id`, selected fixed IP and subnet, and
-`port_security_enabled`. Updates must include the observed Neutron revision
-where the API supports it. If the port changed concurrently or its identity is
-ambiguous, the controller must reject the mutation and observe the port again.
-Until that contract exists, the controller may validate referenced connectivity
-but must not alter worker ports.
+A future managed mode needs an accepted ADR and explicit class opt-in.
+It must preserve foreign group IDs, validate project and Node-to-port identity, and use Neutron revisions where available.
+An ambiguous mapping or concurrent change must stop the update.
+Ownership of a security group alone is insufficient authority to change a port.
 
 ## Resource graph
 
-The following table distinguishes the current constrained graph and Phase 2
-hardening from the planned HTTP/HTTPS target.
-
-| Kubernetes intent | OpenStack representation | Availability and ownership |
+| Kubernetes intent | OpenStack representation | Current boundary |
 | --- | --- | --- |
-| GatewayClass | Controller selection and validated deployment defaults | Current |
-| OpenStackGatewayClassConfig | Typed class topology and policy parameters | Planned `v1alpha1`, cluster-scoped after an ADR defines the API domain |
-| Gateway | Octavia load balancer using the Amphora provider | Current. One per Gateway |
-| Gateway address | Neutron Floating IP created by the controller, or Octavia VIP | Dynamic allocation is current. Requested addresses are planned |
-| Gateway listeners | Octavia HTTP or `TERMINATED_HTTPS` listener graph | One HTTP listener is current. The compiler and HTTPS are planned |
-| HTTPRoute attachment | Listener association, status, and desired fragment for the listener | Attachment is currently constrained. Multiple routes are planned |
-| HTTPRoute rule and match | Ordered L7 policies and conjunctive L7 rules | Host and path matching are current. Further exact mappings are planned |
-| Service backend | Octavia pool and default or `REDIRECT_TO_POOL` action | One backend is current. A broader rule graph is planned |
-| Node or EndpointSlice address | Octavia member | NodePort is current. Pod IP is a later opt-in |
-| Class or backend health policy | Octavia health monitor | Deployment defaults are current. Typed class and backend policy settings are planned |
-| TLS Secret | Barbican secret or container created by the controller and referenced by the listener | Planned after an identity and rotation ADR |
-| Frontend access policy | Listener security managed by Octavia, or referenced `vip_sg_ids` | Octavia management is current. Referenced mode is planned after the controller can verify API support |
-| Backend access policy | Referenced security group, or Neutron security group and rules created by the controller | Planned. Attaching the group to a worker port requires an ADR for modifying a foreign port |
+| GatewayClass | Controller selection and a class configuration reference | Exact controller ownership and validated parameters. |
+| OpenStackGatewayClassConfig | Resolved topology and class health defaults | Cluster-scoped `gateway-api-openstack.github.io/v1alpha1`. |
+| Gateway | Amphora load balancer | One per Gateway. |
+| Gateway address | Allocated Floating IP or load balancer VIP | Existing addresses are not adopted, and requested Gateway addresses are unsupported. |
+| Listener | HTTP listener | One listener. Terminated HTTPS remains planned. |
+| HTTPRoute rule and match | Pool, ordered L7 policies, and conjunctive rules | One selected route, rule, and backend with exact hostname and path matching. |
+| NodePort backend | Members on eligible worker Node addresses | Pod IP and ClusterIP backends are unsupported. |
+| Class health settings | HTTP health monitor for the route pool | Backend-specific policy is deferred. |
+| TLS Secret | Future Barbican secret or container | Requires certificate identity, rotation, and deletion design. |
+| Frontend security | Octavia-managed security | Referenced VIP security groups are deferred. |
+| Backend security | Connectivity managed by the operator | The controller does not modify worker ports or security groups. |
 
-The controller does not model an Octavia provider choice in the class API. It
-always requests and verifies Amphora.
-
-Reusing a resolved Service within one reconciliation does not require sharing its Octavia pool across routes.
-The current pool and its children include HTTPRoute identity and cannot be shared between routes.
-Sharing a pool within one Gateway would require an ADR for ownership, protocol and policy compatibility, reconstruction after restart, and deletion after the last reference disappears.
-Backend address equality alone cannot establish that two routes can share a pool or health monitor.
+A pool and its children include the exact HTTPRoute identity.
+Reusing a Service read within one reconciliation does not share its pool across routes.
+Pool sharing would require an ADR covering ownership, protocol and policy compatibility, reconstruction, and deletion after the last reference disappears.
 Pools are not shared across Gateways.
 
 ## Immutable cloud identity
 
-The controller proves ownership from these immutable values:
+Ownership uses the authenticated project, stable cluster ID, controller identity, Gateway namespace, name and UID, and resource role.
+Route resources also contain the HTTPRoute namespace, name and UID.
+The release version is trace metadata, so an ordinary version change does not make an owned resource foreign.
 
-- authenticated OpenStack project ID
-- stable cluster ID
-- controller identity
-- Gateway namespace, name, and UID
-- resource role
-- for resources created for a route, the HTTPRoute namespace, name, and UID
-
-HTTPRoute identity distinguishes child resources inside the graph owned by the
-Gateway. It does not make the route reconciler an independent writer or graph
-owner.
-
-The controller release version is trace metadata, not an immutable ownership
-field. A normal upgrade must not turn a managed resource into a foreign one.
-
-Before executing a mutation plan, the controller validates the complete
-identity and surrounding graph. Names, cached IDs, annotations, descriptions,
-and tags help discover candidates but do not prove ownership on their own.
-Duplicate candidates or an identity mismatch produce an ownership conflict and
-stop mutation.
-
-The controller may record OpenStack IDs in Kubernetes metadata to speed
-recovery, but it must still discover resources by immutable identity within the
-authenticated project. If an API such as Barbican cannot expose enough identity
-for safe discovery and deletion, the resource type remains unsupported until a
-safe mechanism has been designed and tested.
+For every mutation plan, the adapter discovers resources within the authenticated project, rejects duplicate candidates, validates the complete identity, and checks surrounding dependencies.
+A mismatch returns an ownership conflict and stops mutation.
+Recovery repeats discovery rather than trusting cached cloud IDs.
+Resource types that cannot expose enough identity for safe recovery remain unsupported.
 
 ## Reconciliation model
-
-The controller follows:
 
 ```text
 observe -> build desired graph -> validate -> diff -> mutate -> observe
 ```
 
-Each reconciliation collects the Kubernetes inputs and OpenStack state needed
-to build and validate the graph. Validation of Gateway API semantics,
-references, capabilities, and cloud ownership completes before the first cloud
-mutation. Desired graphs and mutation order are stable across map iteration and
-process restart.
-
-The desired administrative state for a managed load balancer and listener is
-enabled. A direct change to either field is drift because it prevents the
-Gateway from serving traffic. When no route resources exist, Gateway
-reconciliation can restore these fields after checking the complete Gateway
-graph. When a route graph exists, Gateway reconciliation leaves the load
-balancer or listener disabled because it cannot identify the HTTPRoute that
-owns those resources. The already bound HTTPRoute performs the repair after it
-has checked the exact Route identity, the complete Route graph, the Amphora
-provider, VIP subnet, listener port, and Floating IP configuration. It enables
-the listener first and the load balancer on a later reconciliation. Changes to
-the provider, subnet, protocol, port, external network, or identity are not
-repaired. The controller reports them as ownership conflicts and stops
-mutation.
+The Kubernetes sources build provider-neutral desired values.
+The adapter observes OpenStack, validates the complete relevant graph, calculates a deterministic plan, and executes at most its first mutation.
+A later reconciliation observes the result again.
+Pure model and diff functions remain separate from API reads and writes.
 
 Creation follows dependencies:
 
@@ -271,401 +137,210 @@ Creation follows dependencies:
 LoadBalancer -> Listener -> Pool -> Member/HealthMonitor -> L7Policy -> L7Rule
 ```
 
-Deletion validates the complete graph, then follows the reverse dependency
-order. An owned resource that is already absent counts as successfully deleted.
-An unvalidated cascade is forbidden.
+Deletion checks ownership and follows reverse dependency order.
+Already absent owned resources count as deleted.
+The controller never uses an unvalidated cascade.
 
-### Graph writer for each Gateway
+### One writer for each Gateway
 
-Changes to the desired graph are serialized by Gateway UID. In the current
-implementation, Gateway and HTTPRoute reconcilers can both target the same load
-balancer. Before multiple routes or concurrent workers
-are enabled, one writer keyed by Gateway UID must compile and apply the complete
-listener graph.
+[ADR 0001](adr/0001-gateway-graph-writer.md) defines the implemented shared writer.
+Gateway and HTTPRoute reconcilers retain validation, binding checkpoints, and status ownership.
+Both call `internal/controller/graph.Writer`, which acquires a Gateway UID lock and rebuilds the graph from live Kubernetes inputs.
+The sole provider mutation entry point is `ReconcileGatewayGraph`.
+`GetGateway` remains read-only.
 
-Gateway and HTTPRoute reconcilers can remain responsible for acceptance,
-reference validation, and the status fields they own. The graph writer reuses
-their validation and model-building rules, then builds the complete graph from
-fresh Kubernetes objects and durable bindings after it acquires the Gateway
-lock. Reconcilers do not hand fragments through process memory and do not issue
-OpenStack mutations independently.
+Each Gateway and route component has an `Ensure`, `Preserve`, or `Delete` disposition.
+Route cleanup preserves the Gateway component and deletes only exact detaching fragments.
+Whole-Gateway cleanup may remove the entire graph after validation.
+A preserved fragment cannot authorize restoring disabled parent traffic.
 
-A coordinator shared by the controller process and keyed by Gateway UID can
-prevent two active workers from mutating the same graph at once. Correctness
-still comes from the desired graph and OpenStack observation, so restart and
-leader change require no lock recovery. Leader election is required for
-multiple controller replicas.
+The route source lists the Gateway namespace through the uncached reader, including bound routes whose ParentRef has disappeared and candidates that can affect selection.
+It repeats that inventory before mutation and checks route UIDs and resource versions, then validates the required object revisions, bindings, finalizers, lifecycle, ownership, and API version.
+These checks detect observed changes without claiming an atomic Kubernetes snapshot.
+Cached indexes drive event mapping, not proof of inventory completeness.
 
-The current implementation has that keyed coordinator in `internal/controller/graph`, but Gateway and HTTPRoute reconciliation still call separate provider operations.
-`internal/cloud/openstack/graph` organizes those existing provider operations behind the OpenStack facade.
-Neither package is the complete graph writer.
-Serialization prevents overlapping mutations, but the two paths remain separate.
-[ADR 0001](adr/0001-gateway-graph-writer.md) proposes the writer and durable route fragment contract.
-It is not accepted or implemented yet.
+Bound routes require an explicit `Attached` or `Detaching` marker.
+The route reconciler makes the applicable status and cleanup checkpoint durable before changing the marker to `Detaching`.
+That state survives restart and later spec changes until the owned fragment is absent and its binding can be cleared.
+Missing or invalid lifecycle markers block graph work.
+No Phase 2 compatibility release or downgrade path is provided.
 
-In that writer, keep input collection, desired model construction, diff calculation, and mutation execution separate within the existing controller and provider boundaries.
-Model construction and diff calculation should be deterministic functions of their input snapshots, testable without Kubernetes or OpenStack I/O.
-Reuse resolved inputs within a reconciliation where their required freshness is the same.
-This reuse must preserve live ownership checks and observation after an asynchronous transition.
+A missing Gateway does not erase an HTTPRoute's durable cleanup identity.
+A detaching route can still remove its exact child graph with `Gateway=Preserve`.
+It cannot recreate or delete Gateway infrastructure.
 
-### Asynchronous OpenStack operations
+The writer has no persistent fragment registry or mutation plan.
+Its coordinator is process-local, and multiple mutating replicas require leader election.
+A restart reconstructs state from Kubernetes bindings and OpenStack identity.
 
-Octavia is asynchronous. Each reconciliation should make at most one state
-transition, observe it for a bounded period, and return a jittered
-`RequeueAfter` while progress continues. It must not hold a worker until an
-operation that takes several minutes finishes.
+### Component outcomes and administrative repair
 
-No mutation is issued while the load balancer is `PENDING_*`. Request timeout,
-retryable API failure, rate limiting, quota exhaustion, terminal validation,
-Octavia `ERROR`, and ownership conflict are distinct outcomes. Timeouts and
-retries are bounded, and a later reconciliation always observes the resource
-again before acting.
+A graph call returns a scheduling outcome and separate Gateway and route results.
+Errors identify the affected component when known.
+A route failure discovered during Gateway reconciliation does not become a Gateway provisioning failure, and a route transition does not clear a still-valid Gateway `Programmed` condition.
 
-### Backend transitions
+The desired load balancer and listener administrative state is enabled.
+After validating all relevant fragments, the plan reconciles Gateway prerequisites, deletes detaching fragments, reconciles the attached fragment, enables the listener, and finally enables the load balancer.
+It performs only one of these mutations per call.
+Immutable topology and identity differences are conflicts, not fields to overwrite.
 
-Ordered Octavia mutations do not make a backend change atomic or guarantee uninterrupted traffic.
-For a valid backend change on the same route and Gateway, the current member plan removes obsolete members before adding replacements to the existing pool.
-Replacing every member address or NodePort can therefore leave the pool empty between reconciliations.
-The baseline OpenStack E2E run does not establish traffic behavior during that transition.
-Neither Octavia `ACTIVE` nor Gateway `Programmed=True` alone proves backend health or traffic continuity.
+### Asynchronous operations and backend transitions
 
-Phase 3 tests must examine intermediate graphs as well as eventual convergence, preserving unchanged members and the current status-before-cleanup safeguards.
-A change to create replacements first, retain old members for a grace period, or provision another pool needs a reviewed transition design covering health, mixed backend traffic, quota, rollback, and removal of invalid or revoked backends.
-Any change to resource mapping or ownership also requires an accepted ADR.
+Octavia `PENDING_*` blocks mutations and returns bounded progress for a later observation.
+Timeouts, retryable failures, rate limits, quota failures, terminal validation, failed resources, and ownership conflicts remain distinct.
+A worker does not wait synchronously for an operation that takes minutes to complete.
 
-### Efficient Kubernetes event handling
+For a valid backend change, the member plan removes obsolete members before adding replacements.
+Unchanged members remain registered.
+Replacing every address or NodePort can leave the pool empty between reconciliations, as covered by adapter transition tests.
+Neither Octavia `ACTIVE` nor Gateway `Programmed=True` proves backend health or traffic continuity.
+A different transition order requires a design that addresses health, mixed traffic, quota, rollback, and revoked backends.
 
-Manager setup indexes GatewayClass ownership, parent Gateway references,
-backend Services, cleanup bindings, and the Service associated with each
-EndpointSlice. Watch handlers use those indexes instead of listing every object
-in the cluster. The current Node mapper starts with every indexed HTTPRoute that
-has a Service backend, then resolves the affected set. The target is narrower
-fan-out to affected managed NodePort backends, with scale tests that count reads
-and effective reconciles.
+### Kubernetes events and measurements
 
-Predicates may filter updates that change only status or are otherwise
-irrelevant, but they must not hide a dependency transition needed for
-correctness. The controller treats cached objects as immutable and makes a copy
-before mutation. It uses an uncached `APIReader` only for a documented
-read-after-write or safety requirement.
+Manager indexes cover class ownership and parameters, parent Gateways, backend Services, cleanup bindings, and EndpointSlice Services.
+Watch handlers use these relationships to enqueue affected objects.
+Node mapping filters managed NodePort backends and reuses parent, Service, and endpoint reads within one event.
+This temporary reuse does not replace the writer's live ownership checks or persist between events.
 
-Measure event handling and graph construction before introducing another cache or reconciliation path.
-EndpointSlice processing can narrow the work needed to calculate NodePort membership, but member mutations remain part of the serialized Gateway graph.
-An event or cached calculation does not prove that the complete graph is current or authorize skipping ownership validation.
+Predicates react to readiness, schedulability, deletion, relevant labels, and selected addresses.
+Cached objects remain immutable.
+External drift is observed through a slow resync with stable UID-based jitter, while pending Octavia work uses bounded shorter intervals.
 
-## Target controller responsibilities
+Local benchmarks separate desired-model and diff costs from provider I/O.
+The graph writer measures lock wait, Gateway input, route input, validation, and provider stages with bounded labels.
+OpenStack client metrics record request outcomes and latency.
+The provider stage includes waits within one call and does not measure full asynchronous convergence or traffic recovery.
+Broader scale evidence is still required before increasing worker concurrency.
 
-These responsibilities describe the planned design. The current controller
-implements the constrained subset and most Phase 2 reliability foundations
-documented in the roadmap and `docs/getting-started.md`.
+## Controller responsibilities
 
-### GatewayClass reconciler
+GatewayClass reconciliation checks exact ownership, the API version, typed parameters, and visible topology capabilities.
+It reports acceptance and protects the class while managed Gateways reference it.
+Read-only capability checks do not prove permission or quota to create a complete graph.
+`supportedFeatures` remains empty until the corresponding pinned conformance behavior is covered.
 
-- Select the exact controller name.
-- Validate deployment defaults or the referenced class configuration.
-- Check the Amphora environment's capabilities and permissions.
-- Write `Accepted` and version support, and publish `supportedFeatures` only
-  when conformance results support them.
-- Prevent deletion while managed Gateways use the class.
-
-### Gateway reconciler
-
-- Validate the class binding, addresses, and listeners.
-- Write Gateway and listener conditions and `attachedRoutes`.
-- Finalize only the validated graph recorded by its durable binding.
-
-### Gateway graph writer
-
-- Collect the fresh Gateway and HTTPRoute inputs after acquiring the graph
-  lock.
-- Compile the complete load balancer graph from cloud abstraction types rather
-  than Gophercloud types.
-- Reconcile the load balancer, address, listeners, and ordered route resources.
-- Return component results to the reconcilers without patching Kubernetes
-  objects.
-
-### HTTPRoute reconciler
-
-- Evaluate parent attachment and `allowedRoutes`.
-- Resolve Service references and future ReferenceGrant authorization.
-- Validate matches, filters, and backends.
-- Provide deterministic model-building rules that the graph writer can reuse.
-- Write only this controller's parent status entries.
-- Watch every Service, EndpointSlice, Node, grant, or future policy that can
-  change the fragment.
-
-Support for multiple routes needs an ADR that defines fragment ownership,
-selection, and ordering in the complete graph.
+Gateway reconciliation validates listeners and bindings, checkpoints frozen topology, reports Gateway and listener status, and finalizes the recorded graph.
+HTTPRoute reconciliation validates parent attachment, selection, matches and backends, checkpoints route lifecycle, and writes its own parent status entries.
+The writer reuses those resource packages through small source interfaces and owns the shared mutation boundary.
 
 ## Backend connectivity
 
-The class configuration must state how Amphora reaches backends. The controller
-does not infer this from the installation.
+NodePort is the only implemented member mode.
+The controller uses the class-selected Node address type and a user-provided NodePort Service.
+It checks readiness, schedulability, address family, Service ports, and EndpointSlice state.
 
-### NodePort mode
+Nodes labeled `node-role.kubernetes.io/control-plane` or `node-role.kubernetes.io/master` are excluded regardless of label value.
+Workers need no role label.
+For `node.kubernetes.io/exclude-from-external-load-balancers`, an absent label or an explicit false value permits eligibility, while empty, true, or invalid values exclude the Node.
 
-NodePort is the default and the only current mode.
-Octavia members point to eligible Node addresses and a Service NodePort provided by the user.
-The controller never creates a helper Service.
+`externalTrafficPolicy: Cluster` can use every otherwise eligible worker.
+`externalTrafficPolicy: Local` includes only eligible workers with ready local endpoints.
+Both policies apply the same role and exclusion-label checks.
+The controller does not alter Node labels or create helper Services.
 
-The controller validates the Service port, protocol, Node address, member
-subnet, Node readiness, and EndpointSlice state.
-`externalTrafficPolicy: Cluster` may use every eligible Node.
-`externalTrafficPolicy: Local` uses only Nodes with eligible local endpoints
-and therefore updates membership from EndpointSlice events.
+The operator must provide routing and security rules that let Amphora reach NodePorts.
+A VIP subnet is not proof of the Amphora source network.
+Compatibility evidence must record the traffic policy, IP family, kube-proxy behavior, and topology tested.
+Pod IP mode remains deferred until direct reachability, CNI behavior, endpoint conditions, draining, and security have an explicit contract.
 
-Compatibility evidence must name the tested Local endpoint behavior, IP family, kube-proxy mode or replacement, and Amphora topology.
-Record the environment in a formal compatibility report under the [test evidence policy](../reports/README.md).
-Unrecorded combinations are not part of a support claim.
+## Class configuration and frozen topology
 
-NodePort works where Pod CIDRs are not routable from Amphora, but it requires
-explicit routing and security rules that allow Amphora instances to reach
-worker ports. Phase 4 reduces that operator work without taking ownership of
-the cluster network.
+[ADR 0002](adr/0002-class-configuration.md) and the [class configuration reference](../reference/class-configuration.md) define OpenStackGatewayClassConfig.
+Its cluster-scoped `v1alpha1` API supplies VIP and member subnet references, Floating IP policy, optional Amphora flavor and availability zone, Node address type, and health monitor settings.
+The GatewayClass parameter reference has no namespace.
+Credentials, cloud, region, authenticated project, cluster identity, and controller identity remain deployment settings.
 
-### Pod IP mode
+A reference selects an ID, exact name, or all specified tags and must resolve to exactly one permitted resource.
+VIP and member subnets must belong to the authenticated project.
+An allocated Floating IP requires a visible, enabled external network, which can belong to the cloud operator.
+The controller checks requested capabilities against visible API and topology evidence and rejects unknown support.
+These reads do not modify networks or security groups.
 
-Support for Pod IP members may be added later as an experimental option. It
-requires direct routing from the Amphora member network, CNI compatibility
-evidence, correct handling of the EndpointSlice ready, serving, and terminating
-conditions, safe draining, and an explicit security model. The controller must
-reject the mode if it cannot verify those prerequisites. Pod IP support is not
-required for the stable NodePort contract.
+Before the first cloud create, the Gateway binding records the resolved configuration, parameter identity and generation, and an integrity finalizer.
+Existing Gateways use that snapshot even when class parameters change or disappear.
+The complete topology is required for bound Gateway lifecycle work.
+A replacement cloud graph for the same Gateway UID retains it, including health settings and Node addressing.
+A new Gateway can use the updated template.
 
-## Network, address, and security model
+Requested Gateway addresses, `Gateway.spec.infrastructure.parametersRef`, security policy modes, and per-backend health policies remain unsupported.
+Future per-Gateway or Direct Policy Attachment APIs need their own scope, precedence, and merge decisions.
 
-Network, subnet, and port names do not uniquely identify a resource. A
-configured ID or selector must resolve to exactly one object visible in the
-authenticated project before mutation. The controller records the result as an
-immutable binding for the Gateway, so a later selector change does not silently
-move an existing load balancer.
+## HTTP and HTTPS boundaries
 
-The controller may allocate a new Floating IP for a Gateway or publish the VIP
-without one. A requested `Gateway.spec.addresses` IP means an Octavia VIP,
-while class Floating IP policy controls the separate external address. The API
-contract must define whether `Allocate` adds a FIP to a requested VIP or
-rejects the combination. The controller never adopts an existing Floating IP.
-Foreign addresses on the VIP port are an ownership conflict.
+Gateway API matches are alternatives, with conjunctive conditions within each match.
+The current path mapping uses ordered Octavia policies and rules.
+PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so that `/foobar` does not match.
 
-Frontend security defaults to Octavia management. Before using `vip_sg_ids`,
-the controller verifies that the negotiated API supports it and validates
-every reference. Status and documentation must state that Octavia will no
-longer create listener ingress rules. This feature requires API microversion
-2.29, introduced with Octavia 16.0 (OpenStack 2025.1), and applies the custom
-groups to the VIP and Amphora VRRP ports. Octavia retains internal VRRP and
-HAProxy peer rules, but custom groups are incompatible with listener
-`allowed_cidrs` and SR-IOV
-load balancers. The currently pinned Gophercloud version has no typed
-`vip_sg_ids` create option, so this remains planned until the client path is
-updated or narrowly extended and tested. The controller does not edit a
-referenced group's rules.
+Wildcard hostnames, headers, multiple routes, redirects, header modification, rewriting, mirroring, weighted backends, and other filters require further implementation and evidence.
+Octavia member weights alone do not prove Gateway API weights across Services or invalid-backend semantics.
+The constrained NodePort path cannot claim full HTTPRoute Core support or GATEWAY-HTTP conformance.
+The pinned conformance suite and gap report remain the next validation work after Phase 3 implementation.
 
-Backend security initially relies on connectivity managed by the operator or
-supplied by reference. A future managed mode may create a security group and
-exact NodePort rules, but attaching the group to worker ports requires the
-contract for changing `security_groups` described above. Backend source CIDRs
-must come from explicit configuration or published environment evidence. The
-controller must not assume that the VIP subnet is the Amphora egress source.
+Terminated HTTPS requires a Barbican identity and certificate lifecycle design, including rotation, rollback, SNI, and safe deletion.
+Cross-namespace Service or Secret references also require ReferenceGrant implementation.
+An HTTP-only environment does not need Barbican, and `ReferenceGrant` must not be advertised before its applicable feature combinations are tested.
 
-## HTTP and HTTPS compilation
+## Failure and recovery
 
-Gateway API route matches are alternatives, and the conditions within a match
-are conjunctive. Octavia policies are ordered alternatives, and the rules
-within a policy are conjunctive. The compiler therefore expands each
-representable match into a policy fragment and orders the full listener graph
-according to Gateway API precedence.
+The controller reports standard Gateway API conditions and reasons where available.
+`ObservedGeneration` advances only for an evaluated result, and semantic no-op status patches are skipped.
+Events and diagnostics contain useful fixed messages without credentials or raw private API bodies.
 
-PathPrefix requires special handling. Octavia `STARTS_WITH /foo` also matches
-`/foobar`, while Gateway API PathPrefix does not. The representable mapping is
-an exact `/foo` policy plus a `/foo/` prefix policy.
+Finalization retains the durable binding and finalizers until the owned graph is confirmed absent.
+A collision or incomplete identity stops mutation rather than triggering adoption or forced finalizer removal.
+After an asynchronous transition, timeout, or lost response, recovery observes cloud identity again.
 
-Octavia can directly represent exact and wildcard hostnames, Exact and PathPrefix paths, and exact header matches.
-These are candidates for support.
-Method and query matching, header transformation, URL rewrite, mirroring, and
-other filters remain unsupported unless exact behavior is proven. Weighted
-Service backends require separate proof because Octavia member weights do not
-automatically preserve weights assigned to Services or the Gateway API behavior
-required when a backend is invalid.
+Floating IP discovery searches the authenticated project by complete Gateway identity, including when the load balancer is absent or the address is detached.
+If an owned Floating IP is detached or remains after its load balancer disappears, normal provisioning stops without allocating a duplicate address or reconnecting the existing one.
+Whole-Gateway deletion can clean up a uniquely owned, fully detached address after validating any remaining load balancer graph.
+Duplicate candidates, inconsistent project identity, unexpected associations, and foreign addresses on the VIP port are ownership conflicts.
+Route-only cleanup preserves the Gateway's Floating IP, and another user's address is never a cleanup target.
 
-Full HTTPRoute Core support also requires the Kubernetes Service backend
-behavior defined as Core by Gateway API, including ClusterIP Services, plus
-`RequestHeaderModifier` and `RequestRedirect`. The current NodePort path rejects
-ClusterIP Services, so it cannot advertise `HTTPRoute` in `supportedFeatures`
-or claim full GATEWAY-HTTP conformance. Partial conformance is an acceptable
-result when the unsupported Core behavior is explicit.
+The [ownership audit](ownership-audit.md) remains advisory and read-only.
+A report never authorizes mutation, adoption, or finalizer removal.
+The [operator recovery guide](../operator-recovery.md) describes investigation of blocked cleanup.
 
-Terminated HTTPS uses Kubernetes TLS Secrets and future Barbican resources
-created by the controller. Cross-namespace Secret access requires a
-ReferenceGrant. Certificate identity, rotation, rollback, SNI grouping, and
-deletion safety must be designed and tested before HTTPS is advertised.
+## Security and releases
 
-Barbican is a requirement for a profile that claims terminated HTTPS, not for
-an HTTP-only profile. A release may verify or support HTTP in an environment
-without Barbican when its compatibility record and feature claims say so
-clearly.
+Use Keystone application credentials and Kubernetes RBAC with only the permissions needed by enabled behavior.
+Credentials remain in standard authentication inputs or Secrets and never enter topology bindings, Events, status, or public fixtures.
+Worker-port mutation and Barbican access remain separate future privileges.
 
-`ReferenceGrant` is a union feature. The controller reports it in
-`supportedFeatures` only after Service and Secret references and every
-applicable feature combination pass the pinned conformance suite.
+Local tests and a successful capability probe are not live controller evidence.
+The earlier HTTP E2E baseline does not validate the Phase 3 writer or API.
+Public image registry selection, immutable image publication, scheduled live E2E and leak audits, and conformance results remain explicit release gates.
+Follow the [release workflow](../releasing.md) and [test evidence policy](../reports/README.md).
 
-## Amphora environment capability model
-
-The controller always uses Amphora, but available features vary between
-environments. The controller determines support from:
-
-- OpenStack and Octavia versions and the negotiated microversion
-- Amphora features exposed by the public API
-- enabled Octavia, Neutron, and optional Barbican services
-- project roles, policies, quotas, and visible topology
-- behavior proven by this project's tests in a documented OpenStack environment
-
-Compatibility evidence records the literal provider identifier returned by
-Octavia. An environment-specific alias may be accepted only if a reviewed
-identity rule proves that it is Amphora. An arbitrary provider string is never
-treated as a compatible extension point.
-
-Capabilities affect tags, L7 behavior, custom VIP security groups, health
-monitors, TLS, and every Gateway API feature claim. A feature is unsupported
-until its availability is known.
-
-Capability discovery may reject a requested class feature, but it does not by
-itself authorize `GatewayClass.status.supportedFeatures`. That field is a
-runtime support declaration consumed by conformance tests and is published
-only after the applicable feature combinations pass for the pinned version.
-
-## Configuration layers
-
-1. **Controller deployment:** credentials, cloud, region, authenticated
-   project, stable cluster identity, controller identity, logging, metrics,
-   throttling, and safe operational defaults.
-2. **GatewayClass parameters:** a future cluster-scoped
-   OpenStackGatewayClassConfig for VIP and member placement, Floating IP
-   policy, Amphora flavor and availability zone, NodePort addressing, security
-   modes, and class health defaults. Its `GatewayClass.spec.parametersRef`
-   namespace is unset.
-3. **Gateway API objects:** portable listener, address, attachment, route,
-   backend, certificate, and `Gateway.spec.infrastructure` intent.
-4. **Backend policy:** a future namespaced OpenStackBackendPolicy may be added
-   when documented use cases require health monitor settings for individual
-   Services. It will follow Direct Policy Attachment.
-
-If introduced, that policy uses a Service `targetRef` in the same namespace,
-supports a named Service port through `sectionName`, carries the
-`gateway.networking.k8s.io/policy: Direct` CRD label, and reports standard
-`Accepted`, `Conflicted`, and `TargetNotFound` reasons through
-`PolicyAncestorStatus` entries for each Gateway and controller.
-
-Credentials, project, region, and provider selection do not belong in the
-class CRD. The API group requires a domain controlled by the project. Start with
-OpenAPI and CEL validation. Add a webhook only when those mechanisms cannot
-express a required rule.
-
-GatewayClass is a template. The design must state whether and how parameter
-changes propagate. An existing Gateway keeps its validated binding and requires
-an explicit migration for infrastructure changes that could replace or move
-cloud resources.
-
-Gateway API also offers a namespaced
-`Gateway.spec.infrastructure.parametersRef`. Use it instead of annotations if
-documented use cases require OpenStack settings for individual Gateways, but add
-no second configuration kind until an ADR defines which settings the operator
-and application teams may control and how they merge with class defaults.
-Until that contract is implemented, the controller rejects a Gateway
-`parametersRef` explicitly rather than silently ignoring it.
-
-## Failure, status, and recovery
-
-- Standard Gateway API conditions and reasons are used whenever they exist.
-- `ObservedGeneration` advances only for an evaluated generation.
-- Unsupported configuration is terminal until an input event changes it.
-- Dependency readiness relies on watches. External asynchronous progress uses
-  bounded requeue intervals.
-- Authentication, authorization, quota, rate limiting, timeout, pending,
-  provider failure, and ownership conflict remain distinguishable.
-- If a resource whose ownership has been verified is deleted externally,
-  recreate it safely unless its Kubernetes owner is being deleted.
-- A collision or incomplete identity is terminal and never triggers adoption.
-- Status patches preserve other controllers' HTTPRoute parent entries and do
-  nothing when the status has not changed semantically.
-- Events and messages are useful to an operator without exposing credentials,
-  certificates, private API bodies, or customer identifiers.
-
-Finalization is idempotent, follows dependency order, and can resume after a
-controller restart. The finalizer remains until the entire graph whose
-ownership has been validated is absent. The controller never forcibly removes
-a finalizer.
-
-The experimental [ownership audit](ownership-audit.md) gives operators a
-read-only view of stored bindings and discovered OpenStack resources. Its
-findings are advisory and do not change the ownership proof required at
-mutation time. The [operator recovery guide](../operator-recovery.md) explains
-how to use the report when finalization is blocked.
-
-## Security and release model
-
-- Prefer Keystone application credentials with only the permissions that the
-  controller needs.
-- Credentials are loaded from Secrets and never copied to status, Events, or
-  public diagnostics.
-- Kubernetes RBAC grants only the reads and writes required by the active
-  feature set.
-- Permission to modify worker ports owned by another component, permission to
-  use custom VIP groups, and access to Barbican are separate privileges. Request
-  each privilege only when the corresponding mode is enabled.
-- Public fixtures and compatibility reports contain no credential, project,
-  address, or customer data that should remain private.
-- Images and charts for a production candidate release require reproducible
-  builds, SBOMs, provenance, signatures, vulnerability scanning, and an
-  immutable promotion process.
-- Controller reconciliation, provider call, and lifecycle metrics describe the
-  control plane. Traffic and Amphora health metrics come from Octavia or the
-  data plane. Dashboards and alerts must name the source instead of presenting
-  the two sets as one metric contract.
+Control-plane metrics describe reconciliation and API requests.
+Traffic and Amphora health come from Octavia or the data plane and must be identified separately in dashboards.
 
 ## Explicit data plane boundary
-
-The controller manages only the direct path:
 
 ```mermaid
 flowchart LR
     C["Client"] --> A["Floating IP or VIP"]
-    A --> O["Octavia (Amphora) HTTP/HTTPS"]
-    O --> B["NodePort or verified Pod IP backend"]
+    A --> O["Octavia Amphora HTTP listener"]
+    O --> B["Worker NodePort backend"]
 ```
 
-Traefik, Envoy, or another proxy can be deployed independently on OpenStack,
-but this repository does not provide, install, or reconcile that path. Such a
-proxy may use OCCM and a Service of type `LoadBalancer` without sharing this
-controller's Gateway graph.
+An independently installed proxy may use OCCM and a LoadBalancer Service.
+It does not share this controller's Gateway graph.
 
 ## Open design decisions
 
-The [ADR index and process](adr/README.md) tracks accepted decisions. The list
-below is a backlog, not an implicit decision.
+The [ADR index](adr/README.md) records the accepted graph writer and class API decisions.
+The following boundaries remain open:
 
-The following require accepted public ADRs before implementation changes the
-associated public or safety contract:
-
-- canonical controller name, module and repository ownership, artifact
-  registry, project API domain, and migration from existing controller-derived
-  finalizer and annotation keys
-- graph writer for each Gateway and ownership of route fragments
-- GatewayClass parameter snapshot, migration, and deletion behavior
-- whether individual Gateways need infrastructure parameters and, if so, their
-  scope and merge semantics
-- schema for network selectors and immutable binding representation
-- whether managed backend security may attach a security group created by this
-  controller to worker ports owned by another component
-- identity and reference counting for shared security groups, and uninstall
-  behavior
-- source identity or CIDRs for security rules that allow traffic from Amphora
-  members to backends
-- listener grouping and global HTTPRoute precedence
-- whether Octavia can reproduce Gateway API behavior for weighted or invalid
-  backends
+- public artifact registry, promotion, signing, and any future identity migration
+- per-Gateway infrastructure parameters and merge semantics
+- referenced frontend security and managed changes to worker security groups
+- shared resource identity, reference counting, and uninstall behavior
+- listener grouping, multiple routes, and global precedence
+- weighted and invalid backend behavior
 - Barbican identity, certificate rotation, and rollback
-- Direct Policy Attachment and conflict rules for a backend policy
+- Direct Policy Attachment and backend policy conflict rules
 - topology and CNI requirements for Pod IP members
 
-These decisions require an accepted ADR. Behavior observed in one environment
-is not enough to define the project contract.
+Implementation that changes one of these public or safety contracts requires a design decision and appropriate evidence.
+Behavior observed in one environment does not establish general OpenStack support.

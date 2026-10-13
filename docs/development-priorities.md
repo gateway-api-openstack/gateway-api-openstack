@@ -1,188 +1,104 @@
 # Current development priorities
 
-Status: Phase 3 prerequisite work and API design
+Status: Phase 3 implementation complete, with validation and release work remaining.
 
-This page turns the unfinished work in the roadmap into changes that can be
-opened as focused issues. It does not replace the phase status and exit gates in
-[ROADMAP.md](../ROADMAP.md), and it does not replace an accepted ADR.
+The class configuration API, complete Gateway graph writer, frozen bindings, worker member selection, and local event handling measurements are implemented.
+[ADR 0001](design/adr/0001-gateway-graph-writer.md) and [ADR 0002](design/adr/0002-class-configuration.md) record the decisions approved for this development change.
+The [roadmap](../ROADMAP.md#work-carried-into-phase-3) separates completed code from evidence still required for a release.
 
-Phase 2 is complete as a development milestone following the baseline OpenStack E2E run for the constrained HTTP and NodePort path.
-The [development validation record](providers/compatibility.md#development-validation) describes the tested revision and remaining limitations.
-The [work carried into Phase 3](../ROADMAP.md#work-carried-into-phase-3) remains open.
+## Run conformance and record gaps
 
-## Phase 3 work
+Run the pinned Gateway API v1.6.1 GATEWAY-HTTP suite as the next validation step.
+Publish a concise gap analysis even when failures are expected.
+Classify failures as controller defects, missing compiler behavior, backend limitations, Octavia API limitations, or intentional non-goals.
 
-Begin with the Gateway graph writer, the public identity and class API contracts, and worker NodePort member selection.
-Accept the relevant ADRs before changing ownership or implementing the class API.
+Known areas to evaluate include ClusterIP Services, request header modification, request redirects, backend weights, invalid backends, and ReferenceGrant combinations.
+Do not translate Service backend weights into Octavia member weights without proving equivalent semantics.
+The result should guide the HTTP compiler work after Phase 3.
 
-### 1. Finish the Gateway graph writer contract
+A development gap report is separate from an upstream conformance submission.
+Keep `supportedFeatures` empty until the corresponding complete Core behavior passes the pinned suite.
+Use the [gap report template](reports/conformance-gap-template.md) and [test evidence policy](reports/README.md).
 
-`gateway.Reconciler` and `httproute.Reconciler` can both change one Octavia load
-balancer. The shared `graph.Coordinator` makes those calls take turns inside
-the active process. It does not compile the complete Gateway graph and it does
-not decide how route fragments survive a restart or a leader change.
+## Revalidate the implementation in OpenStack
 
-Start with an ADR for the writer and route fragment ownership.
-Preserve the current route identity and route selection behavior until that decision is accepted.
-The implementation should then move toward one provider-neutral desired Gateway graph, one observed graph, one deterministic mutation plan, and one cloud mutation entry point.
-Keep observation and execution separate from pure model construction and diff calculation so tests and benchmarks can exercise those calculations without Kubernetes or OpenStack I/O.
-Gateway and HTTPRoute reconciliation can continue to validate inputs and write the status fields they own.
+Repeat the baseline traffic, status, restart, no-op, deletion, and leak checks against the selected Phase 3 revision.
+The [earlier development run](providers/compatibility.md#development-validation) tested a different controller and does not establish this revision's behavior.
+The E2E runner now creates a typed class configuration and requires the operator to install its CRD first.
+Follow the [OpenStack E2E guide](testing-openstack-e2e.md).
 
-[ADR 0001](design/adr/0001-gateway-graph-writer.md) is the proposed contract.
-It is not accepted yet, so the mutation boundary must not change until its
-public review is complete.
+Extend validation to multiple classes, frozen configuration after parameter changes, worker membership changes, and recovery when an owned resource disappears.
+Test quota failures, timeouts, rate limiting, Octavia failures, and blocked finalization only in a dedicated environment approved for fault injection.
+Keep exact inventories, cloud details, logs, and image digests local unless a formal compatibility report requires them.
 
-The graph lock remains useful, but correctness must come from observation and desired state rather than memory held by the active process.
-Tests should run Gateway and HTTPRoute events in both orders, cancel a waiting reconcile, build a new reconciler after a partial transition, and show that a second pass over converged state makes no cloud mutation.
+Backend replacement is not atomic.
+The current member plan removes obsolete members before creating replacements, so replacing every member can leave an empty pool between reconciliations.
+Local tests cover this intermediate graph, but they do not establish traffic continuity or a safe drain policy.
+Any change to that ordering needs a transition design covering health, mixed backend traffic, quota, and rollback.
 
-Add regression tests for [backend transitions](design/architecture.md#backend-transitions) that inspect each intermediate mutation and observed graph:
+## Measure before increasing concurrency
 
-- Switch between ready NodePort backends while preserving the pool, L7 policy, and unchanged member identities.
-- Change a backend NodePort or replace the complete member set and record any intermediate empty pool caused by the current member deletion order.
-- Remove a backend or its ready endpoints, then restore it and verify the status, cleanup, and recovery sequence.
-- Interrupt a transition with `PENDING_*`, a timeout, a restart, or another spec change and verify revalidation and eventual convergence with at most one mutation per reconciliation.
+The controller now reuses dependency reads within one Node event.
+Synthetic tests verify bounded reads for routes sharing Gateways and Services, unchanged enqueue behavior, fresh reads on later events, and workqueue coalescing.
+This reuse does not cross reconciliation boundaries or authorize cloud mutation.
+The graph writer still rebuilds and validates fresh inputs under the Gateway UID lock.
 
-### 2. Protect the controller and OpenStack package boundaries
+Run local benchmarks without Kubernetes or OpenStack credentials:
 
-The behavior-preserving package split is complete. Each reconciler now owns its
-lifecycle in a resource package:
+```sh
+go test -run '^$' -bench BenchmarkNodePortModel -benchmem ./internal/controller/httproute
+go test -run '^$' -bench BenchmarkNodeEventFanout -benchmem ./internal/controller/httproute
+go test -run '^$' -bench BenchmarkWriterCoordination -benchmem ./internal/controller/graph
+go test -run '^$' -bench BenchmarkGatewayGraphCalculation -benchmem ./internal/cloud/openstack/graph
+```
 
-- `internal/controller/gatewayclass`
-- `internal/controller/gateway`
-- `internal/controller/httproute`
+Compare results on the same machine and toolchain.
+The benchmarks separate pure calculation from dependency reads and coordination.
+They do not establish OpenStack capacity, production latency, or safe worker counts.
 
-The root `internal/controller` package contains the shared Kubernetes-facing contracts.
-`internal/controller/graph` contains only the Gateway UID keyed coordinator, and `internal/controller/ownershipaudit` contains the read-only Kubernetes binding collector.
-Resource packages depend on those lower-level contracts.
-The root package does not import a reconciler.
+The writer's stage histogram measures lock wait, Gateway inputs, route inputs, validation, and the complete provider call.
+The provider stage includes client-side waits and API work within that call.
+Use existing OpenStack request metrics for API latency and throttling.
+Pending duration and total cloud convergence still need environment measurements.
+Keep object names, UIDs, and cloud IDs out of metric labels.
 
-The OpenStack adapter is also divided by responsibility. Authentication and
-shared clients, error classification, immutable identity, Octavia, Neutron,
-cross-service graph operations, and read-only inventory each have a named
-package below `internal/cloud/openstack`. The root package remains the facade
-used by commands, probes, `cloud.Provider`, and `audit.Scanner`.
+## Prepare artifacts for outside testing
 
-The [development layout guide](development-layout.md) records the current
-package layout and the upstream patterns behind it. Keep these boundaries in
-normal review: controller packages must not import Gophercloud, OpenStack
-packages must not import Kubernetes types, and an OpenStack child package must
-not import the root facade.
+Binary release archives now contain matching CRDs, RBAC, Kustomize resources, and examples.
+The [release procedure](releasing.md) covers checksum and extracted-manifest checks.
+The repository still does not publish a controller image or run scheduled live E2E.
 
-This move does not change the provider interface, ownership rules, selected
-route behavior, or mutation ordering. It also does not implement
-[ADR 0001](design/adr/0001-gateway-graph-writer.md). The proposed single writer
-and durable route fragment contract still need public review before their
-implementation begins.
+Choose a registry and an immutable pre-alpha image reference, then validate that artifact in OpenStack.
+Configure scheduled E2E and the post-test leak audit only after a dedicated Kubernetes cluster, OpenStack project, credentials, and quota are approved.
+Distinguish infrastructure failures from controller regressions in the job result.
+Signatures, provenance, SBOMs, and a supported Helm chart remain later release work.
 
-### 3. Measure reconciliation cost and tighten event fan-out
+## Preserve the implemented boundaries
 
-The current indexes avoid cluster-wide dependency scans.
-Node events can still fan out to every indexed HTTPRoute with a Service backend and then read its parent, Service, and EndpointSlices to find the affected set.
-Use synthetic fixtures, fake readers and adapters, and local benchmarks to establish a baseline before changing indexes, caches, or worker concurrency.
-Count Kubernetes reads, enqueued objects, effective reconciles, and member mutations during Node and EndpointSlice bursts, and measure model construction time and allocations as fixture sizes grow.
-Use the results to set an API budget and identify which work needs to be narrowed.
+Keep Kubernetes types in controller packages and Gophercloud types in the OpenStack adapter.
+Class configuration contains infrastructure choices, while credentials and process identity stay in deployment configuration.
+Both Gateway and HTTPRoute reconciliation use the same graph writer.
+There is no independent member writer or process-local fragment registry.
+See the [development layout](development-layout.md) for package responsibilities.
 
-Start with existing controller-runtime and OpenStack request metrics, then add measurements only where they leave a gap.
-Separate model calculation, Gateway lock wait, client-side rate-limit wait, API latency, Octavia pending duration, and total convergence time.
-Keep metric labels bounded and exclude object names, UIDs, and cloud IDs.
-Run these scale measurements locally rather than generating load in a shared OpenStack project.
+The current API is a development alpha with no Phase 2 migration or rollback promise.
+Changes to the API group, controller identity, or frozen infrastructure need an explicit compatibility decision before a supported release.
+Do not broaden route selection, resource sharing, or cleanup authority as an incidental refactor.
 
-Reuse dependency reads within one reconciliation snapshot where measurements justify it.
-Any narrower member calculation still submits work through the Gateway graph writer and preserves complete ownership validation and live mutation checks.
-Do not introduce an independent member writer or use cached fragments as authority for deletion.
+## Work that remains deferred
 
-Finalization uses typed provider outcomes and workqueue backoff. Add a repeated
-failure test that demonstrates the intended change from a bounded quick retry
-period to a slow, stable recheck. Cover a resource disappearing between
-observation and mutation so lifecycle-specific `404` handling does not leave a
-stale success condition.
+- Define any managed backend security group mode before modifying worker ports owned by CAPO or an operator.
+- Design Barbican identity, certificate rotation, rollback, and deletion before adding terminated HTTPS.
+- Define multiple route selection, listener precedence, and shared backend ownership before expanding the current graph.
+- Add per-Gateway infrastructure parameters only for concrete use cases with reviewed scope and merge rules.
+- Keep other Octavia providers, resource adoption, Ingress, and proxy data planes outside this controller.
 
-Audit RBAC against actual write calls at the same time. The controller currently
-patches its objects, while RBAC also grants `update` on several main and status
-resources. Remove a verb only after API server tests show that metadata,
-status, and finalizer patches still work through every lifecycle path.
+## Community and repository work
 
-### 4. Complete the remaining OpenStack evidence
+Seek independent reviews and reproducible Amphora reports without presenting repository-owner approval as community consensus.
+Review governance, support, security contact paths, and release evidence before publishing artifacts for outside testing.
+The criteria for maintainer growth and a future community home remain in [GOVERNANCE.md](../GOVERNANCE.md).
 
-Use the [OpenStack E2E test guide](testing-openstack-e2e.md) to extend the baseline evidence with the remaining fault, upgrade, and operator recovery scenarios, and rerun the baseline after controller changes.
-Use the Local backend profile to restrict test placement to selected Nodes.
-Label-based test placement remains necessary until the controller implements the [worker NodePort member selection](../ROADMAP.md#worker-nodeport-member-selection) contract.
-Use a dedicated environment for fault scenarios under the guide's restrictions.
-
-Follow the [publication policy](reports/README.md) for local artifacts and PR summaries.
-Formal compatibility and release claims still require reviewed evidence under the roadmap and [compatibility matrix](providers/compatibility.md).
-
-### 5. Assess conformance after Phase 3 implementation
-
-After completing Phase 3 implementation, run the pinned GATEWAY-HTTP suite as the next validation step and publish a gap report, even while failures are expected.
-Classify each failure as a controller defect, compiler work, missing backend mode, Octavia API limitation, or intentional non-goal.
-Use the findings to plan follow-up work for ClusterIP Services, request header modification, request redirect, backend weights, invalid backends, and ReferenceGrant combinations.
-
-Keep a local gap report separate from an upstream conformance report. An entry
-in the Gateway API implementation list requires a current upstream report. A
-stable documented subset and an upstream listing are related goals, but the
-roadmap must not imply that one automatically proves the other.
-
-### 6. Decide the public identity before adding a CRD
-
-Accept an ADR for the canonical controller name, API domain, module and
-repository ownership, and artifact registry. Include a migration plan from the
-current personal module path and operator-selected example controller name.
-This is an upgrade safety decision: finalizer and annotation keys are derived
-from the configured controller name, so changing it can make a new process miss
-old bindings. Do this before publishing the Phase 3 CRD or a long-lived image
-reference.
-
-Define class configuration, per-Gateway overrides, snapshots, propagation, and migration before implementing the API.
-Specify defaults, override precedence, and conflict status for the concrete infrastructure settings in the roadmap.
-The identity, parameter, and compatibility ADRs must be accepted before adding the CRD.
-
-After that decision, publish a versioned pre-alpha image early enough for outside testing.
-Pin examples and reports to an immutable digest.
-The image is for evaluation.
-Signatures, provenance, SBOMs, multi-architecture promotion, and a supported Helm chart remain later release work.
-
-### 7. Define worker NodePort member selection
-
-Make worker Nodes the default for NodePort members under the [roadmap's eligibility rules](../ROADMAP.md#worker-nodeport-member-selection).
-Record the control-plane exclusion rules and any opt-in exceptions in a design issue or ADR before implementation.
-Cover both traffic policies, the upstream load balancer exclusion label, and changes to Node eligibility without recreating unchanged members.
-
-## Community work alongside the code
-
-Do not wait for Phase 7 to find the first users and reviewers. The near-term
-community work is small and concrete:
-
-- turn this page and the roadmap gates into focused public issues
-- keep `good first issue` tasks usable without an OpenStack cloud
-- ask Amphora operators for reproducible environment reports
-- record design decisions in public ADRs
-- seek reviews from Gateway API, cloud-provider-openstack, Gophercloud, and
-  Octavia contributors where their interfaces are involved
-- publish adopter and upgrade evidence only with the adopter's agreement
-
-The first realistic upstream goal is an honest Gateway API implementation
-entry backed by a current conformance report. The criteria for maintainer
-growth and any future community home are in [GOVERNANCE.md](../GOVERNANCE.md),
-not in this work list.
-
-Repository operations need a small hardening pass as well.
-Pin every GitHub Action to a reviewed commit, run race and envtest checks for the exact release candidate, and add documentation link, license header, and Kustomize render checks when their maintenance cost is understood.
-Verify branch protection and GitHub private vulnerability reporting in repository settings.
-A file in the source tree cannot prove either setting is active.
-Remove merged remote feature branches only as a separate repository maintenance task.
-
-## Work that should not be pulled forward
-
-Starting Phase 3 does not remove the design requirements for new features:
-
-- Do not add the GatewayClass configuration CRD before the identity, snapshot,
-  migration, and compatibility ADRs are accepted.
-- Do not change the selected-route or route identity behavior incidentally
-  while building the graph writer.
-- Do not attach a managed security group to worker ports without an accepted
-  shared-ownership ADR and explicit opt-in.
-- Do not add terminated HTTPS before Barbican identity, rotation, rollback, and
-  deletion are designed.
-- Do not add OVN, resource adoption, Ingress reconciliation, or an in-cluster
-  proxy mode to the core controller.
+Pin GitHub Actions to reviewed commits and run race and envtest checks for the release candidate.
+Verify branch protection and private vulnerability reporting in repository settings.
+Files in this repository do not prove those settings are active.

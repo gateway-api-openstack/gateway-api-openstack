@@ -197,11 +197,11 @@ The shared writer permits either reconciler to drive progress while retaining on
 
 ## Validation and remaining evidence
 
-The graph contract and shared writer have local tests for input validation, component errors, keyed serialization, and stage metrics.
-OpenStack graph execution and reconciler activation follow in the runtime integration change.
-Before release, validate complete live inventories, durable cleanup checkpoints, minimal mutations, restart, drift, and component status through adapter tests, controller tests, race tests, and envtest.
+Local controller and adapter tests cover complete input validation, live inventory changes, binding checkpoints, lock cancellation, route-only cleanup, component outcomes, and reconstruction with a new writer or provider.
+Adapter tests also cover deterministic ordering, a converged no-op, pending state, lost responses, unknown descendants, administrative repair, reverse deletion, Floating IP recovery, and intermediate member replacement states.
+Race tests and envtest exercise the Kubernetes lifecycle and serialization boundaries.
 
 The previous baseline OpenStack E2E run predates this writer.
 Local tests and ADR acceptance do not establish compatibility or Gateway API conformance.
-Fresh live OpenStack evidence and the conformance gap analysis remain required under the [test evidence policy](../../reports/README.md).
+The implemented writer still needs fresh live OpenStack evidence and the planned conformance gap analysis under the [test evidence policy](../../reports/README.md).
 Public image publication and scheduled live validation remain release work described in the [roadmap](../../../ROADMAP.md).

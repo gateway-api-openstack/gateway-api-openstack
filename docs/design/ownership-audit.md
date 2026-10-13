@@ -49,7 +49,7 @@ Operators should let normal reconciliation settle and run the audit again before
 ## Experimental report
 
 The JSON report uses `formatVersion: v1alpha1`.
-This value deliberately does not choose the project's future API domain.
+This is a report format version, independent of the Kubernetes API group.
 The report contains:
 
 - the generation time, tool version, controller name, and cluster ID
