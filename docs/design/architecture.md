@@ -1,12 +1,7 @@
 # Architecture
 
-Status: current implementation and future design boundaries.
-
-Audience: contributors, reviewers, OpenStack operators, and Gateway API implementers.
-
 This document describes the constrained HTTP implementation and identifies features that remain planned.
 Accepted [architecture decision records](adr/README.md) define the graph writer and class configuration contracts.
-The project remains pre-alpha and does not claim production readiness or Gateway API conformance.
 
 ## Problem statement
 
@@ -163,7 +158,6 @@ Bound routes require an explicit `Attached` or `Detaching` marker.
 The route reconciler makes the applicable status and cleanup checkpoint durable before changing the marker to `Detaching`.
 That state survives restart and later spec changes until the owned fragment is absent and its binding can be cleared.
 Missing or invalid lifecycle markers block graph work.
-No Phase 2 compatibility release or downgrade path is provided.
 
 A missing Gateway does not erase an HTTPRoute's durable cleanup identity.
 A detaching route can still remove its exact child graph with `Gateway=Preserve`.
@@ -208,13 +202,10 @@ Predicates react to readiness, schedulability, deletion, relevant labels, and se
 Cached objects remain immutable.
 External drift is observed through a slow resync with stable UID-based jitter, while pending Octavia work uses bounded shorter intervals.
 
-Local Node and EndpointSlice tests follow bursts through the real reconciler and graph writer to member convergence with a fake provider, including unchanged final input that produces no member mutations.
-They do not model API server timing or Octavia transitions.
-Mapper benchmarks measure read counts and fan-out, and separate benchmarks measure desired-model and diff costs without provider I/O.
 The graph writer measures lock wait, Gateway input, route input, validation, and provider stages with bounded labels.
 OpenStack client metrics record request outcomes and latency.
 The provider stage includes waits within one call and does not measure full asynchronous convergence or traffic recovery.
-Broader scale evidence is still required before increasing worker concurrency.
+Use the [measurement guide](../development-priorities.md#measure-before-increasing-concurrency) before increasing worker concurrency.
 
 ## Controller responsibilities
 
@@ -261,7 +252,6 @@ Existing Gateways use that snapshot even when class parameters change or disappe
 The complete topology is required for bound Gateway lifecycle work.
 A replacement cloud graph for the same Gateway UID retains it, including health settings and Node addressing.
 A new Gateway can use the updated template.
-The [local validation record](../providers/compatibility.md#local-validation) describes the two-class envtest coverage for these bindings.
 
 Requested Gateway addresses, `Gateway.spec.infrastructure.parametersRef`, security policy modes, and per-backend health policies remain unsupported.
 Future per-Gateway or Direct Policy Attachment APIs need their own scope, precedence, and merge decisions.
@@ -272,15 +262,13 @@ Gateway API matches are alternatives, with conjunctive conditions within each ma
 The current path mapping uses ordered Octavia policies and rules.
 PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so that `/foobar` does not match.
 
-Wildcard hostnames, headers, multiple routes, redirects, header modification, rewriting, mirroring, weighted backends, and other filters require further implementation and evidence.
-Octavia member weights alone do not prove Gateway API weights across Services or invalid-backend semantics.
-The constrained NodePort path cannot claim full HTTPRoute Core support or GATEWAY-HTTP conformance.
-The [upstream diagnostic runner](../testing-conformance.md) selects one pinned HTTP test with a NodePort fixture adaptation.
-It has not run against OpenStack and is not a full conformance run.
+The [conformance guide](../testing-conformance.md) records current Core gaps.
+The [feasibility assessment](conformance-feasibility.md) identifies Octavia API blockers and designs needed for the broader compiler.
+Those designs require accepted decisions before changing ownership or resource mapping.
 
 Terminated HTTPS requires a Barbican identity and certificate lifecycle design, including rotation, rollback, SNI, and safe deletion.
 Cross-namespace Service or Secret references also require ReferenceGrant implementation.
-An HTTP-only environment does not need Barbican, and `ReferenceGrant` must not be advertised before its applicable feature combinations are tested.
+An HTTP-only deployment does not need Barbican.
 
 ## Failure and recovery
 
@@ -308,10 +296,8 @@ Use Keystone application credentials and Kubernetes RBAC with only the permissio
 Credentials remain in standard authentication inputs or Secrets and never enter topology bindings, Events, status, or public fixtures.
 Worker-port mutation and Barbican access remain separate future privileges.
 
-Local tests and a successful capability probe are not live controller evidence.
-The earlier HTTP E2E baseline does not validate the Phase 3 writer or API.
-Public image registry selection, immutable image publication, scheduled live E2E and leak audits, and conformance results remain explicit release gates.
-Follow the [release workflow](../releasing.md) and [test evidence policy](../reports/README.md).
+The [compatibility record](../providers/compatibility.md) describes the current validation scope.
+Release evidence and artifact requirements follow the [release workflow](../releasing.md) and [test evidence policy](../reports/README.md).
 
 Control-plane metrics describe reconciliation and API requests.
 Traffic and Amphora health come from Octavia or the data plane and must be identified separately in dashboards.
@@ -344,4 +330,3 @@ The following boundaries remain open:
 - topology and CNI requirements for Pod IP members
 
 Implementation that changes one of these public or safety contracts requires a design decision and appropriate evidence.
-Behavior observed in one environment does not establish general OpenStack support.

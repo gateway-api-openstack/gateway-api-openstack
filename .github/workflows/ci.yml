@@ -31,10 +31,6 @@ jobs:
         with:
           version: v2.12.2
 
-      - name: Check diagnostic module
-        working-directory: test/conformance
-        run: golangci-lint run --config ../../.golangci.yml
-
   race:
     name: race
     runs-on: ubuntu-latest
@@ -72,7 +68,7 @@ jobs:
       - name: Verify module files
         run: |
           make tidy
-          git diff --exit-code -- go.mod go.sum test/conformance/go.mod test/conformance/go.sum
+          git diff --exit-code -- go.mod go.sum
 
       - name: Verify source and tests
         run: make verify

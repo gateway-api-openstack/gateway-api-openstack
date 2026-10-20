@@ -15,7 +15,8 @@ Environment report:
 Identify the run as an upstream profile or an adapted diagnostic.
 Record the exact suite revision, selected tests or profile, feature flags, command, and original result artifact.
 List fixture changes and setup blockers.
-This is a local gap analysis unless an accepted upstream report says otherwise.
+Keep exploratory results local under the [publication policy](README.md).
+This template does not replace an upstream conformance report.
 
 ## Summary
 
@@ -40,7 +41,7 @@ Classify each failed or skipped test and each setup blocker within the selected 
 Use one of these classifications:
 
 - controller defect
-- compiler work
+- routing translation work
 - backend mode or topology requirement
 - Octavia API limitation
 - planned Gateway API extension
@@ -57,4 +58,5 @@ Do not add a feature merely to make a test run, or remove one merely to hide a f
 
 State whether the result is eligible for upstream submission under the current Gateway API rules.
 An adapted diagnostic is not a profile conformance result.
-List the work needed for the next report and the Core semantics that may be structurally unrepresentable on Amphora.
+Link each required change to its roadmap item or design issue.
+For an Amphora limitation, cite the API or implementation evidence and distinguish a current limitation from a feature that has not been investigated.
