@@ -4,7 +4,6 @@ This document describes the maintainer workflow for preparing release artifacts.
 The project is pre-alpha.
 A draft or published GitHub release does not by itself establish production readiness, OpenStack compatibility, or Gateway API conformance.
 Release automation targets [gateway-api-openstack/gateway-api-openstack](https://github.com/gateway-api-openstack/gateway-api-openstack).
-The draft release job runs only in that repository, and GoReleaser names the organization and repository explicitly.
 
 ## Current release scope
 
@@ -26,12 +25,11 @@ Do not describe the binary bundle as a published controller image or claim those
 ## Repository settings
 
 GitHub repository settings are separate from the workflow files.
-After a repository transfer, verify that Actions can run the pinned actions and that the main branch rules require `lint`, `race`, `verify`, and `envtest` from the CI workflow.
+Verify that Actions can run the pinned actions and that the main branch rules require `lint`, `race`, `verify`, and `envtest` from the CI workflow.
 Keep tag protection consistent with the immutable release policy.
 
-Verify private vulnerability reporting at the new repository before publishing a release, as required by [the security policy](../SECURITY.md).
-Review Dependabot security updates, secret scanning, and push protection in the new organization's repository settings.
-Changing repository links or workflow files does not enable these features.
+Check private vulnerability reporting, Dependabot security updates, secret scanning, and push protection under the [security policy](../SECURITY.md).
+Repeat this review after a repository transfer.
 
 ## Validate locally
 
@@ -72,13 +70,13 @@ for archive in dist/gateway-api-openstack_v*_linux_*.tar.gz; do
 done
 ```
 
-Each architecture archive must contain all three executables, the three project documents, the complete configuration YAML, and the example YAML.
+Each architecture archive must contain the files listed in [Current release scope](#current-release-scope).
 The source archive and every binary archive must be covered by `checksums.txt`.
 Rendering checks the packaged Kustomize paths without contacting a cluster.
 Installation still requires operator credentials, approved infrastructure, and an image built from the release revision.
 
-Local tests and packaging checks do not establish that Phase 3 passes in OpenStack.
-Record a live run from the proposed release revision before adding that claim to release notes.
+Support claims require validation of the proposed release revision under the [test evidence policy](reports/README.md).
+Local packaging checks do not establish OpenStack compatibility or Gateway API conformance.
 
 ## Prepare a release
 
