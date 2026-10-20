@@ -3,8 +3,7 @@
 OpenStackGatewayClassConfig supplies the infrastructure settings for new Gateways.
 It is a cluster-scoped `v1alpha1` API in the group `gateway-api-openstack.github.io`.
 GatewayClass must reference it through `spec.parametersRef`, with no namespace.
-The default controller name is `gateway-api-openstack.github.io/gateway-api-openstack`.
-These identifiers use the project organization's domain under [ADR 0003](../design/adr/0003-project-organization.md).
+The API group and default controller identity use the organization's domain under [ADR 0003](../design/adr/0003-project-organization.md).
 [ADR 0002](../design/adr/0002-class-configuration.md) defines class behavior and compatibility limits.
 
 ## Configure a class
@@ -41,7 +40,7 @@ spec:
 ```
 
 The controller name must exactly match the installation's `--controller-name` setting.
-Credentials, project scope, cluster identity, region, and request limits remain deployment settings.
+Credentials, project scope, cluster identity, region, and request limits remain [deployment settings](../getting-started.md#deployment-settings).
 A parameter object cannot select different credentials or a different project.
 Amphora and NodePort are the only provider and member mode.
 There are no deployment topology flags or fallback settings for a GatewayClass without `parametersRef`.
@@ -161,13 +160,12 @@ With `externalTrafficPolicy: Local`, a worker must also have a ready endpoint id
 The route remains pending when no worker is eligible.
 Node and EndpointSlice changes recalculate membership, preserving members whose address and NodePort have not changed.
 
-The controller does not create backend security groups or attach groups to worker ports.
-Operators remain responsible for the path from Amphora to the selected Node addresses and NodePorts.
-The topology checks do not prove that those addresses belong to the chosen member subnet or that security groups and routing allow traffic.
+Operators must ensure that the selected Node addresses belong to the configured member network and that Amphora can reach their NodePorts.
+This also applies when selecting `ExternalIP` instead of the default `InternalIP`.
+The topology checks do not verify that path, and the controller does not create backend security groups or attach groups to worker ports.
 
 ## Development compatibility
 
 The API group, default controller name, and binding format are pre-alpha contracts.
-This implementation has no Phase 2 compatibility flags, automatic binding migration, or adoption path.
+There is no automatic binding migration or resource adoption path.
 Before changing the API group, controller name, cluster identity, or project scope, finalize the development resources with the original controller and credentials, then recreate the installation and its resources.
-The organization move does not convert objects from the earlier API group or rewrite existing cloud ownership.

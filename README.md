@@ -4,203 +4,83 @@
 > This project is pre-alpha and is not ready for production.
 > No supported controller environment profile has been published.
 
-gateway-api-openstack implements Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) using OpenStack Amphora load balancers.
-It currently supports a limited set of HTTP features.
-Its goal is reliable HTTP and terminated HTTPS support without requiring an in-cluster proxy data plane.
+gateway-api-openstack implements Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) using OpenStack Octavia Amphora load balancers.
+It currently supports a limited HTTP profile and aims to become a Conformant implementation for HTTP and terminated HTTPS.
+It uses Octavia directly without an in-cluster proxy data plane.
 
 The project lives at [gateway-api-openstack/gateway-api-openstack](https://github.com/gateway-api-openstack/gateway-api-openstack).
-Its class configuration API group is `gateway-api-openstack.github.io`, and its Go module is `github.com/gateway-api-openstack/gateway-api-openstack`.
+Its API group is `gateway-api-openstack.github.io`, and its Go module is `github.com/gateway-api-openstack/gateway-api-openstack`.
 
-The controller uses Octavia directly and supports only the Amphora provider. It
-reconciles GatewayClass, Gateway, and HTTPRoute resources into Octavia load
-balancers, listeners, pools, members, health monitors, and related Neutron
-resources. It does this without taking ownership of
-Service resources or load balancers managed by
-[cloud-provider-openstack](https://github.com/kubernetes/cloud-provider-openstack).
+## How it works
 
-## Why this project?
-
-OpenStack clusters already have established integrations for Kubernetes
-Services and proxy controllers that run inside the cluster. This controller
-covers a different use case:
-
-- cloud-provider-openstack provisions Octavia load balancers for Services of
-  type `LoadBalancer`.
-- Proxy controllers such as Traefik implement Gateway API inside the cluster.
-- gateway-api-openstack creates Octavia resources directly for the HTTP features
-  it currently supports. Terminated HTTPS and broader L7 support are planned.
-
-The controller does not reuse or modify load balancers created by
-cloud-provider-openstack.
-
-cloud-provider-openstack also includes an
-[Octavia Ingress Controller](https://github.com/kubernetes/cloud-provider-openstack/tree/master/docs/octavia-ingress-controller).
-That controller reconciles the Ingress API. gateway-api-openstack is a separate
-Gateway API implementation with its own status, conformance, ownership, and
-recovery contract. It is not a successor or migration mode for the existing
-Ingress controller, and it does not adopt resources created by it.
-
-## Architecture
+One Gateway owns one Octavia load balancer and its listeners, pools, members, health monitors, and L7 resources.
+The controller reads backend Services, EndpointSlices, and Nodes and manages only its own cloud resources.
+The OpenStack Cloud Controller Manager (OCCM) continues to manage Services of type `LoadBalancer` and their cloud resources.
 
 ```mermaid
 flowchart TD
     S["Service of type LoadBalancer"] --> OCCM["cloud-provider-openstack"]
     OCCM --> SLB["Octavia LB owned by OCCM"]
 
-    G["Gateway API resources"] --> CTRL["openstack-gateway-controller"]
+    G["Gateway API resources"] --> CTRL["gateway-api-openstack"]
     CTRL --> OLB["Amphora LB owned by the Gateway"]
     CTRL --> K8S["Service, EndpointSlice, and Node reads"]
 ```
 
-The controller:
-
-- Provisions new resources only for Gateway API objects assigned to its exact
-  controller name. Previously bound objects remain its cleanup responsibility.
-- Reads backend Service, EndpointSlice, and Node resources for the
-  current NodePort path.
-- Loads credentials from a read-only Kubernetes Secret volume.
-- Creates OpenStack resources only for Gateways managed by this controller.
-- Never adopts, mutates, or deletes a load balancer owned by OCCM.
-- Records the project, cluster, controller, Gateway UID, and resource role for
-  every resource it creates. Resources created for an HTTPRoute also record the
-  route identity. The controller manages a resource type only when it can store
-  enough identity for safe recovery.
-
-See [the architecture document](docs/design/architecture.md) for the current
-ownership contract and proposed target resource mapping.
-
-## Product direction
-
-The goal is to make common HTTP and terminated HTTPS Gateway setups reliable
-on Amphora. Planned work covers multiple listeners, routes, namespaces, backends, and certificates. It also includes
-deterministic network selection and reviewed security modes in tested
-OpenStack topologies. Referenced and operator-managed connectivity comes before
-any opt-in mode that would change a worker port owned by another component.
-Supporting every Octavia provider is not a goal.
-
-One controller deployment uses one OpenStack cloud, region, project, and
-credential scope. One Gateway owns one Octavia load balancer. The controller
-uses NodePort backends by default. Support for routable Pod IP members may be
-added later as an opt-in after testing in documented network topologies.
-Features that the Octavia API cannot express with Gateway API semantics are
-rejected clearly rather than approximated.
-
-Traefik, Envoy, and other proxy controllers remain independent projects and
-deployment paths. This controller does not install or manage them.
+The controller does not adopt existing load balancers, manage tenant network topology, or replace OCCM.
+It also does not migrate resources from cloud-provider-openstack's [Octavia Ingress Controller](https://github.com/kubernetes/cloud-provider-openstack/tree/master/docs/octavia-ingress-controller).
+The [architecture](docs/design/architecture.md) defines ownership, resource mapping, reconciliation, and recovery.
 
 ## Current implementation
 
-The controller currently supports:
+The controller uses Gateway API v1.6.1 Standard Channel and supports:
 
-- GatewayClass, Gateway, and HTTPRoute
-- cluster-scoped OpenStackGatewayClassConfig parameters, with resolved configuration stored on each Gateway
-- separate topologies for multiple GatewayClasses in one authenticated project
-- HTTP listeners
-- one exact hostname, with either an Exact path match or a PathPrefix match on
-  complete path elements
-- one selected HTTPRoute in the same namespace as the Gateway, with one rule
-  and one NodePort Service backend in the same namespace as the route
-- NodePort members on eligible worker Nodes, honoring control-plane and load balancer exclusion labels
-- one Octavia load balancer per Gateway
-- Octavia listeners, L7 policies and rules, pools, members, and health monitors
-- Floating IP allocation
-- standard Gateway API status conditions
-- validation of the installed Gateway API v1.6.1 CRD bundle through the
-  GatewayClass `SupportedVersion` condition
-- the Amphora provider in Octavia as the only accepted provider
-- one serialized graph writer, durable route detach intent, and minimal cloud mutations
+- One HTTP listener and one selected HTTPRoute in the Gateway namespace
+- One rule, one backend NodePort Service, and Exact or PathPrefix matching
+- At most one exact route hostname
+- Eligible worker NodePort members with Local or Cluster traffic policy
+- Typed GatewayClass configuration with topology settings fixed for each Gateway
+- Optional Floating IP allocation
+- Ownership validation, restart recovery, and ordered cleanup
 
-The first release will not claim Gateway API conformance. Amphora
-capabilities still vary by Octavia version, enabled services, API
-microversions, project permissions, and network topology. Some Gateway API
-HTTP features cannot be represented by Octavia L7 policies. Unsupported
-features must be rejected explicitly in resource status rather than ignored.
+The [class configuration reference](docs/reference/class-configuration.md) describes deployment options and worker selection.
+Multiple listeners and routes, HTTPS, ReferenceGrant, and ordinary ClusterIP backends remain unimplemented.
+OVN, non-HTTP Route kinds, existing resource adoption, and proxy data planes are outside the current product scope.
 
-## Non-goals
+## Development status
 
-- Replacing cloud-provider-openstack.
-- Reimplementing the Kubernetes Service controller.
-- Owning or migrating existing OCCM load balancers.
-- Supporting OVN or another Octavia provider.
-- Creating or owning tenant networks, subnets, routers, and routes.
-- Reconciling Ingress, non-HTTP route kinds, or a proxy data plane.
-- Hiding differences between Amphora environments or Octavia versions.
-- Claiming that success in one OpenStack cloud proves compatibility with every
-  OpenStack deployment.
+Phase 3 implementation is complete, with broader validation and release work remaining.
+See the [compatibility record](docs/providers/compatibility.md) for completed checks and outstanding evidence.
+Development results do not establish general OpenStack support or Gateway API conformance.
 
-## Project status
-
-The core Phase 3 features are implemented, with validation and release work remaining.
-Local tests cover class configuration, separate class topologies, frozen settings, worker selection, and event bursts through the graph writer.
-The [class configuration reference](docs/reference/class-configuration.md) describes the development API.
-
-The [compatibility record](docs/providers/compatibility.md) describes the available development evidence and remaining validation.
-The [conformance plan](docs/testing-conformance.md) describes the GATEWAY-HTTP target and current Core gaps.
-
-See [development priorities](docs/development-priorities.md) for the next work and [ROADMAP.md](ROADMAP.md) for the phase gates.
-Use the [OpenStack E2E guide](docs/testing-openstack-e2e.md) for traffic, recovery, cleanup, and leak checks.
+The [roadmap](ROADMAP.md) targets complete GATEWAY-HTTP Core support and all declared Extended features.
+The [feasibility assessment](docs/design/conformance-feasibility.md) records the Octavia API blockers that must be resolved first.
+The [conformance guide](docs/testing-conformance.md) describes the required suite and reporting workflow.
 
 ## Getting started
 
-The repository includes a minimal Kustomize deployment and a constrained
-NodePort example for development environments. It requires a controller image
-built by the operator and a Kubernetes Secret containing `clouds.yaml`. No
-supported image is published yet.
+The repository includes Kustomize manifests and a NodePort example for development.
+Installation requires an operator-built controller image and a Secret containing OpenStack credentials.
+Follow [Getting started](docs/getting-started.md) to install, verify, and remove the controller.
+Use the [OpenStack E2E guide](docs/testing-openstack-e2e.md) for reusable traffic, recovery, and cleanup tests.
 
-See [Getting started with the current controller](docs/getting-started.md) for
-prerequisites, configuration, installation, verification, limitations, and the
-safe removal order. The repository also includes an experimental, read-only
-ownership audit for comparing stored bindings with OpenStack resources. Do not
-remove a controller finalizer. If finalization is blocked, keep the controller
-and its credentials available and follow the
-[operator recovery guide](docs/operator-recovery.md).
-
-## Community direction
-
-The near-term upstream goal is to publish an honest Gateway API conformance
-report and become eligible for the Gateway API implementation list. Runtime
-feature claims will not be changed just to improve that report. Maintainer
-growth and any future community home follow the criteria in
-[GOVERNANCE.md](GOVERNANCE.md) and the later roadmap phases.
-
-This project is independently maintained. It is not a Kubernetes project or a
-subproject of any Kubernetes SIG, and it is not affiliated with or endorsed by
-the Gateway API, cloud-provider-openstack, or OpenInfra projects.
+If finalization stops, keep the controller and its credentials available and follow [operator recovery](docs/operator-recovery.md).
+Do not remove finalizers to bypass cleanup.
 
 ## Contributing
 
-Design feedback, Amphora environment reports, and implementation contributions
-are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Project roles and
-decisions are described in [GOVERNANCE.md](GOVERNANCE.md), and the current
-support boundary is in [SUPPORT.md](SUPPORT.md). GitHub issues and pull requests
-are the only project discussion channels at present.
-
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for local checks and contribution guidance.
 Changes to public APIs, ownership, or recovery contracts follow the [ADR process](docs/design/adr/README.md).
+Maintainers preparing artifacts follow the [release procedure](docs/releasing.md).
 
-Changes to controller patching, finalizers, or cache indexes should also run:
-
-```sh
-make envtest-assets
-make test-envtest
-```
-
-The first command downloads pinned Kubernetes 1.36.2 control plane binaries.
-The test loads the Gateway API v1.6.1 Standard CRDs and this project's class configuration CRD.
-It does not need Kind, a kubeconfig, or OpenStack access. It is not an OpenStack end-to-end test or
-Gateway API conformance evidence.
-
-Maintainers preparing a release must follow the
-[draft release and artifact verification process](docs/releasing.md). Release
-packaging does not replace the OpenStack and conformance evidence required by
-the roadmap.
+Project roles are described in [GOVERNANCE.md](GOVERNANCE.md), and the support boundary is in [SUPPORT.md](SUPPORT.md).
+GitHub issues and pull requests are the project discussion channels.
+This project is independently maintained and is not affiliated with or endorsed by Gateway API, cloud-provider-openstack, or OpenInfra.
 
 ## Security
 
-Please do not report vulnerabilities in a public issue. Follow
-[SECURITY.md](SECURITY.md).
-
-Participation in this project follows the
-[code of conduct](code-of-conduct.md).
+Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
+Participation follows the [code of conduct](code-of-conduct.md).
 
 ## License
 

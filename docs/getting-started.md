@@ -25,11 +25,8 @@ The [conformance plan](testing-conformance.md) describes the separate Gateway AP
 - A controller container image built from the source revision being deployed.
   The repository does not currently publish a supported image.
 
-Each class must select a VIP subnet and a member subnet through an OpenStackGatewayClassConfig.
-`InternalIP` is the default Node address type.
-Select `ExternalIP` only when those addresses belong to the configured member network and are reachable from Amphora.
-Only eligible worker Nodes become members.
-See the [class configuration reference](reference/class-configuration.md#worker-nodeport-members) for control plane exclusions and traffic policy behavior.
+Each class selects network placement and Node addresses through an OpenStackGatewayClassConfig.
+See the [configuration reference](reference/class-configuration.md) for the fields and [worker eligibility rules](reference/class-configuration.md#worker-nodeport-members).
 
 The controller does not create networks, subnets, routers, or backend security groups and does not attach security groups to worker ports.
 Establish that connectivity before creating a Gateway.
@@ -42,9 +39,8 @@ kubectl apply -f \
 ```
 
 Startup requires GatewayClass, Gateway, and HTTPRoute to be available.
-The controller also checks that installed Gateway API CRDs have the pinned bundle annotation.
-A missing or mixed annotation produces `SupportedVersion=False` and `Accepted=False` with reason `UnsupportedVersion` on GatewayClass and blocks provisioning and repair.
-Existing graphs remain in place and can still be finalized, as described in the [API version contract](design/architecture.md#installed-gateway-api-version).
+The controller validates installed bundle annotations through the GatewayClass `SupportedVersion` condition.
+A version mismatch blocks provisioning and repair without preventing finalization, as described in the [API version contract](design/architecture.md#installed-gateway-api-version).
 
 ## Prepare OpenStack credentials
 
@@ -86,14 +82,11 @@ Edit `config/manager/controller-config.yaml` before applying it:
 
 The default controller name is `gateway-api-openstack.github.io/gateway-api-openstack`.
 The same value must appear in every managed `GatewayClass.spec.controllerName`, including `examples/basic.yaml`.
-The API group is `gateway-api-openstack.github.io`.
-An existing development installation must complete cleanup with its original controller before changing identities, as described in the [compatibility guidance](reference/class-configuration.md#development-compatibility).
+Before changing an existing installation's identity, follow the [compatibility guidance](reference/class-configuration.md#development-compatibility).
 
 Configure VIP and member placement in the OpenStackGatewayClassConfig in `examples/basic.yaml`.
 Replace its synthetic subnet IDs with existing resources in the controller project.
-Keep `floatingIP.mode: None` to publish the VIP, or use `Allocate` with an explicit external network reference.
-The [class configuration reference](reference/class-configuration.md) covers selectors, health monitor defaults, optional placement, and required reads.
-The controller does not use deployment topology flags when class parameters are missing.
+The [class configuration reference](reference/class-configuration.md#fields-and-defaults) covers Floating IP selection, health settings, and optional placement.
 
 Build and push an image from the exact source revision you are deploying, then edit the image override in `config/default/kustomization.yaml`.
 The image reference in the repository uses `example.invalid` and is intentionally unusable, so it cannot be mistaken for a published release.
@@ -141,8 +134,8 @@ The ConfigMap uses the environment variables accepted by the controller binary.
 | Cloud file | `OS_CLIENT_CONFIG_FILE` | Mounted `/etc/openstack/clouds.yaml` |
 | Region | `OS_REGION_NAME` | Optional override |
 
-The controller uses a 10 minute base interval by default, with each observation scheduled between about 8 and 12 minutes.
-Stable jitter based on the resource UID prevents large groups of resources from reaching OpenStack at the same time.
+At the default resync interval, observations occur about 8 to 12 minutes apart.
+Stable jitter based on the resource UID spreads the OpenStack requests.
 Set the environment variable or use `--openstack-resync-interval` to change the base interval.
 The command line flag takes precedence, and the value must be greater than zero.
 
@@ -185,20 +178,7 @@ kubectl -n gateway-api-openstack-demo get gateway edge \
 Send an HTTP request to that address from a network that can reach it.
 A VIP without a Floating IP may not be reachable from the public Internet.
 
-## Current implementation limitations
-
-- HTTP is the only listener protocol.
-  TLS is not supported.
-- Each Gateway has exactly one listener and one selected HTTPRoute in the same namespace.
-- Each HTTPRoute has one rule, at most one exact hostname, at most one Exact or PathPrefix match, and one Service backend in the same namespace.
-- Backend Services must be `type: NodePort`.
-  Both `externalTrafficPolicy: Cluster` and `Local` are handled, but Local requires ready EndpointSlices to identify their Nodes.
-- Filters, headers, query parameters, methods, regular expressions, backend weights of zero, and cross-namespace references are rejected in status.
-- GatewayClass requires the supported class `parametersRef`.
-  Gateway `spec.infrastructure.parametersRef` overrides are rejected.
-- Bound Gateway configuration is fixed for its UID, including after parameter changes or deletion.
-  Use a new Gateway to apply different class settings.
-- Existing OpenStack resources are never adopted.
+See the [supported routing scope](../README.md#current-implementation) and [class configuration lifecycle](reference/class-configuration.md#configuration-after-gateway-creation) before extending this example.
 
 ## Safe removal
 
@@ -216,14 +196,11 @@ kubectl delete -f examples/basic.yaml --ignore-not-found
 ```
 
 Each of the first three commands waits for deletion by default.
-If one remains blocked, keep the controller Deployment, credential Secret, and OpenStack access available.
-Inspect the object's conditions and controller logs, then use the ownership audit to compare immutable identity with OpenStack.
+If one remains blocked, keep the installation available and follow the [operator recovery guide](operator-recovery.md).
 Do not remove controller finalizers manually because doing so bypasses ownership checks and cleanup.
-Follow the [operator recovery guide](operator-recovery.md) for the complete procedure.
 
 Before uninstalling a shared controller, repeat the HTTPRoute, Gateway, and GatewayClass deletion sequence for every class using its exact controller name.
 Remove a parameter object only after no class needs it.
-Keep the original controller and credentials available throughout this process.
 
 The base uninstall also deletes the OpenStackGatewayClassConfig CRD, which removes every instance of that API throughout the cluster.
 Check for remaining configuration objects:

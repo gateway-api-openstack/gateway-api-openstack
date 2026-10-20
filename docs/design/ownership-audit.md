@@ -3,7 +3,7 @@
 **Status:** Proposed contract with an experimental implementation
 
 This document defines the first experimental ownership audit.
-It is a narrow operator recovery tool for Phase 2, not a cleanup API.
+It supports operator investigation and does not authorize cleanup.
 The command may change while the project is pre-alpha.
 An accepted ADR is still required before the command name or report format can be treated as stable.
 
@@ -63,14 +63,7 @@ The OpenStack project ID, controller ownership tuples, raw tags, descriptions, I
 Resource IDs, Kubernetes namespaces, names, UIDs, the cluster ID, and the controller name are still identifiers.
 Reports are intended for local operator use and must be reviewed and sanitized before they are attached to a public issue.
 
-The initial dispositions have these meanings:
-
-- `matched` means the resource and its observed parent relationship match one current binding exactly.
-- `orphanCandidate` means a complete identity in this controller's scope has no current valid binding.
-  It is a prompt for investigation, not deletion authority.
-- `staleUID` means the Kubernetes names match but at least one immutable UID is different.
-- `ownershipConflict` means identity, project, parent, or cardinality evidence contradicts itself.
-- `unresolved` means the available state is not sufficient to reach one of the other conclusions safely.
+The [operator guide](../operator-recovery.md#read-the-report) defines the dispositions and how to investigate each finding.
 
 ## Known limits
 
@@ -82,23 +75,9 @@ The audit also does not prove that every current Kubernetes binding has a comple
 These limits make broad project cleanup unsafe.
 Recovery remains a manual, resource by resource process with ownership checks immediately before any mutation.
 
-### Additional limits in a shared project
-
-The E2E runner requires an empty audit baseline for one exact controller name and cluster ID in both project modes.
-This is useful in a project used by several teams because OpenStack resources in another tag scope do not make that inventory noisy.
-A Kubernetes object that carries this controller's binding but has an invalid cluster or project identity is still reported as an issue.
-The scope remains a logical inventory filter, not Keystone or Neutron authorization.
-
-An empty scoped report does not show that the credential cannot access another load balancer, Floating IP, network, or security group.
-It also cannot measure project-wide quota or API contention, find a detached resource after all scope metadata is lost, or attribute concurrent changes made by another user.
-An E2E run in a shared project therefore needs a separate redacted inventory before and after the run.
-Operators must review and attribute that difference.
-The audit must not delete or adopt anything to make the inventories match.
-
-The runner may use a separate credential for this audit.
-The OpenStack operator should grant it only the authentication and inventory read permissions the command needs.
-A successful audit authentication does not validate the controller credential, inspect Keystone roles or policy, or prove that the assigned permissions are read-only.
-The runner authenticates both configurations independently and requires both token scopes to resolve to the expected project before it creates the test objects.
+An identity scope filters inventory but does not restrict Keystone or Neutron permissions.
+An empty scoped report cannot establish project-wide isolation, quota availability, or who changed another resource.
+The [E2E guide](../testing-openstack-e2e.md) describes credential checks and inventory comparison for shared projects.
 
 ## Follow-up decisions
 
