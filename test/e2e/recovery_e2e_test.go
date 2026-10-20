@@ -418,14 +418,21 @@ func (s *openStackSuite) triggerConvergedRouteObservation(ctx context.Context) e
 		if err := s.client.Get(ctx, key, &route); err != nil {
 			return err
 		}
+		if s.routeUID == "" || route.UID != s.routeUID || route.Annotations[runAnnotation] != s.config.RunID {
+			return fmt.Errorf("HTTPRoute identity changed before converged observation")
+		}
 		if len(route.Spec.Rules) != 1 || len(route.Spec.Rules[0].BackendRefs) != 1 {
 			return fmt.Errorf("HTTPRoute no longer has the expected baseline shape")
 		}
-		if route.Spec.Rules[0].BackendRefs[0].Namespace != nil {
-			return fmt.Errorf("HTTPRoute backendRef already has an explicit namespace")
+		backend := &route.Spec.Rules[0].BackendRefs[0]
+		if backend.Namespace == nil {
+			namespace := gatewayv1.Namespace(s.config.Namespace)
+			backend.Namespace = &namespace
+		} else if string(*backend.Namespace) == s.config.Namespace {
+			backend.Namespace = nil
+		} else {
+			return fmt.Errorf("HTTPRoute backendRef no longer selects the test namespace")
 		}
-		namespace := gatewayv1.Namespace(s.config.Namespace)
-		route.Spec.Rules[0].BackendRefs[0].Namespace = &namespace
 		return s.client.Update(ctx, &route)
 	}); err != nil {
 		return fmt.Errorf("trigger semantically converged HTTPRoute observation: %w", err)
@@ -494,6 +501,9 @@ func (s *openStackSuite) orderlyCleanup(ctx context.Context) error {
 	if err := s.deleteGatewayClass(ctx); err != nil {
 		return err
 	}
+	if err := s.deleteSecondClass(ctx); err != nil {
+		return err
+	}
 	return s.deleteNamespace(ctx)
 }
 
@@ -511,6 +521,7 @@ func (s *openStackSuite) ensureCleanup(ctx context.Context) error {
 		s.deleteHTTPRoute,
 		s.deleteGateway,
 		s.deleteGatewayClass,
+		s.deleteSecondClass,
 		s.deleteNamespace,
 	} {
 		if err := cleanup(ctx); err != nil {
@@ -641,6 +652,17 @@ func (s *openStackSuite) cleanupObjectDeletionObserved(ctx context.Context, obje
 }
 
 func (s *openStackSuite) runOwnershipAudit(ctx context.Context, requireEmpty bool, fingerprint *[32]byte) (auditSummary, error) {
+	report, err := s.readOwnershipAudit(ctx, requireEmpty)
+	if err != nil {
+		return auditSummary{}, err
+	}
+	if fingerprint != nil {
+		*fingerprint = ownershipAuditFingerprint(report.Resources)
+	}
+	return sanitizeAuditSummary(report), nil
+}
+
+func (s *openStackSuite) readOwnershipAudit(ctx context.Context, requireEmpty bool) (audit.Report, error) {
 	var report audit.Report
 	err := s.withAuthenticatedAuditCloudsYAML(ctx, func(path string) error {
 		observed, err := auditexec.Run(ctx, auditexec.Config{
@@ -660,13 +682,7 @@ func (s *openStackSuite) runOwnershipAudit(ctx context.Context, requireEmpty boo
 		report = observed
 		return nil
 	})
-	if err != nil {
-		return auditSummary{}, err
-	}
-	if fingerprint != nil {
-		*fingerprint = ownershipAuditFingerprint(report.Resources)
-	}
-	return sanitizeAuditSummary(report), nil
+	return report, err
 }
 
 func ownershipAuditFingerprint(resources []audit.ResourceFinding) [32]byte {

@@ -91,6 +91,56 @@ func TestSetCheckRejectsUnsafeSummaryShape(t *testing.T) {
 	}
 }
 
+func TestLocalLifecycleReportRequiresEverySelectedScenario(t *testing.T) {
+	for _, replicas := range []int32{1, 2} {
+		config := reportTestConfig(projectModeShared)
+		config.LocalLifecycle, config.BackendReplicas = true, replicas
+		report := newE2EReport(time.Now(), config)
+		for i := range report.Checks {
+			if report.Checks[i].Status != statusSkipped {
+				report.Checks[i].Status = statusPassed
+			}
+		}
+		required := localLifecycleChecks(replicas)
+		if got := overallStatus(report.Checks, required...); got != statusPassed {
+			t.Fatalf("completed %d-worker report = %s", replicas, got)
+		}
+		for _, name := range required {
+			for _, status := range []checkStatus{statusNotRun, statusSkipped, statusFailed} {
+				checks := append([]checkResult(nil), report.Checks...)
+				for i := range checks {
+					if checks[i].Name == name {
+						checks[i].Status = status
+					}
+				}
+				want := statusNotRun
+				if status == statusFailed {
+					want = statusFailed
+				}
+				if got := overallStatus(checks, required...); got != want {
+					t.Fatalf("%s %s: overall = %s, want %s", name, status, got, want)
+				}
+			}
+			var missing []checkResult
+			for _, check := range report.Checks {
+				if check.Name != name {
+					missing = append(missing, check)
+				}
+			}
+			if got := overallStatus(missing, required...); got != statusNotRun {
+				t.Fatalf("missing %s: overall = %s", name, got)
+			}
+		}
+		if replicas == 1 {
+			for _, check := range report.Checks {
+				if check.Name == checkMemberTransitions && check.Status != statusSkipped {
+					t.Fatal("single-worker report claimed member transition coverage")
+				}
+			}
+		}
+	}
+}
+
 func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "run-1234")
@@ -140,6 +190,7 @@ func reportTestConfig(mode projectMode) e2eConfig {
 	return e2eConfig{
 		Project:                      runconfig.Project{Mode: mode},
 		RestartMode:                  "cold",
+		BackendReplicas:              2,
 		ControllerRevision:           strings.Repeat("b", 40),
 		ControllerImageDigest:        "sha256:" + strings.Repeat("a", 64),
 		BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster,

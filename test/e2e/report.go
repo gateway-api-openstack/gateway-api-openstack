@@ -31,6 +31,13 @@ import (
 const reportFormatVersion = "v1alpha1"
 
 const (
+	checkFrozenClass       = "frozen class configuration after template and reference changes"
+	checkFrozenRestart     = "frozen class configuration after controller restart"
+	checkSequentialClasses = "sequential Gateway class configuration"
+	checkMemberTransitions = "worker member removal and restoration"
+)
+
+const (
 	checkSummaryPassed             = "The check completed with the expected result"
 	checkSummaryFailed             = "The check did not reach the expected result. Details are omitted."
 	checkSummaryFaultNotConfigured = "No safe fault injector was configured for this run"
@@ -102,6 +109,7 @@ type metricsEvidence struct {
 }
 
 type backendEvidence struct {
+	Replicas               int32                               `json:"replicas"`
 	ExternalTrafficPolicy  corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy"`
 	NodeSelectorConfigured bool                                `json:"nodeSelectorConfigured"`
 }
@@ -118,6 +126,7 @@ type e2eReport struct {
 	ProjectMode           projectMode      `json:"projectMode"`
 	RestartMode           string           `json:"restartMode"`
 	Backend               backendEvidence  `json:"backend"`
+	LocalLifecycle        bool             `json:"localLifecycle"`
 	Checks                []checkResult    `json:"checks"`
 	Audit                 *auditEvidence   `json:"audit,omitempty"`
 	Metrics               *metricsEvidence `json:"metrics,omitempty"`
@@ -134,7 +143,9 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 		ControllerImageDigest: config.ControllerImageDigest,
 		ProjectMode:           config.Project.Mode,
 		RestartMode:           config.RestartMode,
+		LocalLifecycle:        config.LocalLifecycle,
 		Backend: backendEvidence{
+			Replicas:               config.BackendReplicas,
 			ExternalTrafficPolicy:  config.BackendExternalTrafficPolicy,
 			NodeSelectorConfigured: len(config.BackendNodeSelector) != 0,
 		},
@@ -151,7 +162,23 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 			Summary: summary,
 		})
 	}
+	if config.LocalLifecycle {
+		for _, name := range localLifecycleChecks(config.BackendReplicas) {
+			report.Checks = append(report.Checks, checkResult{Name: name, Status: statusNotRun, Summary: "The check was not executed"})
+		}
+		if config.BackendReplicas == 1 {
+			report.Checks = append(report.Checks, checkResult{Name: checkMemberTransitions, Status: statusSkipped, Summary: "Member removal requires two selected worker Nodes"})
+		}
+	}
 	return report
+}
+
+func localLifecycleChecks(replicas int32) []string {
+	checks := []string{checkFrozenClass, checkFrozenRestart, checkSequentialClasses}
+	if replicas == 2 {
+		checks = append(checks, checkMemberTransitions)
+	}
+	return checks
 }
 
 func (r *e2eReport) setCheck(name string, status checkStatus, summary string) error {
@@ -196,7 +223,11 @@ func writeE2EArtifacts(directory string, report *e2eReport) error {
 	if report.CompletedAt.IsZero() {
 		report.CompletedAt = time.Now().UTC()
 	}
-	report.Status = overallStatus(report.Checks)
+	var required []string
+	if report.LocalLifecycle {
+		required = localLifecycleChecks(report.Backend.Replicas)
+	}
+	report.Status = overallStatus(report.Checks, required...)
 	parent := filepath.Dir(filepath.Clean(directory))
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("create artifact parent directory: %w", err)
@@ -241,6 +272,11 @@ func renderMarkdownReportHeader(output *bytes.Buffer, report *e2eReport) {
 	_, _ = fmt.Fprintf(output, "Restart mode: %s\n\n", report.RestartMode)
 	_, _ = fmt.Fprintf(output, "Backend external traffic policy: %s\n\n", report.Backend.ExternalTrafficPolicy)
 	_, _ = fmt.Fprintf(output, "Backend Node selector configured: %t\n\n", report.Backend.NodeSelectorConfigured)
+	_, _ = fmt.Fprintf(output, "Backend replicas: %d\n\n", report.Backend.Replicas)
+	if report.LocalLifecycle {
+		_, _ = fmt.Fprintln(output, "Local lifecycle checks use sequential Gateways on the same approved network. They do not validate simultaneous Gateways on different topologies.")
+		_, _ = fmt.Fprintln(output)
+	}
 	if report.Backend.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
 		_, _ = fmt.Fprintln(output, "This run uses Local endpoint selection and does not provide evidence for Cluster member selection.")
 		_, _ = fmt.Fprintln(output)
@@ -313,7 +349,7 @@ func renderMarkdownLimits(output *bytes.Buffer, mode projectMode) {
 	}
 }
 
-func overallStatus(checks []checkResult) checkStatus {
+func overallStatus(checks []checkResult, required ...string) checkStatus {
 	passed := make(map[string]bool, len(checks))
 	for _, check := range checks {
 		if check.Status == statusFailed {
@@ -325,6 +361,11 @@ func overallStatus(checks []checkResult) checkStatus {
 	}
 	for _, check := range reportChecks {
 		if check.required && !passed[check.name] {
+			return statusNotRun
+		}
+	}
+	for _, name := range required {
+		if !passed[name] {
 			return statusNotRun
 		}
 	}

@@ -101,7 +101,7 @@ func TestSelectedBackendRequiresTwoEligibleNodesBeforeCreation(t *testing.T) {
 	foreign.Labels = nil
 	suite := selectedBackendTestSuite(t, ready, unready, unschedulable, foreign)
 	err := suite.createBackend(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "at least two") {
+	if err == nil || !strings.Contains(err.Error(), "at least 2") {
 		t.Fatalf("createBackend() error = %v, want selected Node preflight failure", err)
 	}
 	var namespaces corev1.NamespaceList
@@ -192,6 +192,7 @@ func selectedBackendTestSuite(t *testing.T, objects ...client.Object) *openStack
 		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
 		config: e2eConfig{
 			Namespace:                    "test-backend",
+			BackendReplicas:              2,
 			BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal,
 			BackendNodeSelector:          map[string]string{"e2e.example.test/backend": "true"},
 		},

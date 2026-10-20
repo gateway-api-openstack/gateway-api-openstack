@@ -36,7 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -56,6 +55,7 @@ type runOptions struct {
 	runAudit            ownershipAuditRunner
 	waitController      func(context.Context, client.Client, resolvedConfig, types.UID) error
 	executeHarness      func(context.Context, resolvedConfig, runOptions) error
+	preflightOnly       bool
 }
 
 func run(ctx context.Context, config resolvedConfig, options runOptions) error {
@@ -67,6 +67,10 @@ func run(ctx context.Context, config resolvedConfig, options runOptions) error {
 	kubeClient, objects, err := prepareRun(ctx, config, options)
 	if err != nil {
 		return err
+	}
+	if options.preflightOnly {
+		_, _ = fmt.Fprintln(options.stdout, "Preflight passed without installing the controller or creating test resources")
+		return nil
 	}
 	installed, err := installRunController(ctx, kubeClient, objects, config)
 	if err != nil {
@@ -119,6 +123,9 @@ func prepareRun(ctx context.Context, config resolvedConfig, options runOptions) 
 	}
 	if err := preflightOpenStack(ctx, config, cloudsYAML, options.authenticateProject, options.runAudit); err != nil {
 		return nil, controllerObjects{}, err
+	}
+	if options.preflightOnly {
+		return kubeClient, controllerObjects{}, nil
 	}
 	base, err := loadBaseObjects(options.repositoryRoot)
 	if err != nil {
@@ -215,12 +222,9 @@ func validateLocalInputs(config resolvedConfig) error {
 }
 
 func newKubernetesClient(config resolvedConfig) (client.Client, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	rules.ExplicitPath = config.Kubeconfig
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: config.KubeContext}
-	restConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	restConfig, err := runconfig.KubernetesRESTConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("load explicit kubeconfig and context: %w", err)
+		return nil, err
 	}
 	scheme := runtime.NewScheme()
 	for _, install := range []func(*runtime.Scheme) error{
@@ -244,6 +248,12 @@ func newKubernetesClient(config resolvedConfig) (client.Client, error) {
 }
 
 func preflightKubernetes(ctx context.Context, kubeClient client.Client, config resolvedConfig) error {
+	if err := runconfig.RequireClusterIdentity(ctx, kubeClient, config); err != nil {
+		return err
+	}
+	if err := controllercontract.RequireGatewayAPICRDs(ctx, kubeClient); err != nil {
+		return err
+	}
 	if err := controllercontract.RequireClassConfigCRD(ctx, kubeClient); err != nil {
 		return err
 	}

@@ -81,6 +81,15 @@ test-e2e: build-audit ## Install a run-scoped controller and run live E2E in the
 		--repository-root "$(CURDIR)" \
 		--audit-binary "$(abspath $(AUDIT_BINARY))"
 
+.PHONY: test-e2e-preflight
+test-e2e-preflight: build-audit ## Check the selected E2E cluster and cloud scope without creating resources.
+	@test -n "$(E2E_CONFIG)" || { printf 'Set E2E_CONFIG to the OpenStack E2E YAML path.\n'; exit 1; }
+	$(GO) run ./test/e2e/runner \
+		--config "$(abspath $(E2E_CONFIG))" \
+		--repository-root "$(CURDIR)" \
+		--audit-binary "$(abspath $(AUDIT_BINARY))" \
+		--preflight-only
+
 .PHONY: test-conformance-compile
 test-conformance-compile: ## Compile the pinned diagnostic without contacting a cluster.
 	cd test/conformance && $(GO) test -mod=readonly -run '^$$' ./...
@@ -105,11 +114,11 @@ envtest-assets: ## Download the pinned envtest control-plane binaries.
 
 .PHONY: fmt
 fmt: ## Format Go source files.
-	$(GOFMT) -w $$(find . -name '*.go' -type f)
+	$(GOFMT) -w $$(find api cmd internal test -name '*.go' -type f)
 
 .PHONY: fmt-check
 fmt-check: ## Fail when Go source files need formatting.
-	@files="$$($(GOFMT) -l $$(find . -name '*.go' -type f))"; \
+	@files="$$($(GOFMT) -l $$(find api cmd internal test -name '*.go' -type f))"; \
 	status=$$?; \
 	if [ $$status -ne 0 ]; then exit $$status; fi; \
 	if [ -n "$$files" ]; then \

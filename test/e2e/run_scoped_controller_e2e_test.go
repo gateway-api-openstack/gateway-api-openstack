@@ -45,10 +45,7 @@ func (s *openStackSuite) verifyRunScopedController(ctx context.Context, deployme
 		return fmt.Errorf("controller Namespace lacks the exact run annotation and immutable identity")
 	}
 
-	if err := s.rejectControllerIdentityCollision(ctx); err != nil {
-		return err
-	}
-	if err := s.verifyRunScopedClassConfig(ctx); err != nil {
+	if err := s.verifyRunScopedControllerClasses(ctx); err != nil {
 		return err
 	}
 	container, found := findContainer(deployment.Spec.Template.Spec.Containers, s.config.ControllerContainer)
@@ -74,17 +71,44 @@ func (s *openStackSuite) verifyRunScopedController(ctx context.Context, deployme
 	})
 }
 
+func (s *openStackSuite) verifyRunScopedControllerClasses(ctx context.Context) error {
+	if err := s.rejectControllerIdentityCollision(ctx); err != nil {
+		return err
+	}
+	return s.verifyRunScopedClassConfig(ctx)
+}
+
 func (s *openStackSuite) verifyRunScopedClassConfig(ctx context.Context) error {
 	var parameters configv1alpha1.OpenStackGatewayClassConfig
 	if err := s.client.Get(ctx, client.ObjectKey{Name: s.config.GatewayClassName}, &parameters); err != nil {
 		return fmt.Errorf("read run-scoped class configuration: %w", err)
 	}
-	wanted := controllercontract.TopologySettings{
-		VIPSubnetID:       s.config.Project.ExpectedVIPSubnetID,
-		MemberSubnetID:    s.config.Project.ExpectedMemberSubnetID,
-		ExternalNetworkID: s.config.Project.ExpectedExternalNetworkID,
-	}.ClassConfig(s.config.GatewayClassName, s.config.RunID)
-	if parameters.UID == "" || parameters.Annotations[runAnnotation] != s.config.RunID || !parameters.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(parameters.Spec, wanted.Spec) {
+	wanted := s.classConfig
+	if wanted == nil {
+		wanted = controllercontract.TopologySettings{
+			VIPSubnetID:       s.config.Project.ExpectedVIPSubnetID,
+			MemberSubnetID:    s.config.Project.ExpectedMemberSubnetID,
+			ExternalNetworkID: s.config.Project.ExpectedExternalNetworkID,
+		}.ClassConfig(s.config.GatewayClassName, s.config.RunID)
+	}
+	if err := s.validateClassParameters(&parameters, wanted); err != nil {
+		return err
+	}
+	if s.classConfig == nil {
+		s.classConfig = parameters.DeepCopy()
+	}
+	if s.secondClassConfig != nil {
+		var second configv1alpha1.OpenStackGatewayClassConfig
+		if err := s.client.Get(ctx, client.ObjectKeyFromObject(s.secondClassConfig), &second); err != nil {
+			return err
+		}
+		return s.validateClassParameters(&second, s.secondClassConfig)
+	}
+	return nil
+}
+
+func (s *openStackSuite) validateClassParameters(parameters, wanted *configv1alpha1.OpenStackGatewayClassConfig) error {
+	if parameters.UID == "" || (wanted.UID != "" && parameters.UID != wanted.UID) || parameters.Annotations[runAnnotation] != s.config.RunID || !parameters.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(parameters.Spec, wanted.Spec) {
 		return fmt.Errorf("class configuration does not match the approved run identity and topology")
 	}
 	return nil
@@ -95,20 +119,37 @@ func (s *openStackSuite) rejectControllerIdentityCollision(ctx context.Context) 
 	if err := s.client.List(ctx, &classes); err != nil {
 		return fmt.Errorf("list GatewayClasses before E2E execution: %w", err)
 	}
+	foundPrimary, foundSecond := !s.createdClass, s.secondClass == nil
 	for index := range classes.Items {
 		class := &classes.Items[index]
-		if string(class.Spec.ControllerName) != s.config.ControllerName {
+		known := s.createdClass && class.Name == s.gatewayClassName || s.secondClass != nil && class.Name == s.secondClass.Name
+		if !known && string(class.Spec.ControllerName) != s.config.ControllerName {
 			continue
+		}
+		if class.Spec.ControllerName != gatewayv1.GatewayController(s.config.ControllerName) || !class.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("test GatewayClass changed controller or is being deleted")
 		}
 		if s.createdClass && class.Name == s.gatewayClassName && class.UID == s.gatewayClassUID &&
 			class.Annotations[runAnnotation] == s.config.RunID {
 			ref := class.Spec.ParametersRef
-			if ref == nil || string(ref.Group) != configv1alpha1.GroupName || string(ref.Kind) != configv1alpha1.GatewayClassConfigKind || ref.Name != s.config.GatewayClassName || ref.Namespace != nil {
+			parametersName := s.classParametersName
+			if parametersName == "" {
+				parametersName = s.config.GatewayClassName
+			}
+			if ref == nil || string(ref.Group) != configv1alpha1.GroupName || string(ref.Kind) != configv1alpha1.GatewayClassConfigKind || ref.Name != parametersName || ref.Namespace != nil {
 				return fmt.Errorf("the run-scoped GatewayClass no longer references its approved class configuration")
 			}
+			foundPrimary = true
+			continue
+		}
+		if s.secondClass != nil && s.secondClass.UID != "" && class.UID == s.secondClass.UID && class.Name == s.secondClass.Name && class.Annotations[runAnnotation] == s.config.RunID && equality.Semantic.DeepEqual(class.Spec, s.secondClass.Spec) {
+			foundSecond = true
 			continue
 		}
 		return fmt.Errorf("the run-scoped controller identity is already selected by a GatewayClass")
+	}
+	if !foundPrimary || !foundSecond {
+		return fmt.Errorf("a run-scoped GatewayClass disappeared")
 	}
 	return nil
 }
