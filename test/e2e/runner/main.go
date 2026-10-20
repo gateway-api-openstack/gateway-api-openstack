@@ -36,9 +36,11 @@ func runMain(arguments []string) int {
 	var configPath string
 	var repositoryRoot string
 	var auditBinary string
+	var preflightOnly bool
 	flags.StringVar(&configPath, "config", "", "absolute path to the OpenStack E2E config")
 	flags.StringVar(&repositoryRoot, "repository-root", "", "repository root; defaults to the current repository")
 	flags.StringVar(&auditBinary, "audit-binary", "", "ownership audit binary; defaults to bin/openstack-gateway-audit")
+	flags.BoolVar(&preflightOnly, "preflight-only", false, "validate the target and empty ownership scope without installing or creating test resources")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
@@ -74,6 +76,7 @@ func runMain(arguments []string) int {
 		auditBinary:    auditBinary,
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
+		preflightOnly:  preflightOnly,
 	}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

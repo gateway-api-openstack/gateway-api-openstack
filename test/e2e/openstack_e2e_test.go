@@ -39,15 +39,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
-	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 const (
@@ -57,15 +55,8 @@ const (
 	listenerName          = "http"
 	backendPort           = 8080
 	listenerPort          = 80
-	standardChannel       = "standard"
 	emergencyCleanupLimit = 15 * time.Minute
 )
-
-var requiredBundleCRDs = []string{
-	"gatewayclasses.gateway.networking.k8s.io",
-	"gateways.gateway.networking.k8s.io",
-	"httproutes.gateway.networking.k8s.io",
-}
 
 type openStackSuite struct {
 	config         e2eConfig
@@ -85,8 +76,15 @@ type openStackSuite struct {
 	baselineAudit          *auditSummary
 	activeAudit            *auditSummary
 	activeAuditFingerprint [32]byte
+	classConfig            *configv1alpha1.OpenStackGatewayClassConfig
+	secondClassConfig      *configv1alpha1.OpenStackGatewayClassConfig
+	secondClass            *gatewayv1.GatewayClass
+	classParametersName    string
+	frozenGateway          *gatewayv1.Gateway
 
 	controllerDeploymentUID types.UID
+	backendDeploymentUID    types.UID
+	backendServiceUID       types.UID
 	namespaceUID            types.UID
 	gatewayClassUID         types.UID
 	gatewayUID              types.UID
@@ -177,10 +175,7 @@ func firstOpenStackError(current, fallback error) error {
 }
 
 func newOpenStackSuite(config e2eConfig, report *e2eReport) (*openStackSuite, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	rules.ExplicitPath = config.Kubeconfig
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: config.KubeContext}
-	restConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	restConfig, err := runconfig.KubernetesRESTConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("load explicit kubeconfig and context: %w", err)
 	}
@@ -226,10 +221,11 @@ func newOpenStackSuite(config e2eConfig, report *e2eReport) (*openStackSuite, er
 }
 
 func (s *openStackSuite) run(ctx context.Context) error {
-	steps := []struct {
+	type step struct {
 		name string
 		run  func(context.Context) error
-	}{
+	}
+	steps := []step{
 		{name: "preflight safety validation", run: s.preflight},
 		{name: "isolated NodePort backend", run: s.createBackend},
 		{name: "GatewayClass status", run: s.createGatewayClass},
@@ -237,11 +233,23 @@ func (s *openStackSuite) run(ctx context.Context) error {
 		{name: "HTTPRoute status", run: s.createHTTPRoute},
 		{name: "active ownership inventory audit", run: s.verifyActiveOwnershipInventoryAudit},
 		{name: "external HTTP traffic", run: s.verifyExternalTraffic},
-		{name: "leader pod deletion and recovery", run: s.deleteLeaderAndVerifyRecovery},
-		{name: "cold controller restart and recovery", run: s.coldRestartAndVerifyRecovery},
-		{name: "converged metrics snapshot", run: s.verifyConvergedNoOp},
-		{name: "orderly deletion and finalizer completion", run: s.orderlyCleanup},
 	}
+	if s.config.LocalLifecycle {
+		steps = append(steps, step{name: checkFrozenClass, run: s.verifyFrozenClassConfiguration})
+	}
+	steps = append(steps,
+		step{name: "leader pod deletion and recovery", run: s.deleteLeaderAndVerifyRecovery},
+		step{name: "cold controller restart and recovery", run: s.coldRestartAndVerifyRecovery},
+		step{name: "converged metrics snapshot", run: s.verifyConvergedNoOp},
+	)
+	if s.config.LocalLifecycle {
+		steps = append(steps, step{name: checkFrozenRestart, run: s.verifyFrozenGatewayAfterRestart})
+		if s.config.BackendReplicas == 2 {
+			steps = append(steps, step{name: checkMemberTransitions, run: s.verifyWorkerMembershipTransitions})
+		}
+		steps = append(steps, step{name: checkSequentialClasses, run: s.verifySequentialClassConfiguration})
+	}
+	steps = append(steps, step{name: "orderly deletion and finalizer completion", run: s.orderlyCleanup})
 	for _, step := range steps {
 		if err := step.run(ctx); err != nil {
 			mustSetCheck(s.report, step.name, statusFailed, checkSummaryFailed)
@@ -283,6 +291,9 @@ func (s *openStackSuite) verifyPreflightKubernetesState(ctx context.Context) err
 	if err := s.verifyExplicitContext(); err != nil {
 		return err
 	}
+	if err := runconfig.RequireClusterIdentity(ctx, s.client, s.config); err != nil {
+		return err
+	}
 	if err := s.verifyGatewayAPIBundle(ctx); err != nil {
 		return err
 	}
@@ -319,45 +330,12 @@ func (s *openStackSuite) prepareBaselineAudit(ctx context.Context) error {
 }
 
 func (s *openStackSuite) verifyExplicitContext() error {
-	raw, err := clientcmd.LoadFromFile(s.config.Kubeconfig)
-	if err != nil {
-		return fmt.Errorf("load kubeconfig metadata: %w", err)
-	}
-	if _, found := raw.Contexts[s.config.KubeContext]; !found {
-		return fmt.Errorf("configured kubeconfig context is absent")
-	}
-	return nil
+	_, err := runconfig.KubernetesRESTConfig(s.config)
+	return err
 }
 
 func (s *openStackSuite) verifyGatewayAPIBundle(ctx context.Context) error {
-	observation, err := controller.ObserveGatewayAPIVersion(ctx, s.client)
-	if err != nil {
-		return fmt.Errorf("observe Gateway API bundle: %w", err)
-	}
-	if !observation.Supported {
-		return fmt.Errorf("Gateway API bundle version is unsupported")
-	}
-	var definitions apiextensionsv1.CustomResourceDefinitionList
-	if err := s.client.List(ctx, &definitions); err != nil {
-		return fmt.Errorf("list installed Gateway API CRDs: %w", err)
-	}
-	present := make(map[string]struct{})
-	for _, definition := range definitions.Items {
-		if !controller.IsGatewayAPICRDName(definition.Name) {
-			continue
-		}
-		present[definition.Name] = struct{}{}
-		if definition.Annotations[gatewayconsts.BundleVersionAnnotation] != gatewayconsts.BundleVersion ||
-			definition.Annotations[gatewayconsts.ChannelAnnotation] != standardChannel {
-			return fmt.Errorf("an installed Gateway API CRD is not from the pinned Standard bundle")
-		}
-	}
-	for _, name := range requiredBundleCRDs {
-		if _, found := present[name]; !found {
-			return fmt.Errorf("a required Gateway API CRD is absent")
-		}
-	}
-	return nil
+	return controllercontract.RequireGatewayAPICRDs(ctx, s.client)
 }
 
 func (s *openStackSuite) verifyControllerDeployment(ctx context.Context) error {

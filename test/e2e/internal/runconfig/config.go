@@ -84,14 +84,22 @@ type File struct {
 	OpenStack     OpenStack  `json:"openstack"`
 	Controller    Controller `json:"controller"`
 	Backend       Backend    `json:"backend"`
+	Scenarios     Scenarios  `json:"scenarios,omitempty"`
 	Artifacts     Artifacts  `json:"artifacts,omitempty"`
 }
 
 // Kubernetes selects the cluster used by the run.
 type Kubernetes struct {
-	DedicatedForE2E bool   `json:"dedicatedForE2E"`
-	Kubeconfig      string `json:"kubeconfig"`
-	Context         string `json:"context"`
+	DedicatedForE2E    bool   `json:"dedicatedForE2E"`
+	Kubeconfig         string `json:"kubeconfig"`
+	Context            string `json:"context"`
+	ExpectedAPIServer  string `json:"expectedAPIServer,omitempty"`
+	ExpectedClusterUID string `json:"expectedClusterUID,omitempty"`
+}
+
+// Scenarios selects additional checks within the approved E2E resource scope.
+type Scenarios struct {
+	LocalLifecycle bool `json:"localLifecycle,omitempty"`
 }
 
 // OpenStack selects the project, credentials, and networks used by the run.
@@ -119,6 +127,7 @@ type Controller struct {
 // Backend identifies the immutable artifact and placement used by the run.
 type Backend struct {
 	Image                 string                              `json:"image"`
+	Replicas              int32                               `json:"replicas,omitempty"`
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
 	NodeSelector          map[string]string                   `json:"nodeSelector,omitempty"`
 }
@@ -218,6 +227,9 @@ func newRuntime(
 		Namespace:                    workloadNamespacePrefix + identity.runID,
 		Kubeconfig:                   kubernetes.kubeconfig,
 		KubeContext:                  kubernetes.context,
+		ExpectedAPIServer:            strings.TrimSpace(config.Kubernetes.ExpectedAPIServer),
+		ExpectedClusterUID:           strings.TrimSpace(config.Kubernetes.ExpectedClusterUID),
+		LocalLifecycle:               config.Scenarios.LocalLifecycle,
 		ControllerName:               identity.controllerName,
 		ControllerNamespace:          controllerNamespacePrefix + identity.runID,
 		ControllerDeployment:         controllerDeploymentName,
@@ -229,6 +241,7 @@ func newRuntime(
 		ControllerCloudsYAML:         artifacts.controllerCloudsYAML,
 		LeaderLease:                  controllerLeaseName,
 		BackendImage:                 artifacts.backendImage,
+		BackendReplicas:              backendReplicas(config.Backend.Replicas),
 		BackendExternalTrafficPolicy: backendTrafficPolicy(config.Backend.ExternalTrafficPolicy),
 		BackendNodeSelector:          maps.Clone(config.Backend.NodeSelector),
 		ArtifactDirectory:            filepath.Join(filepath.Clean(artifacts.artifactsRoot), identity.runID),
@@ -308,6 +321,13 @@ func backendTrafficPolicy(policy corev1.ServiceExternalTrafficPolicy) corev1.Ser
 		return corev1.ServiceExternalTrafficPolicyCluster
 	}
 	return policy
+}
+
+func backendReplicas(replicas int32) int32 {
+	if replicas == 0 {
+		return 2
+	}
+	return replicas
 }
 
 func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string) error {

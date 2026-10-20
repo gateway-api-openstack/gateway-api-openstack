@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayconsts "sigs.k8s.io/gateway-api/pkg/consts"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
@@ -252,7 +253,7 @@ func TestPreflightKubernetesRejectsRunIdentityCollisions(t *testing.T) {
 	}
 	for _, test := range preflightCollisionCases(config) {
 		t.Run(test.name, func(t *testing.T) {
-			kubeClient := fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(append(test.objects, installedClassConfigCRD(t))...).Build()
+			kubeClient := fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(append(test.objects, installedCRDs(t)...)...).Build()
 			err := preflightKubernetes(context.Background(), kubeClient, config)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("preflightKubernetes() error = %v, wantErr %t", err, test.wantErr)
@@ -778,7 +779,7 @@ func preparedRunFixture(t *testing.T, mode runconfig.ProjectMode) (resolvedConfi
 	if err := os.WriteFile(auditBinary, []byte("synthetic executable"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(installedClassConfigCRD(t)).Build()}
+	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(runnerTestScheme(t)).WithObjects(installedCRDs(t)...).Build()}
 	return config, kubeClient, preparedRunOptions(root, auditBinary, config, kubeClient)
 }
 
@@ -859,7 +860,7 @@ func validFileConfig() fileConfig {
 		Kubernetes: runconfig.Kubernetes{
 			DedicatedForE2E: true,
 			Kubeconfig:      "/tmp/e2e.kubeconfig",
-			Context:         "azimuth-e2e",
+			Context:         "openstack-e2e",
 		},
 		OpenStack: runconfig.OpenStack{
 			ProjectMode:                     runconfig.ProjectModeShared,
@@ -1035,4 +1036,19 @@ func installedClassConfigCRD(t *testing.T) *apiextensionsv1.CustomResourceDefini
 	}
 	definition.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}
 	return definition
+}
+
+func installedCRDs(t *testing.T) []client.Object {
+	t.Helper()
+	objects := []client.Object{installedClassConfigCRD(t)}
+	for _, name := range []string{"gatewayclasses", "gateways", "httproutes"} {
+		objects = append(objects, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
+			Name: name + ".gateway.networking.k8s.io",
+			Annotations: map[string]string{
+				gatewayconsts.BundleVersionAnnotation: gatewayconsts.BundleVersion,
+				gatewayconsts.ChannelAnnotation:       "standard",
+			},
+		}})
+	}
+	return objects
 }

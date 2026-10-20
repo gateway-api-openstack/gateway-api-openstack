@@ -9,6 +9,7 @@ go.work
 go.work.sum
 
 # Local environment
+.local/
 .env
 .envrc
 .idea/

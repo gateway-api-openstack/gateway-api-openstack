@@ -43,14 +43,14 @@ import (
 )
 
 func (s *openStackSuite) createBackend(ctx context.Context) error {
-	replicas := int32(2)
+	replicas := s.config.BackendReplicas
 	if len(s.config.BackendNodeSelector) != 0 {
 		nodes, err := s.selectedBackendNodes(ctx)
 		if err != nil {
 			return err
 		}
 		if len(nodes) < int(replicas) {
-			return fmt.Errorf("backend node selector requires at least two ready schedulable Nodes")
+			return fmt.Errorf("backend node selector requires at least %d ready schedulable worker Nodes", replicas)
 		}
 	}
 	namespace := s.backendNamespace()
@@ -64,12 +64,17 @@ func (s *openStackSuite) createBackend(ctx context.Context) error {
 	if err := s.client.Create(ctx, deployment); err != nil {
 		return fmt.Errorf("create backend Deployment: %w", err)
 	}
+	s.backendDeploymentUID = deployment.UID
 
 	service := s.backendService()
 	if err := s.client.Create(ctx, service); err != nil {
 		return fmt.Errorf("create backend NodePort Service: %w", err)
 	}
+	s.backendServiceUID = service.UID
 
+	if s.config.LocalLifecycle {
+		return s.waitForMembershipBackends(ctx, replicas)
+	}
 	return s.waitForBackend(ctx, deployment, service, replicas)
 }
 
@@ -86,9 +91,10 @@ func (s *openStackSuite) backendNamespace() *corev1.Namespace {
 func (s *openStackSuite) backendDeployment(replicas int32) *appsv1.Deployment {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: s.config.Namespace,
-			Name:      backendName,
-			Labels:    map[string]string{"app.kubernetes.io/name": backendName},
+			Namespace:   s.config.Namespace,
+			Name:        backendName,
+			Labels:      map[string]string{"app.kubernetes.io/name": backendName},
+			Annotations: map[string]string{runAnnotation: s.config.RunID},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -122,7 +128,7 @@ func (s *openStackSuite) backendDeployment(replicas int32) *appsv1.Deployment {
 
 func (s *openStackSuite) backendService() *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: s.config.Namespace, Name: backendName},
+		ObjectMeta: metav1.ObjectMeta{Namespace: s.config.Namespace, Name: backendName, Annotations: map[string]string{runAnnotation: s.config.RunID}},
 		Spec: corev1.ServiceSpec{
 			Type:                  corev1.ServiceTypeNodePort,
 			ExternalTrafficPolicy: s.config.BackendExternalTrafficPolicy,
@@ -257,6 +263,10 @@ func (s *openStackSuite) createGatewayClass(ctx context.Context) error {
 }
 
 func (s *openStackSuite) createGateway(ctx context.Context) error {
+	return s.createGatewayForClass(ctx, s.gatewayClassName)
+}
+
+func (s *openStackSuite) createGatewayForClass(ctx context.Context, className string) error {
 	same := gatewayv1.NamespacesFromSame
 	gateway := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -265,7 +275,7 @@ func (s *openStackSuite) createGateway(ctx context.Context) error {
 			Annotations: map[string]string{runAnnotation: s.config.RunID},
 		},
 		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(s.gatewayClassName),
+			GatewayClassName: gatewayv1.ObjectName(className),
 			Listeners: []gatewayv1.Listener{{
 				Name:     gatewayv1.SectionName(listenerName),
 				Protocol: gatewayv1.HTTPProtocolType,
@@ -321,9 +331,13 @@ func (s *openStackSuite) createHTTPRoute(ctx context.Context) error {
 }
 
 func (s *openStackSuite) waitForGatewayClass(ctx context.Context) error {
+	return s.waitForClass(ctx, s.gatewayClassName)
+}
+
+func (s *openStackSuite) waitForClass(ctx context.Context, name string) error {
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		var gatewayClass gatewayv1.GatewayClass
-		if err := s.client.Get(ctx, client.ObjectKey{Name: s.gatewayClassName}, &gatewayClass); err != nil {
+		if err := s.client.Get(ctx, client.ObjectKey{Name: name}, &gatewayClass); err != nil {
 			return false, err
 		}
 		return exactCondition(gatewayClass.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted), metav1.ConditionTrue, string(gatewayv1.GatewayClassReasonAccepted), gatewayClass.Generation) &&

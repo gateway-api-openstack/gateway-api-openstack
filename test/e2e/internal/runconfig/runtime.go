@@ -39,6 +39,9 @@ type Runtime struct {
 	Namespace                    string                              `json:"namespace"`
 	Kubeconfig                   string                              `json:"kubeconfig"`
 	KubeContext                  string                              `json:"kubeContext"`
+	ExpectedAPIServer            string                              `json:"expectedAPIServer,omitempty"`
+	ExpectedClusterUID           string                              `json:"expectedClusterUID,omitempty"`
+	LocalLifecycle               bool                                `json:"localLifecycle,omitempty"`
 	ControllerName               string                              `json:"controllerName"`
 	ControllerNamespace          string                              `json:"controllerNamespace"`
 	ControllerDeployment         string                              `json:"controllerDeployment"`
@@ -50,6 +53,7 @@ type Runtime struct {
 	ControllerCloudsYAML         string                              `json:"controllerCloudsYAML"`
 	LeaderLease                  string                              `json:"leaderLease"`
 	BackendImage                 string                              `json:"backendImage"`
+	BackendReplicas              int32                               `json:"backendReplicas"`
 	BackendExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"backendExternalTrafficPolicy"`
 	BackendNodeSelector          map[string]string                   `json:"backendNodeSelector,omitempty"`
 	ArtifactDirectory            string                              `json:"artifactDirectory"`
@@ -96,6 +100,7 @@ func (c Runtime) Validate() error {
 		c.validateArtifacts,
 		c.validateOpenStack,
 		c.validateExecution,
+		c.validateLocalLifecycle,
 	} {
 		if err := validate(); err != nil {
 			return err
@@ -154,7 +159,7 @@ func (c Runtime) validateKubernetes() error {
 	if c.Kubeconfig == "" || !filepath.IsAbs(c.Kubeconfig) || c.KubeContext == "" {
 		return fmt.Errorf("runtime Kubernetes selection is incomplete")
 	}
-	return nil
+	return validateExpectedCluster(c.ExpectedAPIServer, c.ExpectedClusterUID)
 }
 
 func (c Runtime) validateArtifacts() error {
@@ -169,7 +174,26 @@ func (c Runtime) validateArtifacts() error {
 	if !agnhostImagePattern.MatchString(c.BackendImage) {
 		return fmt.Errorf("runtime backend artifact is invalid")
 	}
+	if c.BackendReplicas != 1 && c.BackendReplicas != 2 {
+		return fmt.Errorf("backend.replicas must be 1 or 2")
+	}
 	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector)
+}
+
+func (c Runtime) validateLocalLifecycle() error {
+	if !c.LocalLifecycle {
+		return nil
+	}
+	if c.Project.Mode != ProjectModeShared || c.Project.ExpectedExternalNetworkID != "" {
+		return fmt.Errorf("scenarios.localLifecycle requires a shared project without Floating IP allocation")
+	}
+	if c.BackendExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || len(c.BackendNodeSelector) == 0 {
+		return fmt.Errorf("scenarios.localLifecycle requires Local backend traffic policy and an explicit Node selector")
+	}
+	if c.ExpectedAPIServer == "" || c.ExpectedClusterUID == "" {
+		return fmt.Errorf("scenarios.localLifecycle requires kubernetes.expectedAPIServer and kubernetes.expectedClusterUID")
+	}
+	return nil
 }
 
 func (c Runtime) validateOpenStack() error {

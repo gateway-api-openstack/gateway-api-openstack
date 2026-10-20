@@ -3,11 +3,9 @@
 This guide covers end-to-end checks for the current HTTP and NodePort implementation.
 The checks use a real Kubernetes API server and an OpenStack Amphora data plane.
 They do not run the Gateway API conformance suite and they do not establish general OpenStack compatibility.
-The Phase 3 implementation still requires a new live run.
-Earlier milestone results do not validate the current revision.
+See [compatibility evidence](providers/compatibility.md) for recorded coverage and its limits.
 
-Keep detailed run artifacts locally and summarize the results in the PR using the [validation template](reports/openstack-e2e-template.md).
-The [test evidence policy](reports/README.md) explains what to retain and publish.
+Follow the [test evidence policy](reports/README.md) when retaining artifacts and summarizing results in a PR.
 
 ## Before you start
 
@@ -21,17 +19,17 @@ Prepare all of the following:
 - Gateway API v1.6.1 Standard Channel CRDs on the cluster.
 - The OpenStackGatewayClassConfig CRD from the revision under test, installed by the operator before starting the runner.
 - A kubeconfig and explicit context that can create, inspect, update, and delete the run-scoped workloads, controller objects, and cluster-scoped RBAC.
-  The test gets the run-scoped Namespaces, ConfigMaps, and Secrets, lists GatewayClasses, creates and deletes its OpenStackGatewayClassConfig, and reads both configuration and Gateway API CRDs, Gateways, HTTPRoutes, EndpointSlices, ReplicaSets, Pods, and the leader Lease.
+  The test gets Namespaces, including `kube-system` when the cluster identity is pinned, and its ConfigMaps and Secrets.
+  It lists GatewayClasses, manages its own class configurations, and reads configuration and Gateway API CRDs, Gateways, HTTPRoutes, EndpointSlices, ReplicaSets, Pods, and the leader Lease.
   The optional backend Node selector also requires permission to list Nodes.
   It deletes the current leader Pod, updates the controller Deployment, uses the `pods/proxy` subresource for metrics, and lists Gateways and HTTPRoutes for the audit.
+  The optional lifecycle checks also update their GatewayClass references, class configuration, and backend Deployment.
 - An OpenStack project with Amphora and enough quota for the Gateway graph and an optional Floating IP.
 - A controller image built from the revision under test and an `agnhost` backend image, both available to the cluster and pinned by digest.
 - An approved VIP subnet, member subnet, and explicit choice about using an external network.
 - A path from Amphora to the selected Node `InternalIP` addresses and NodePorts.
-- A path from the machine running the command to the Keystone `auth_url` used by both credential configurations and to the resulting VIP or Floating IP.
+- A path from the runner to the Kubernetes API, the OpenStack API endpoints used by the controller and audit credentials, and the resulting VIP or Floating IP.
 - A redacted project-wide inventory recorded before the run.
-
-Do not put a populated `clouds.yaml`, application credential, token, kubeconfig, certificate, or unredacted inventory in the repository or command output.
 
 Install the configuration CRD using the intended test context:
 
@@ -43,24 +41,45 @@ kubectl --kubeconfig /absolute/path/to/e2e.kubeconfig \
   crd/openstackgatewayclassconfigs.gateway-api-openstack.github.io
 ```
 
-The runner verifies the CRD's group, kind, cluster scope, served and storage version, structural schema presence, and Established condition.
-It does not install, modify, or remove this cluster API.
-The configuration API is `gateway-api-openstack.github.io/v1alpha1`.
+The runner validates the installed CRD but does not manage it.
 See the [class configuration reference](reference/class-configuration.md) for its fields and lifecycle.
+
+## Choose where to run the suite
+
+The suite sends HTTP requests from the process running the test to the address published by the Gateway.
+The kubeconfig selects the Kubernetes API but does not route those requests through the cluster.
+Run the suite on a host that can reach the Gateway address, or in a temporary Pod in the test cluster when the VIP is private.
+For a Pod, make the source, tools, private configuration files, and artifact directory available at the paths specified in the configuration.
+Keep the explicit workload cluster context and identity checks when running inside a Pod.
+
+Check these paths separately:
+
+| Path | Purpose |
+| --- | --- |
+| Runner to Kubernetes and OpenStack APIs | Create test objects, observe reconciliation, and audit ownership. |
+| Controller to Kubernetes and OpenStack APIs | Reconcile the test Gateway graph. |
+| Runner to Gateway VIP or Floating IP | Verify the HTTP response through Amphora. |
+| Amphora to worker NodePort and backend Pod | Forward requests and perform health checks. |
+
+Kubernetes API access does not imply access to worker NodePorts or a private VIP.
+Run any NodePort diagnostic from the relevant network, then verify the complete path through the VIP.
 
 ## Prepare one configuration file
 
 Copy the synthetic example to a private path:
 
 ```sh
-mkdir -p _artifacts/e2e-config
-cp test/e2e/openstack.example.yaml \
-  _artifacts/e2e-config/openstack.yaml
+install -d -m 700 .local/e2e-config
+install -m 600 test/e2e/openstack.example.yaml \
+  .local/e2e-config/openstack.yaml
 ```
 
 Replace every placeholder before running the test.
 The parser rejects unknown fields, and every path value in the file must be absolute.
-Apart from the acknowledgement selected by the project mode, the optional settings are `runID`, `openstack.auditCloudsYAML`, `backend.externalTrafficPolicy`, `backend.nodeSelector`, and `artifacts`.
+The settings below describe the defaults and optional scenarios.
+To pin a cluster, set `kubernetes.expectedAPIServer` to its HTTPS API endpoint and `kubernetes.expectedClusterUID` to the UID of its `kube-system` Namespace.
+Supply both fields together.
+They are required for the optional Local lifecycle checks and are checked before installation.
 
 ### Choose the OpenStack project mode
 
@@ -88,7 +107,6 @@ Both modes still require the dedicated Kubernetes cluster acknowledgement.
 Shared mode narrows the controller and audit to a unique logical identity, but the credential can still consume project quota, use Octavia and Neutron API capacity, allocate a Floating IP, and reach anything its roles permit.
 Do not run load tests, quota exhaustion, OpenStack fault injection, security group changes, or destructive cloud recovery cases in a shared project.
 Keep the run within the approved Gateway graph and use existing network and worker access rules.
-Have the project users review and attribute the project-wide inventory difference after the run.
 
 ### Set the project and network inputs
 
@@ -102,7 +120,7 @@ The runner fixes the provider to Amphora, the member mode to NodePort, the Node 
 Set `openstack.vipSubnetID` and `openstack.memberSubnetID` to the approved network IDs.
 Set `openstack.externalNetworkID` to an exact external network ID when the test should allocate a Floating IP, or to the literal `none` when it should not.
 The runner does not choose networks, reserve quota, or prove that the network path is safe.
-It creates one OpenStackGatewayClassConfig for the run using these exact subnet and external network IDs.
+The baseline run creates one OpenStackGatewayClassConfig using these exact subnet and external network IDs.
 The test GatewayClass references this object through `spec.parametersRef`.
 
 ### Set the credentials
@@ -132,11 +150,9 @@ The runner refuses to overwrite an existing run directory.
 
 ### Restrict a test backend to selected Nodes
 
-The default backend uses `externalTrafficPolicy: Cluster` and does not restrict Pod placement.
-The controller excludes Nodes with either `node-role.kubernetes.io/control-plane` or the legacy `node-role.kubernetes.io/master` label, regardless of the label value.
-It does not require a worker role label.
-It also honors `node.kubernetes.io/exclude-from-external-load-balancers` in both Cluster and Local modes.
-An absent exclusion label or a value that parses as false permits the Node, while true, empty, and invalid values exclude it.
+The default backend uses two replicas with `externalTrafficPolicy: Cluster` and does not restrict Pod placement.
+Set `backend.replicas` to `1` or `2` to match the selected worker capacity.
+Nodes must satisfy the controller's [worker eligibility rules](reference/class-configuration.md#worker-nodeport-members).
 
 Cluster mode can register every eligible worker even when backend Pods run on only a few Nodes.
 For a shared project test restricted to selected workers, keep Local endpoint selection and a Node selector in the `backend` configuration:
@@ -152,21 +168,70 @@ Replace the example label with one applied only to the intended worker Nodes, an
 The runner reads Node labels but does not change them.
 It rejects a nonempty `backend.nodeSelector` unless `backend.externalTrafficPolicy` is `Local`.
 
-The suite requires at least two matching Ready, schedulable worker Nodes that pass the controller's exclusion rules before it creates the backend.
-Required Pod anti-affinity places the two replicas on distinct selected Nodes.
+The suite requires at least as many matching Ready, schedulable worker Nodes as `backend.replicas` before it creates the backend.
+Required Pod anti-affinity places replicas on distinct selected Nodes.
 Before creating the Gateway, the suite checks that EndpointSlices contain ready endpoints on those Nodes.
 Local mode registers only Nodes with eligible local endpoints.
 The operator must still verify the Amphora-to-NodePort path for the selected Nodes.
 
-A Local run provides no live evidence for Cluster member selection.
-Local tests cover worker eligibility and exclusion label transitions, but they do not replace OpenStack validation of each traffic policy.
+Validate each traffic policy separately when making a support claim.
+
+### Enable Local lifecycle checks
+
+Set `scenarios.localLifecycle: true` to add class configuration and backend transition checks.
+This profile requires shared project mode, `externalNetworkID: none`, Local traffic policy, an explicit Node selector, and both cluster identity fields.
+Keep the shared project acknowledgement described above, then update these fields in the existing configuration:
+
+```yaml
+kubernetes:
+  expectedAPIServer: https://api.example.test:6443
+  expectedClusterUID: 33333333-3333-4333-8333-333333333333
+backend:
+  replicas: 1
+  externalTrafficPolicy: Local
+  nodeSelector:
+    e2e.example.test/backend: "true"
+scenarios:
+  localLifecycle: true
+```
+
+These are additions to the configuration, not a standalone file.
+Use `replicas: 2` when two eligible workers are available.
+The test does not provision workers or change Node labels.
+
+The class checks use two configurations with the same approved subnets and different health monitor delays.
+They change the first configuration and its GatewayClass reference, then verify that the existing Gateway keeps its frozen settings and cloud resource identities, including after controller restart.
+A fresh route observation must issue no OpenStack mutations.
+After deleting the first Gateway graph and confirming an empty ownership inventory, the test creates a Gateway for the second class.
+This uses two sequential load balancer lifecycles with at most one load balancer at a time.
+Approve both lifecycles before running the profile.
+It does not test simultaneous Gateways on different topologies.
+
+| Backend replicas | Transition check |
+| --- | --- |
+| `1` | Run the class configuration and restart checks without a member transition. |
+| `2` | Scale the test backend from two replicas to one and back. Verify member counts, preserve the surviving member and other cloud resource IDs, and check traffic after convergence. |
+
+The member transition requires two workers so the test can verify that an unchanged member survives.
+These checks do not establish uninterrupted traffic or a drain policy.
 
 ## Run the suite
+
+Check the configuration and environment without creating resources:
+
+```sh
+make test-e2e-preflight E2E_CONFIG="$PWD/.local/e2e-config/openstack.yaml"
+```
+
+This runs the runner with `--preflight-only`.
+It checks local inputs, the selected cluster identity, installed CRDs, run identity collisions, credential projects, and the empty ownership audit scope.
+It does not install a controller or create Kubernetes or OpenStack resources.
+Image availability, creation permissions, quota, and data plane connectivity still require separate preparation or a live run.
 
 Run the live suite with one command:
 
 ```sh
-make test-e2e E2E_CONFIG="$PWD/_artifacts/e2e-config/openstack.yaml"
+make test-e2e E2E_CONFIG="$PWD/.local/e2e-config/openstack.yaml"
 ```
 
 The target builds the ownership audit, compiles the runner and tagged E2E suite, installs a controller dedicated to the run, and executes the live checks.
@@ -184,29 +249,18 @@ make test-e2e-compile
 Live E2E remains opt-in and is not part of `make verify`.
 A scheduled cloud job still needs a dedicated environment and an agreed controller image registry.
 
-## What the runner checks
+## Installation and isolation
 
-The runner performs these operations in order:
+Before creating objects, the runner validates the configuration, cluster identity, installed CRDs, unused run identity, and the authenticated project of both credentials.
+It requires a complete, empty ownership audit for the exact controller name and cluster ID.
+These scope checks do not restrict the credential's OpenStack permissions.
 
-1. Validate the strict configuration, local files, image digests, source revision, kubeconfig, and artifact path.
-2. Generate one run identity and derive the workload Namespace, GatewayClass, OpenStackGatewayClassConfig, controller name, cluster ID, controller Namespace, and RBAC names.
-3. Verify the operator-installed configuration CRD and require the derived Namespaces, GatewayClass identity, OpenStackGatewayClassConfig, ClusterRole, and ClusterRoleBinding to be absent.
-4. Authenticate an isolated exact copy of the controller credential and the audit configuration against the expected project.
-5. Run the ownership audit and require a complete, empty result for the exact controller name and cluster ID.
-6. Create the Namespace, ServiceAccount, unique ClusterRole and ClusterRoleBinding, immutable ConfigMap and Secret, OpenStackGatewayClassConfig, and controller Deployment with create-only writes.
-7. Bind the Pod template to the ConfigMap and Secret UID and `resourceVersion`, then require two Ready controller Pods, the expected image digest, and a live leader Lease.
-8. Run the foundations scenarios, ordered cleanup, and the final ownership audit.
-9. Remove the run-scoped controller installation only after the workload graph is gone and the exact audit scope is empty again.
+The runner creates its controller installation with unique names and create-only writes.
+It verifies the installation identities, immutable configuration and credential inputs, expected image digest, two Ready controller Pods, and a live leader Lease before testing the Gateway graph.
+After successful graph finalization and an empty audit, it removes only installation objects whose UID and run annotation still match the recorded inventory.
+Deletion uses UID preconditions.
 
-No controller object is created before both credentials and the empty audit baseline pass.
-Names, tags, and the scoped audit are safety signals, not an OpenStack authorization boundary.
-
-The installation inventory records the UID and run annotation of the class configuration along with the other created objects.
-The suite checks the configuration's run identity, approved topology, and GatewayClass reference during installation and recovery validation.
-Successful cleanup removes the configuration only after the workload GatewayClass and cloud graph are gone.
-The runner validates every retained installation object's UID and run annotation before deleting any of them, then uses UID preconditions for deletion.
-
-## Foundations scenarios
+## Foundation checks
 
 The automated run covers the following checks:
 
@@ -224,7 +278,7 @@ The automated run covers the following checks:
 The no-op check reads metrics from the current leader through the Kubernetes API.
 It requires the OpenStack mutation counter to remain unchanged and the Octavia GET observation counter to increase while the leader and controller process remain stable.
 
-The foundations runner does not inject quota, timeout, Octavia failure, partial transition, blocked finalization, or external deletion faults.
+The runner does not inject quota, timeout, rate limiting, Octavia failure, blocked finalization, or external deletion faults.
 Keep those rows `Not run` unless a separate, reviewed mechanism exercises them in a dedicated project.
 Unit, adapter, or envtest coverage does not turn an OpenStack E2E row into a pass.
 
@@ -232,20 +286,17 @@ Unit, adapter, or envtest coverage does not turn an OpenStack E2E row into a pas
 
 The ownership audit is required in both project modes.
 It observes resources in the exact controller name and cluster ID scope before, during, and after the scenario.
-It does not prove that the desired graph is complete, find a detached resource after all scope metadata is lost, detect every transient duplicate, or replace a project-wide inventory.
-An empty audit result never grants deletion or adoption authority.
-See the [ownership audit contract](design/ownership-audit.md) for the full limits.
+It does not establish project-wide cleanup or authorize deletion.
+See the [ownership audit contract](design/ownership-audit.md) for its discovery limits.
 
 The runner writes `report.json` and `report.md` in a new artifact directory.
-The artifacts record the source revision, controller image digest, Gateway API bundle, project mode, restart mode, backend traffic policy, selector use, check results, and aggregate audit and metrics evidence.
-They omit selector keys and values, as well as project, subnet, network, Kubernetes object, and OpenStack resource IDs.
+They record the tested artifact, configuration summary, check results, and aggregate audit and metrics evidence without cloud resource IDs or backend selector values.
+Review them under the [publication policy](reports/README.md) before sharing.
 
-The overall result is `Passed` only when every foundations check, including active ownership evidence, finalization, and the post-test empty audit, passes.
+The overall result is `Passed` only when every foundation check and selected lifecycle check passes, including active ownership evidence, finalization, and the post-test empty audit.
 A failed assertion is `Failed`.
 An optional check outside the run is `Skipped`.
 A scenario that was not attempted or did not reach its assertion remains `Not run`.
-
-A retry does not erase an unexplained earlier failure.
 
 ## Failure and cleanup
 
@@ -259,5 +310,5 @@ Follow the [operator recovery guide](operator-recovery.md) and use the read-only
 Do not reuse the run ID while any retained object or report remains.
 
 After a successful run, compare a redacted project-wide final inventory with the starting inventory.
-In shared mode, have the project users attribute every concurrent difference.
+In shared mode, review concurrent differences with the project users and record any change that cannot be attributed.
 The runner does not delete an OpenStack project, application credential, network, or unrelated resource.

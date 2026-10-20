@@ -5,6 +5,9 @@ kubernetes:
   dedicatedForE2E: true
   kubeconfig: /absolute/path/to/e2e.kubeconfig
   context: openstack-e2e
+  # Supply both identity fields for Local lifecycle, or to pin the baseline target.
+  # expectedAPIServer: https://api.example.test:6443
+  # expectedClusterUID: 33333333-3333-4333-8333-333333333333
 openstack:
   projectMode: dedicated
   dedicatedForE2E: true
@@ -25,11 +28,18 @@ controller:
   sourceRevision: <git-commit>
 backend:
   image: registry.k8s.io/e2e-test-images/agnhost@sha256:<digest>
+  # Replicas default to 2. Set 1 for a cluster with one eligible worker.
+  # replicas: 1
   # The default externalTrafficPolicy is Cluster.
   # To restrict members to labeled Nodes with local backend endpoints:
   # externalTrafficPolicy: Local
   # nodeSelector:
   #   e2e.example.test/backend: "true"
+# Local lifecycle also requires shared project mode and its acknowledgement above,
+# externalNetworkID: none, Local traffic policy, a Node selector, and both
+# Kubernetes identity fields. It creates two Gateway graphs sequentially.
+# scenarios:
+#   localLifecycle: true
 # Omit artifacts to use _artifacts/e2e/<run-id> below the repository.
 # artifacts:
 #   root: /absolute/path/to/e2e-artifacts
