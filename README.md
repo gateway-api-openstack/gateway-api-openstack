@@ -134,9 +134,8 @@ The core Phase 3 features are implemented, with validation and release work rema
 Local tests cover class configuration, separate class topologies, frozen settings, worker selection, and event bursts through the graph writer.
 The [class configuration reference](docs/reference/class-configuration.md) describes the development API.
 
-The [earlier OpenStack run](docs/providers/compatibility.md#development-validation) covered the Phase 2 baseline.
-The selected Phase 3 revision still needs live validation and a conformance gap analysis.
-The [opt-in v1.6.1 diagnostic](docs/testing-conformance.md) is ready for one adapted upstream HTTP test, but has not been run against OpenStack.
+The [compatibility record](docs/providers/compatibility.md) describes the available development evidence and remaining validation.
+The [conformance plan](docs/testing-conformance.md) describes the GATEWAY-HTTP target and current Core gaps.
 
 See [development priorities](docs/development-priorities.md) for the next work and [ROADMAP.md](ROADMAP.md) for the phase gates.
 Use the [OpenStack E2E guide](docs/testing-openstack-e2e.md) for traffic, recovery, cleanup, and leak checks.

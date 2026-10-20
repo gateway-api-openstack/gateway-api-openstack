@@ -224,8 +224,8 @@ Keep mapper read measurements separate from tests that follow events through rec
 
 The tagged tests in `internal/controller/envtest*_test.go` use a real API server and cache for schema validation, binding checkpoints, conflicts, and class configuration isolation.
 Cloud behavior remains fake.
-The [compatibility record](providers/compatibility.md#local-validation) describes what these checks establish.
+The [compatibility record](providers/compatibility.md#evidence-matrix) describes what these checks establish.
 
 `test/e2e/` contains the opt-in [OpenStack E2E runner](testing-openstack-e2e.md).
-`test/conformance/` is a separate Go module for the pinned [upstream HTTP diagnostic](testing-conformance.md), with local tests for its setup and cleanup.
-Ordinary verification does not enable either live runner.
+Ordinary verification does not enable live execution.
+The [conformance guide](testing-conformance.md) describes the planned full-profile suite and its prerequisites.

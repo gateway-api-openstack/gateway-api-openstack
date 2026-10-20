@@ -1,18 +1,15 @@
 # Getting started with the current controller
 
 The controller is pre-alpha.
-Phase 3 implements typed class configuration, a shared Gateway graph writer, and worker NodePort members.
-The [compatibility record](providers/compatibility.md) separates local checks from the earlier OpenStack E2E baseline, which does not validate the Phase 3 changes.
 No supported environment profile or release image is available.
-See the [roadmap](../ROADMAP.md) for remaining validation work.
+See the [compatibility record](providers/compatibility.md) for development evidence and the [roadmap](../ROADMAP.md) for remaining work.
 
 Use these base manifests only in a disposable test project.
 Keep cloud-provider-openstack responsible for Services of type `LoadBalancer`.
 This controller creates separate resources only for its Gateway API objects.
 
 For automated validation, use the [OpenStack E2E runner](testing-openstack-e2e.md), which creates a separate test installation in a dedicated or shared project.
-The [upstream HTTP diagnostic](testing-conformance.md) uses an existing installation and runs one adapted test.
-It has not yet been run against OpenStack and does not establish conformance.
+The [conformance plan](testing-conformance.md) describes the separate Gateway API requirements and current gaps.
 
 ## Prerequisites
 

@@ -1,90 +1,58 @@
-# Gateway API conformance diagnostic
+# Gateway API conformance
 
-The opt-in runner in `test/conformance` uses Gateway API v1.6.1 to run the upstream `HTTPRouteSimpleSameNamespace` assertions against an existing controller.
-It replaces the upstream base setup with one HTTP Gateway and a NodePort backend.
-This is an adapted diagnostic, not a conformance profile result or an upstream submission.
-No live result is recorded for the current revision.
+The target is Gateway API v1.6.1 Standard Channel and the `GATEWAY-HTTP` profile.
+Its [Core feature set](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/conformance/utils/suite/profiles.go) contains Gateway, HTTPRoute, and ReferenceGrant, including HTTPS termination for HTTPRoute.
+The repository does not yet provide a full-profile runner.
 
-## Scope
+## Implementation gaps
 
-The separate Go module pins both Gateway API and its conformance module to v1.6.1.
-It loads the upstream HTTPRoute fixture and invokes the upstream test function without changing its assertions.
-The fixture names and namespace match that test.
-The runner does not call the default suite setup, install a controller or CRDs, or change `GatewayClass.status.supportedFeatures`.
+This table describes implementation coverage, not test results.
+The [compatibility record](providers/compatibility.md) summarizes the available evidence.
 
-The default upstream setup uses ClusterIP backends and Gateways with listeners and namespace relationships outside the current controller's HTTP subset.
-Selecting one upstream test still runs that shared setup in the normal suite.
-This runner instead creates a dedicated namespace, one NodePort Service, one backend Deployment with one replica, one HTTP Gateway, and the selected HTTPRoute.
-The Deployment selects a worker through the supplied labels.
-The Service uses `externalTrafficPolicy: Local` to restrict members to Nodes with ready backend endpoints.
+| Area | Current implementation | Remaining Core work |
+| --- | --- | --- |
+| Listeners | One HTTP listener without a listener hostname | Multiple listeners and their lifecycle, hostname matching, HTTPS, and certificate validation |
+| Route attachment | One selected HTTPRoute with one parent in the Gateway namespace | Multiple routes and parents, namespace selection, and precedence |
+| Matching | One rule and match, Exact or PathPrefix, and at most one exact hostname | Multiple rules and matches, wildcard and multiple hostnames, and exact header matching |
+| Service inputs | One NodePort Service in the route namespace | ClusterIP and headless Services, and manually managed EndpointSlices |
+| Backend selection and errors | One backend | Weighted backends, weight zero, unmatched-request HTTP 404, and required responses for omitted or invalid backends |
+| Filters | No filters | RequestHeaderModifier and Core RequestRedirect behavior |
+| References | References within the route namespace | ReferenceGrant for Service and certificate references |
+| Partial validity and status | Conditions and listener status for the supported subset | Required behavior for invalid siblings, reference errors, listener changes, and generation updates |
 
-The installed controller can provision one Amphora load balancer and its listener, pool, member, health monitor, and L7 resources.
-Octavia may also create the supporting Amphora resources.
-The class must use `floatingIP.mode: None`.
-The runner makes no direct OpenStack API calls and does not modify existing network resources.
-This is a functional traffic check, not a load test.
+Requiring NodePort Services is a Core gap, even though NodePort can be used internally as a forwarding mechanism.
+Rejecting unsupported input does not satisfy a requirement for positive traffic behavior or a particular HTTP response.
+The [feasibility assessment](design/conformance-feasibility.md) identifies Octavia API blockers and designs that need verification.
+The [roadmap](../ROADMAP.md) assigns that work and defines the completion gates.
 
-## Prerequisites
+Method and query matching, URLRewrite, response header modification, mirroring, retries, timeouts, and `GatewayHTTPListenerIsolation` are outside the initial Extended claim.
+Other Route profiles and mesh conformance are also outside the target.
 
-Use a cluster and project approved for creating and cleaning up this test graph.
-Prepare the following before opting in:
+## Prepare the suite
 
-- Install the Gateway API v1.6.1 Standard CRDs, the class configuration CRD, and the controller as described in [Getting started](getting-started.md).
-- Provide an accepted GatewayClass with a current `SupportedVersion=True` condition and an OpenStackGatewayClassConfig that uses no Floating IP.
-- Verify routing from the test machine to the class's VIP subnet and from Amphora to the selected worker's NodePort.
-- Select an eligible, ready worker through workload placement labels.
-  The runner waits for the actual backend Pod and ready endpoint on a selected worker before creating the Gateway.
-- Make the upstream `echo-basic` backend image available to that worker and pin its reference by digest.
-  The image must implement the upstream echo response format.
-- Leave `gateway-conformance-infra` absent.
-  The runner refuses to adopt an existing namespace.
-- Give the test identity permission to read cluster, class, CRD, Node, Pod, ReplicaSet, and EndpointSlice state and to create and clean up the namespaced fixture.
-  The runner does not grant RBAC permissions.
+Use the conformance module and Standard CRDs for the same pinned Gateway API release.
+Before a full run:
 
-The kubeconfig context, API server, `kube-system` namespace UID, GatewayClass UID, and class configuration UID identify the intended environment.
-The runner verifies them before creating fixtures and reads the class again immediately before creating the Gateway.
-Keep those values and the kubeconfig private.
+1. Provide a controller configuration that accepts the upstream Service inputs, listeners, and namespace relationships.
+2. Verify runner-to-Gateway and Amphora-to-backend connectivity, HTTPS credentials, and the approved cloud resource budget.
+3. Isolate test resources and verify ownership and cleanup between runs using the [OpenStack E2E guidance](testing-openstack-e2e.md).
+4. Run every Core test and every test for declared Extended features.
+   Do not remove required behavior from fixtures to obtain a pass.
+5. Retain the suite-generated report and reproduction details under the [publication policy](reports/README.md).
 
-## Prepare and run
+Selecting one upstream test can still invoke shared setup that requires unsupported features.
+Check the fixture and setup dependencies before choosing an incremental test.
+An adapted diagnostic can help investigate behavior, but it does not establish profile conformance.
+One-off runners and environment-specific adaptations remain local.
+Use the [gap template](reports/conformance-gap-template.md) to distinguish setup blockers, failures, and tests that have not run.
 
-Compile and test the harness without cluster or cloud access:
+## Publish results
 
-```sh
-make test-conformance-compile test-conformance-unit
-```
+Upstream lists [Conformant and Partially Conformant implementations](https://gateway-api.sigs.k8s.io/docs/implementations/list/).
+This project's target requires the complete Core profile and all declared Extended features to pass.
+A partial report can document progress but does not satisfy that target.
 
-For a live diagnostic:
-
-1. Copy [diagnostic.example.yaml](../test/conformance/diagnostic.example.yaml) to a private path.
-2. Fill in the existing environment's identities, worker labels, and backend image reference.
-   Replace `<sha256-digest>` with the image's actual digest.
-3. Set `reportPath` to a new file in an existing private directory.
-   The runner creates it with mode `0600` and refuses to overwrite a file.
-4. Set `acceptResourceCreation: true` after approving the graph described above.
-5. Run the diagnostic from the repository root:
-
-   ```sh
-   make test-conformance CONFORMANCE_CONFIG=/absolute/private/path/diagnostic.yaml
-   ```
-
-The Make target supplies the opt-in and configuration environment variables and a 75-minute Go test deadline.
-The runner rejects a shorter remaining budget before creating resources so setup and upstream polling leave time for cleanup.
-Ordinary unit, race, and CI checks leave live execution disabled.
-
-## Cleanup and results
-
-Cleanup verifies the run annotation and recorded UID, deletes the HTTPRoute, waits for controller finalization, then deletes the Gateway and waits again before removing the namespace.
-It retains objects when creation is uncertain, identity changes, finalization stalls, or another Gateway, HTTPRoute, or LoadBalancer Service appears in the namespace.
-Do not remove finalizers to unblock the test.
-Follow [operator recovery](operator-recovery.md) if cleanup stops.
-
-The private JSON report records the upstream version and revision, selected test, fixture adaptations, assertion result, and cleanup result.
-`setupblocked` means the assertions did not run, while `pass` means only the selected assertions passed with those adaptations.
-Successful Kubernetes deletion is not an independent OpenStack leak audit.
-Use the [OpenStack E2E guide](testing-openstack-e2e.md) when that evidence is required.
-
-Keep raw output and environment details local under the [test evidence policy](reports/README.md).
-Use the [gap report template](reports/conformance-gap-template.md) to summarize findings and setup blockers.
-Unselected tests have not run, and this diagnostic cannot justify a `supportedFeatures` declaration.
-A full GATEWAY-HTTP assessment uses the upstream profile setup and all applicable Core tests.
-A conformance claim requires those tests to pass.
+Follow the pinned [reporting rules](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/conformance/reports/README.md) for an unmodified report, an immutable implementation version, reproduction instructions, and implementation metadata.
+Recheck version eligibility when submitting upstream.
+Keep `GatewayClass.status.supportedFeatures` limited to fully verified behavior.
+Formal Gateway reports infer features from that status, as described in the [implementer's guide](https://gateway-api.sigs.k8s.io/guides/implementers-guide/#conformance-and-version-compatibility).
