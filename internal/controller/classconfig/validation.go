@@ -18,6 +18,7 @@ package classconfig
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -42,6 +43,14 @@ func Validate(spec configv1alpha1.OpenStackGatewayClassConfigSpec) (cloud.Topolo
 	request.MemberSubnet, err = reference(spec.MemberSubnet)
 	if err != nil {
 		return request, "", cloud.HealthMonitorConfig{}, invalid("memberSubnet must select one resource by UUID, exact name, or tags")
+	}
+	request.VIPSecurityGroups, err = securityGroups(string(spec.FrontendSecurity.Mode), string(configv1alpha1.FrontendOctaviaManaged), spec.FrontendSecurity.Groups)
+	if err != nil {
+		return request, "", cloud.HealthMonitorConfig{}, invalid("frontendSecurity requires OctaviaManaged without groups or Referenced with 1 to 16 distinct resource references")
+	}
+	request.BackendSecurityGroups, err = securityGroups(string(spec.BackendSecurity.Mode), string(configv1alpha1.BackendUnmanaged), spec.BackendSecurity.Groups)
+	if err != nil {
+		return request, "", cloud.HealthMonitorConfig{}, invalid("backendSecurity requires Unmanaged without groups or Referenced with 1 to 16 distinct resource references")
 	}
 	mode := spec.FloatingIP.Mode
 	if mode == "" {
@@ -95,6 +104,39 @@ func Validate(spec configv1alpha1.OpenStackGatewayClassConfigSpec) (cloud.Topolo
 		return request, "", monitor, invalid("healthMonitor retry counts must be between 1 and 10")
 	}
 	return request, addressType, monitor, nil
+}
+
+func securityGroups(mode, defaultMode string, groups []configv1alpha1.ResourceReference) ([]cloud.ResourceReference, error) {
+	if mode == "" || mode == defaultMode {
+		if len(groups) != 0 {
+			return nil, invalid("security group references require Referenced mode")
+		}
+		return nil, nil
+	}
+	if mode != string(configv1alpha1.FrontendReferenced) || len(groups) == 0 || len(groups) > 16 {
+		return nil, invalid("invalid security mode or group count")
+	}
+	resolved := make([]cloud.ResourceReference, 0, len(groups))
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		ref, err := reference(group)
+		if err != nil {
+			return nil, err
+		}
+		slices.Sort(ref.Tags)
+		key := "tags:" + strings.Join(ref.Tags, ",")
+		if ref.ID != "" {
+			key = "id:" + strings.ToLower(ref.ID)
+		} else if ref.Name != "" {
+			key = "name:" + ref.Name
+		}
+		if _, exists := seen[key]; exists {
+			return nil, invalid("duplicate security group reference")
+		}
+		seen[key] = struct{}{}
+		resolved = append(resolved, ref)
+	}
+	return resolved, nil
 }
 
 func reference(ref configv1alpha1.ResourceReference) (cloud.ResourceReference, error) {

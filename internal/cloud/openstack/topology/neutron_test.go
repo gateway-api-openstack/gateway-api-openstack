@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
@@ -44,7 +45,7 @@ func TestResolveTopologyValidatesReferencesBeforeReads(t *testing.T) {
 			request := topologyRequest()
 			request.VIPSubnet = tt.reference
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
-			if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+			if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want terminal validation", got, err)
 			}
 			if len(f.requests) != 0 {
@@ -82,7 +83,7 @@ func TestResolveTopologyRejectsUnresolvedReferences(t *testing.T) {
 			}
 			f.responses[path] = fixtureResponse{body: tt.body}
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
-			if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+			if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want terminal validation", got, err)
 			}
 		})
@@ -109,7 +110,7 @@ func TestResolveTopologyFindsDuplicateExternalNetworkOnLaterPage(t *testing.T) {
 		return true
 	}
 	got, err := f.resolver.ResolveTopology(context.Background(), request)
-	if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) || f.calls("/v2.0/networks") != 2 {
+	if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) || f.calls("/v2.0/networks") != 2 {
 		t.Fatalf("topology = %#v, error = %v, want duplicate rejection after pagination", got, err)
 	}
 }
@@ -124,7 +125,7 @@ func TestResolveTopologyIPv6(t *testing.T) {
 	}
 	request.ExternalNetwork = &cloud.ResourceReference{ID: "public-net"}
 	got, err := f.resolver.ResolveTopology(context.Background(), request)
-	if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+	if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 		t.Fatalf("topology = %#v, error = %v, want rejection of IPv6 Floating IP placement", got, err)
 	}
 }

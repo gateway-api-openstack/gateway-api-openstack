@@ -101,3 +101,28 @@ func TestGatewayTopologyBindingRejectsIncompleteOrChangedMetadata(t *testing.T) 
 		})
 	}
 }
+
+func TestGatewaySecurityBinding(t *testing.T) {
+	config := Config{ControllerName: "gateway.example/controller"}
+	resolved := testResolvedTopology()
+	resolved.Topology.VIPSecurityGroupIDs = []string{"33333333-3333-3333-3333-333333333333"}
+	resolved.Topology.BackendSecurityGroupIDs = []string{"44444444-4444-4444-4444-444444444444"}
+	gateway := &gatewayv1.Gateway{}
+	if err := BindGatewayTopology(config, gateway, resolved); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := StoredGatewayTopology(config, gateway)
+	if err != nil || !reflect.DeepEqual(stored, resolved) {
+		t.Fatalf("stored security binding=%#v, error=%v", stored.Topology, err)
+	}
+	resolved.Topology.BackendSecurityGroupIDs[0] = "55555555-5555-5555-5555-555555555555"
+	if err := BindGatewayTopology(config, gateway, resolved); !errors.Is(err, cloud.ErrOwnershipConflict) {
+		t.Fatalf("changed security binding error=%v", err)
+	}
+	for _, ids := range [][]string{{"invalid"}, {"33333333-3333-3333-3333-333333333333", "33333333-3333-3333-3333-333333333333"}, {"44444444-4444-4444-4444-444444444444", "33333333-3333-3333-3333-333333333333"}} {
+		resolved.Topology.VIPSecurityGroupIDs = ids
+		if err := BindGatewayTopology(config, &gatewayv1.Gateway{}, resolved); !errors.Is(err, cloud.ErrOwnershipConflict) {
+			t.Fatalf("invalid security IDs %v error=%v", ids, err)
+		}
+	}
+}

@@ -19,6 +19,7 @@ package httproute
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -157,13 +158,15 @@ func (r *Reconciler) buildRouteSpecWithReader(
 			ExternalNetworkID: topology.Topology.ExternalNetworkID,
 			ListenerPort:      int(gateway.Spec.Listeners[0].Port),
 			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
+			VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 		},
-		MemberSubnetID: topology.Topology.MemberSubnetID,
-		HealthMonitor:  topology.HealthMonitor,
-		Hostname:       hostname,
-		PathType:       pathType,
-		PathValue:      pathValue,
-		Members:        members,
+		MemberSubnetID:          topology.Topology.MemberSubnetID,
+		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
+		HealthMonitor:           topology.HealthMonitor,
+		Hostname:                hostname,
+		PathType:                pathType,
+		PathValue:               pathValue,
+		Members:                 members,
 	}, nil
 }
 

@@ -31,20 +31,24 @@ type ResourceReference struct {
 // TopologyRequest contains only existing infrastructure references.
 // Resolution never creates, adopts, or modifies the selected resources.
 type TopologyRequest struct {
-	VIPSubnet        ResourceReference
-	MemberSubnet     ResourceReference
-	ExternalNetwork  *ResourceReference
-	FlavorID         string
-	AvailabilityZone string
+	VIPSubnet             ResourceReference
+	MemberSubnet          ResourceReference
+	ExternalNetwork       *ResourceReference
+	FlavorID              string
+	AvailabilityZone      string
+	VIPSecurityGroups     []ResourceReference
+	BackendSecurityGroups []ResourceReference
 }
 
 // Topology is the validated infrastructure placement for a Gateway.
 type Topology struct {
-	VIPSubnetID       string `json:"vipSubnetID"`
-	MemberSubnetID    string `json:"memberSubnetID"`
-	ExternalNetworkID string `json:"externalNetworkID,omitempty"`
-	FlavorID          string `json:"flavorID,omitempty"`
-	AvailabilityZone  string `json:"availabilityZone,omitempty"`
+	VIPSubnetID             string   `json:"vipSubnetID"`
+	MemberSubnetID          string   `json:"memberSubnetID"`
+	ExternalNetworkID       string   `json:"externalNetworkID,omitempty"`
+	FlavorID                string   `json:"flavorID,omitempty"`
+	AvailabilityZone        string   `json:"availabilityZone,omitempty"`
+	VIPSecurityGroupIDs     []string `json:"vipSecurityGroupIDs,omitempty"`
+	BackendSecurityGroupIDs []string `json:"backendSecurityGroupIDs,omitempty"`
 }
 
 // TopologyResolver resolves project-visible references and verifies available

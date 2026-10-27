@@ -99,7 +99,11 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 			return invalid(fmt.Errorf("member address %q is not a valid IP address: %w", member.Address, err))
 		}
 		member.Address = address.String()
-		membersByKey[memberKey(member.Address, member.Port)] = member
+		key := memberKey(member.Address, member.Port)
+		if existing, duplicate := membersByKey[key]; duplicate && existing.ProviderID != member.ProviderID {
+			return invalid(errors.New("members with the same address and port must identify the same provider instance"))
+		}
+		membersByKey[key] = member
 	}
 	keys := make([]string, 0, len(membersByKey))
 	for key := range membersByKey {

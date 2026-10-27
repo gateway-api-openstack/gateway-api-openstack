@@ -343,6 +343,10 @@ func TestNodePredicate(t *testing.T) {
 	internalAddressChanged.Status.Addresses[0].Address = "10.0.0.11"
 	testPredicateUpdate(t, pred, base, internalAddressChanged, true, "selected address")
 
+	providerChanged := base.DeepCopy()
+	providerChanged.Spec.ProviderID = "openstack:///11111111-1111-1111-1111-111111111111"
+	testPredicateUpdate(t, pred, base, providerChanged, true, "provider ID")
+
 	messageChanged := base.DeepCopy()
 	messageChanged.Status.Conditions[0].Message = "heartbeat"
 	testPredicateUpdate(t, pred, base, messageChanged, false, "readiness message")

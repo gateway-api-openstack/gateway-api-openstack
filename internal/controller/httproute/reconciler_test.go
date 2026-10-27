@@ -19,6 +19,7 @@ package httproute
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,12 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 			LastTransitionTime: metav1.Now(),
 		}}},
 	}
+	topology := testBoundTopology()
+	topology.Topology.VIPSecurityGroupIDs = []string{"33333333-3333-3333-3333-333333333333"}
+	topology.Topology.BackendSecurityGroupIDs = []string{"44444444-4444-4444-4444-444444444444"}
+	if err := controller.BindGatewayTopology(cfg, gateway, topology); err != nil {
+		t.Fatal(err)
+	}
 	pathType := gatewayv1.PathMatchPathPrefix
 	pathValue := "/api"
 	backendPort := gatewayv1.PortNumber(8080)
@@ -165,6 +172,7 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	ready := true
 	slice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}}, Endpoints: []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.11"}}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
+	node.Spec.ProviderID = "openstack:///55555555-5555-5555-5555-555555555555"
 	client := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, gateway, route, service, slice, node).Build()
 	provider := &recordingProvider{}
 	reconciler := *newTestReconciler(Reconciler{Client: client, Coordinator: &graph.Coordinator{}, APIReader: client, Config: cfg}, provider)
@@ -192,10 +200,12 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	got := provider.routeSpecs[0]
 	wantGatewayRequirements := cloud.GatewayRequirements{
 		Provider: "amphora", VIPSubnetID: testVIPSubnetID,
-		ListenerPort: 80,
+		ListenerPort:        80,
+		VIPSecurityGroupIDs: topology.Topology.VIPSecurityGroupIDs,
 	}
-	if got.GatewayRequirements != wantGatewayRequirements || got.PathType != cloud.PathMatchPrefix || got.PathValue != "/api" ||
-		len(got.Members) != 1 || got.Members[0] != (cloud.Member{Address: "10.0.0.11", Port: 30080}) {
+	if !got.GatewayRequirements.Equal(wantGatewayRequirements) || got.PathType != cloud.PathMatchPrefix || got.PathValue != "/api" ||
+		!slices.Equal(got.BackendSecurityGroupIDs, topology.Topology.BackendSecurityGroupIDs) ||
+		len(got.Members) != 1 || got.Members[0] != (cloud.Member{Address: "10.0.0.11", Port: 30080, ProviderID: node.Spec.ProviderID}) {
 		t.Fatalf("route spec = %#v", got)
 	}
 	var reconciled gatewayv1.HTTPRoute

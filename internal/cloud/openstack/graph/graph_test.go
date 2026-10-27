@@ -27,8 +27,8 @@ import (
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 )
 
 func completeGraphSpec(identity Identity) cloud.GatewayGraphSpec {
@@ -210,7 +210,7 @@ func TestReconcileGatewayGraphPreservesFloatingIPQuotaClassification(t *testing.
 					items := []any{}
 					if mutation == http.MethodDelete {
 						items = append(items, map[string]any{
-							"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+							"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 							"floating_network_id": "external-network", "description": identity.GatewayDescription(roleFloatingIP),
 						})
 					}
@@ -316,7 +316,7 @@ func TestGatewayGraphPlanDetachesBeforeEnsuringAndRestoresParentsLast(t *testing
 		Routes:  []cloud.RouteGraphNode{{Disposition: cloud.GraphEnsure}, {Disposition: cloud.GraphDelete}},
 	}, routes: []desiredRoute{route, old}}
 	actual := observedGatewayGraph{
-		loadBalancer: &loadbalancers.LoadBalancer{}, listener: &listeners.Listener{},
+		loadBalancer: &octavia.LoadBalancer{}, listener: &listeners.Listener{},
 		routes: []observedRouteGraph{{}, actualRoute},
 	}
 	plan, _, err := provider.buildGatewayGraphPlan(desired, actual)

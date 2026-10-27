@@ -731,7 +731,7 @@ func testGatewayTopologySnapshot(t *testing.T, apiClient, cacheClient client.Cli
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != after {
+	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("topology changed from %#v to %#v", before, after)
 	}
 	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(current), current.ResourceVersion, false)

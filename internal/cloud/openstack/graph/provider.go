@@ -31,6 +31,7 @@ import (
 	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/neutron"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/topology"
 	"github.com/gophercloud/gophercloud/v2"
 )
 
@@ -74,6 +75,7 @@ type Provider struct {
 	projectID        string
 	neutron          *neutron.Service
 	octavia          *octavia.Service
+	topology         *topology.Resolver
 	operationTimeout time.Duration
 	pollInterval     time.Duration
 }
@@ -91,6 +93,7 @@ func NewProvider(clients ServiceClients, cfg ProviderConfig) *Provider {
 		projectID:        clients.ProjectID,
 		neutron:          neutron.NewService(clients.Network),
 		octavia:          octavia.NewService(clients.LoadBalancer),
+		topology:         topology.NewResolver(clients, cfg.OperationTimeout),
 		operationTimeout: cfg.OperationTimeout,
 		pollInterval:     cfg.PollInterval,
 	}

@@ -56,7 +56,7 @@ func readyBackendNodes(service *corev1.Service, slices []discoveryv1.EndpointSli
 
 func nodePortMembersForNodes(service *corev1.Service, nodePort int32, addressType corev1.NodeAddressType, localNodes map[string]struct{}, nodes []corev1.Node) ([]cloud.Member, error) {
 	members := make([]cloud.Member, 0, len(nodes))
-	seen := map[string]struct{}{}
+	providersByAddress := map[string]string{}
 	for index := range nodes {
 		node := &nodes[index]
 		if controller.NodePortNodeExcluded(node) || !readyNode(node) {
@@ -72,11 +72,14 @@ func nodePortMembersForNodes(service *corev1.Service, nodePort int32, addressTyp
 			continue
 		}
 		key := net.JoinHostPort(address, fmt.Sprintf("%d", nodePort))
-		if _, ok := seen[key]; ok {
+		if providerID, duplicate := providersByAddress[key]; duplicate {
+			if providerID != node.Spec.ProviderID {
+				return nil, newRouteBuildError(routeErrorPending, "backend Service %s has worker Nodes with conflicting provider IDs for the same selected address", service.Name)
+			}
 			continue
 		}
-		seen[key] = struct{}{}
-		members = append(members, cloud.Member{Address: address, Port: int(nodePort)})
+		providersByAddress[key] = node.Spec.ProviderID
+		members = append(members, cloud.Member{Address: address, Port: int(nodePort), ProviderID: node.Spec.ProviderID})
 	}
 	if len(members) == 0 {
 		return nil, newRouteBuildError(routeErrorPending, "backend Service %s has no eligible worker Nodes with a %s address", service.Name, addressType)

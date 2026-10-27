@@ -20,12 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 )
 
@@ -36,7 +37,7 @@ type desiredGatewayGraph struct {
 }
 
 type observedGatewayGraph struct {
-	loadBalancer *loadbalancers.LoadBalancer
+	loadBalancer *octavia.LoadBalancer
 	listener     *listeners.Listener
 	floatingIP   *floatingips.FloatingIP
 	routes       []observedRouteGraph
@@ -50,6 +51,7 @@ type graphMutationKind uint8
 const (
 	graphCreateLoadBalancer graphMutationKind = iota
 	graphCreateFloatingIP
+	graphAssociateFloatingIP
 	graphDeleteFloatingIP
 	graphCreateListener
 	graphRouteMutation
@@ -98,6 +100,17 @@ func (p *Provider) ReconcileGatewayGraph(ctx context.Context, spec cloud.Gateway
 		result = pendingGraphResult(desired, actual.outcome)
 		result.Gateway = observedGatewayResult(desired, actual, actual.outcome)
 		return result, nil
+	}
+	if spec.Gateway.Disposition == cloud.GraphEnsure {
+		routes := make([]cloud.RouteSpec, 0, len(desired.routes))
+		for index, route := range desired.routes {
+			if desired.spec.Routes[index].Disposition == cloud.GraphEnsure {
+				routes = append(routes, route.spec)
+			}
+		}
+		if err := p.topology.ValidateGatewaySecurity(ctx, desired.spec.Gateway.Spec, routes); err != nil {
+			return result, err
+		}
 	}
 	plan, result, err := p.buildGatewayGraphPlan(desired, actual)
 	if err != nil {
@@ -185,7 +198,7 @@ func (p *Provider) buildDesiredGatewayGraph(spec cloud.GatewayGraphSpec) (desire
 			if spec.Gateway.Disposition != cloud.GraphEnsure {
 				return invalid("an ensured HTTPRoute requires an ensured Gateway")
 			}
-			if spec.Gateway.Disposition == cloud.GraphEnsure && node.Spec.GatewayRequirements != gatewayRequirements(spec.Gateway.Spec) {
+			if !node.Spec.GatewayRequirements.Equal(gatewayRequirements(spec.Gateway.Spec)) {
 				return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute and Gateway infrastructure requirements differ", cloud.ErrOwnershipConflict)}
 			}
 			route, err = p.buildDesiredRoute(node.Spec)
@@ -208,7 +221,7 @@ func observedGatewayResult(desired desiredGatewayGraph, actual observedGatewayGr
 	}
 	if desired.spec.Gateway.Disposition == cloud.GraphEnsure {
 		networkID := desired.spec.Gateway.Spec.ExternalNetworkID
-		if networkID == "" && actual.floatingIP != nil || networkID != "" && (actual.floatingIP == nil || actual.floatingIP.FloatingNetworkID != networkID) {
+		if networkID == "" && actual.floatingIP != nil || networkID != "" && (actual.floatingIP == nil || actual.floatingIP.FloatingNetworkID != networkID || actual.floatingIP.PortID == "") {
 			return result
 		}
 		result.Outcome = cloud.ReadyOutcome()
@@ -227,7 +240,7 @@ func sameGatewayIdentity(a, b cloud.Identity) bool {
 
 func gatewayRequirements(spec cloud.GatewaySpec) cloud.GatewayRequirements {
 	return cloud.GatewayRequirements{Provider: spec.Provider, VIPSubnetID: spec.VIPSubnetID, ExternalNetworkID: spec.ExternalNetworkID,
-		FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone, ListenerPort: spec.ListenerPort}
+		FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone, ListenerPort: spec.ListenerPort, VIPSecurityGroupIDs: spec.VIPSecurityGroupIDs}
 }
 
 func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatewayGraph) (observedGatewayGraph, error) {
@@ -270,14 +283,11 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 			return actual, err
 		}
 	}
-	actual.floatingIP, err = p.findGatewayFloatingIP(ctx, desired.identity, lb.VipPortID)
+	actual.floatingIP, err = p.findGatewayFloatingIP(ctx, desired.identity, lb.VipPortID, lb.VipAddress)
 	if err != nil {
 		return actual, err
 	}
 	if actual.floatingIP != nil {
-		if actual.floatingIP.PortID == "" && desired.spec.Gateway.Disposition == cloud.GraphEnsure {
-			return actual, fmt.Errorf("%w: Gateway Floating IP is detached from its VIP port", cloud.ErrOwnershipConflict)
-		}
 		actual.state.FloatingIPID = actual.floatingIP.ID
 		if actual.floatingIP.PortID != "" {
 			actual.state.FloatingIPAddress = actual.floatingIP.FloatingIP
@@ -302,6 +312,9 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 		if desired.spec.Gateway.Disposition == cloud.GraphEnsure && actual.listener.ProtocolPort != desired.spec.Gateway.Spec.ListenerPort {
 			return actual, fmt.Errorf("%w: Gateway listener port differs from its binding", cloud.ErrOwnershipConflict)
 		}
+		if len(lb.VIPSecurityGroupIDs) > 0 && len(actual.listener.AllowedCIDRs) > 0 {
+			return actual, fmt.Errorf("%w: custom VIP security groups cannot be combined with listener allowed CIDRs", cloud.ErrOwnershipConflict)
+		}
 	}
 	// Octavia's parent provisioning status also covers route mutations. Observe
 	// the immutable Gateway component without changing it so member progress does
@@ -321,7 +334,7 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 // declaring a deleted graph absent or creating a replacement load balancer.
 func (p *Provider) observeAbsentGateway(ctx context.Context, desired desiredGatewayGraph) (observedGatewayGraph, error) {
 	actual := observedGatewayGraph{outcome: cloud.ReadyOutcome()}
-	floatingIP, err := p.findGatewayFloatingIP(ctx, desired.identity, "")
+	floatingIP, err := p.findGatewayFloatingIP(ctx, desired.identity, "", "")
 	if err != nil {
 		return actual, err
 	}
@@ -336,11 +349,16 @@ func (p *Provider) observeAbsentGateway(ctx context.Context, desired desiredGate
 	return actual, nil
 }
 
-func validateGraphLoadBalancer(lb *loadbalancers.LoadBalancer, requirements cloud.GatewayRequirements) error {
+func validateGraphLoadBalancer(lb *octavia.LoadBalancer, requirements cloud.GatewayRequirements) error {
 	if lb.Provider != requirements.Provider || lb.VipSubnetID != requirements.VIPSubnetID ||
 		requirements.FlavorID != "" && lb.FlavorID != requirements.FlavorID ||
 		requirements.AvailabilityZone != "" && lb.AvailabilityZone != requirements.AvailabilityZone {
 		return fmt.Errorf("%w: load balancer %s differs from the bound topology", cloud.ErrOwnershipConflict, lb.ID)
+	}
+	groups := slices.Clone(lb.VIPSecurityGroupIDs)
+	slices.Sort(groups)
+	if !slices.Equal(groups, requirements.VIPSecurityGroupIDs) {
+		return fmt.Errorf("%w: load balancer VIP security groups differ from the bound topology", cloud.ErrOwnershipConflict)
 	}
 	return nil
 }

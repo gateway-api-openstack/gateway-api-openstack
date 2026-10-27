@@ -114,6 +114,12 @@ func (*recordingProvider) ResolveTopology(_ context.Context, request cloud.Topol
 	if request.ExternalNetwork != nil {
 		topology.ExternalNetworkID = request.ExternalNetwork.ID
 	}
+	for _, reference := range request.VIPSecurityGroups {
+		topology.VIPSecurityGroupIDs = append(topology.VIPSecurityGroupIDs, reference.ID)
+	}
+	for _, reference := range request.BackendSecurityGroups {
+		topology.BackendSecurityGroupIDs = append(topology.BackendSecurityGroupIDs, reference.ID)
+	}
 	return topology, nil
 }
 

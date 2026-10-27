@@ -81,7 +81,7 @@ type Scanner struct {
 }
 
 type octaviaReader interface {
-	ListLoadBalancers(context.Context, loadbalancers.ListOpts) ([]loadbalancers.LoadBalancer, error)
+	ListLoadBalancers(context.Context, loadbalancers.ListOpts) ([]octavia.LoadBalancer, error)
 	ListListeners(context.Context, listeners.ListOpts) ([]listeners.Listener, error)
 	ListPools(context.Context, pools.ListOpts) ([]pools.Pool, error)
 	ListMembers(context.Context, string, pools.ListMembersOpts) ([]pools.Member, error)

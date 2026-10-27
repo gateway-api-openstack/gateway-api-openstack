@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
@@ -75,7 +76,7 @@ func benchmarkGatewayGraph(b *testing.B, count int) (*Provider, cloud.GatewayGra
 		route.members = append(route.members, pools.Member{ID: fmt.Sprintf("member-%d", index), Address: address, ProtocolPort: 30080, SubnetID: "member-subnet", AdminStateUp: true})
 	}
 	actual := observedGatewayGraph{
-		loadBalancer: &loadbalancers.LoadBalancer{ID: "load-balancer-1", Provider: "amphora", VipSubnetID: "vip-subnet", AdminStateUp: true},
+		loadBalancer: &octavia.LoadBalancer{LoadBalancer: loadbalancers.LoadBalancer{ID: "load-balancer-1", Provider: "amphora", VipSubnetID: "vip-subnet", AdminStateUp: true}},
 		listener:     &listeners.Listener{ID: "listener-1", ProtocolPort: 80, AdminStateUp: true},
 		state:        spec.Routes[0].Spec.Gateway, routes: []observedRouteGraph{route},
 	}

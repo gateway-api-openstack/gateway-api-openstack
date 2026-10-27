@@ -27,9 +27,8 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 )
 
-// GetGateway discovers a complete, controller-owned Gateway without creating
-// or mutating OpenStack resources. HTTPRoute reconciliation uses this method so
-// it cannot race the Gateway reconciler and create a duplicate load balancer.
+// GetGateway discovers the controller-owned Gateway infrastructure for read-only
+// verification. It does not validate route resources or authorize a mutation.
 func (p *Provider) GetGateway(
 	ctx context.Context,
 	resourceIdentity cloud.Identity,
@@ -96,15 +95,15 @@ func (p *Provider) GetGateway(
 		VIPAddress:     loadBalancer.VipAddress,
 		ListenerID:     listener.ID,
 	}
-	floatingIP, err := p.findGatewayFloatingIP(ctx, identity, loadBalancer.VipPortID)
+	floatingIP, err := p.findGatewayFloatingIP(ctx, identity, loadBalancer.VipPortID, loadBalancer.VipAddress)
 	if err != nil {
 		return cloud.GatewayResult{}, false, err
 	}
 	if floatingIP != nil {
-		if floatingIP.PortID == "" {
-			return cloud.GatewayResult{}, false, fmt.Errorf("%w: Gateway Floating IP is detached from its VIP port", cloud.ErrOwnershipConflict)
-		}
 		state.FloatingIPID = floatingIP.ID
+		if floatingIP.PortID == "" {
+			return cloud.GatewayResult{State: state, Outcome: p.progressingOutcome("Waiting for Floating IP association")}, true, nil
+		}
 		state.FloatingIPAddress = floatingIP.FloatingIP
 	}
 	return cloud.GatewayReadyResult(state), true, nil
@@ -144,7 +143,7 @@ func (p *Provider) findManagedGatewayListener(
 	return owned, nil
 }
 
-func (p *Provider) findGatewayFloatingIP(ctx context.Context, identity Identity, vipPortID string) (*floatingips.FloatingIP, error) {
+func (p *Provider) findGatewayFloatingIP(ctx context.Context, identity Identity, vipPortID, vipAddress string) (*floatingips.FloatingIP, error) {
 	// Neutron offers no description-prefix filter. An exact filter would miss
 	// resources carrying a previous release version in the trace suffix.
 	// Filtering by VIP port would also hide a detached owned address and could
@@ -169,7 +168,8 @@ func (p *Provider) findGatewayFloatingIP(ctx context.Context, identity Identity,
 		if item.ID == "" || item.TenantID != "" && item.TenantID != p.projectID {
 			return nil, fmt.Errorf("%w: Gateway Floating IP has incomplete or inconsistent identity", cloud.ErrOwnershipConflict)
 		}
-		if item.PortID != "" && item.PortID != vipPortID || item.PortID == "" && (item.FixedIP != "" || item.RouterID != "") {
+		if item.PortID != "" && (item.PortID != vipPortID || vipAddress == "" || item.FixedIP != vipAddress) ||
+			item.PortID == "" && (item.FixedIP != "" || item.RouterID != "") {
 			return nil, fmt.Errorf("%w: Gateway Floating IP has an unexpected association", cloud.ErrOwnershipConflict)
 		}
 		if owned != nil {

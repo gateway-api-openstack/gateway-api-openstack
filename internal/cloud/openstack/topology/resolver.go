@@ -109,6 +109,14 @@ func (r *Resolver) ResolveTopology(ctx context.Context, request cloud.TopologyRe
 		}
 		result.ExternalNetworkID = networkID
 	}
+	result.VIPSecurityGroupIDs, err = r.resolveSecurityGroups(ctx, request.VIPSecurityGroups)
+	if err != nil {
+		return cloud.Topology{}, fmt.Errorf("resolve frontend security groups: %w", err)
+	}
+	result.BackendSecurityGroupIDs, err = r.resolveSecurityGroups(ctx, request.BackendSecurityGroups)
+	if err != nil {
+		return cloud.Topology{}, fmt.Errorf("resolve backend security groups: %w", err)
+	}
 	return result, nil
 }
 
@@ -121,6 +129,16 @@ func validateRequest(request cloud.TopologyRequest) error {
 	if request.ExternalNetwork != nil {
 		if err := validateReference(*request.ExternalNetwork); err != nil {
 			return err
+		}
+	}
+	for _, references := range [][]cloud.ResourceReference{request.VIPSecurityGroups, request.BackendSecurityGroups} {
+		if len(references) > 16 {
+			return invalid("security configuration allows at most 16 group references")
+		}
+		for _, reference := range references {
+			if err := validateReference(reference); err != nil {
+				return err
+			}
 		}
 	}
 	if strings.ContainsAny(request.FlavorID, "/?#") || strings.TrimSpace(request.FlavorID) != request.FlavorID {
