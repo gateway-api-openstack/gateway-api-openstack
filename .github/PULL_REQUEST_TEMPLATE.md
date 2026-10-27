@@ -11,7 +11,7 @@
 <!-- Summarize commands, scope, results, cleanup, and material limitations.
      Link CI when available, or identify the checks as a local manual run.
      Keep raw output, internal cloud details, and local image digests out of the PR.
-     See docs/reports/README.md. -->
+     See CONTRIBUTING.md#test-evidence-and-publication. -->
 
 ## API, ownership, and conformance impact
 

@@ -75,7 +75,7 @@ The source archive and every binary archive must be covered by `checksums.txt`.
 Rendering checks the packaged Kustomize paths without contacting a cluster.
 Installation still requires operator credentials, approved infrastructure, and an image built from the release revision.
 
-Support claims require validation of the proposed release revision under the [test evidence policy](reports/README.md).
+Support claims require validation of the proposed release revision under the [test evidence policy](../CONTRIBUTING.md#test-evidence-and-publication).
 Local packaging checks do not establish OpenStack compatibility or Gateway API conformance.
 
 ## Prepare a release

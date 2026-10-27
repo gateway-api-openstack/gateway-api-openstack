@@ -5,7 +5,7 @@ The checks use a real Kubernetes API server and an OpenStack Amphora data plane.
 They do not run the Gateway API conformance suite and they do not establish general OpenStack compatibility.
 See [compatibility evidence](providers/compatibility.md) for recorded coverage and its limits.
 
-Follow the [test evidence policy](reports/README.md) when retaining artifacts and summarizing results in a PR.
+Follow the [test evidence policy](../CONTRIBUTING.md#test-evidence-and-publication) when retaining artifacts and summarizing results in a PR.
 
 ## Before you start
 
@@ -354,17 +354,33 @@ Unit, adapter, or envtest coverage does not turn an OpenStack E2E row into a pas
 The ownership audit is required in both project modes.
 It observes resources in the exact controller name and cluster ID scope before, during, and after the scenario.
 It does not establish project-wide cleanup or authorize deletion.
-See the [ownership audit contract](design/ownership-audit.md) for its discovery limits.
+See the [ownership audit contract](design/architecture.md#ownership-audit) for its discovery limits.
 
 The runner writes `report.json` and `report.md` in a new artifact directory.
 They record the tested artifact, configuration summary, check results, and aggregate audit and metrics evidence without cloud resource IDs or backend selector values.
 Failures retain a fixed classification and the failed check, while raw API and audit errors remain excluded from the report.
-Review them under the [publication policy](reports/README.md) before sharing.
+Review them under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication) before sharing.
 
 The overall result is `Passed` only when every foundation check and selected lifecycle check passes, including active ownership evidence, finalization, and the post-test empty audit.
 A failed assertion is `Failed`.
 An optional check outside the run is `Skipped`.
 A scenario that was not attempted or did not reach its assertion remains `Not run`.
+
+## Summarize a run
+
+Ordinary development runs need a PR testing summary, not a committed report.
+Include these fields under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication):
+
+- Tested revision, including local changes.
+- Command and selected scenarios.
+- Relevant environment: Amphora, shared or dedicated project, Kubernetes and Gateway API versions, traffic policy, and VIP or Floating IP path.
+- Results and the behavior actually exercised.
+- Cleanup outcome from finalization, the scoped audit, and independent inventory comparison, with any attribution limits.
+- Unresolved failures and relevant coverage that did not run.
+- A public CI link, or a statement that details of the local run are retained privately.
+
+Include the date when comparing manual runs.
+Add service versions, CNI, proxy behavior, or topology only when they explain the result.
 
 ## Failure and cleanup
 

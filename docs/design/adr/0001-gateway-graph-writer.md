@@ -204,5 +204,5 @@ Race tests and envtest exercise the Kubernetes lifecycle and serialization bound
 
 The previous baseline OpenStack E2E run predates this writer.
 Local tests and ADR acceptance do not establish compatibility or Gateway API conformance.
-The implemented writer still needs fresh live OpenStack evidence and the planned conformance gap analysis under the [test evidence policy](../../reports/README.md).
+The implemented writer still needs fresh live OpenStack evidence and the planned conformance gap analysis under the [test evidence policy](../../../CONTRIBUTING.md#test-evidence-and-publication).
 Public image publication and scheduled live validation remain release work described in the [roadmap](../../../ROADMAP.md).
