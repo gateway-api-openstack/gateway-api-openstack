@@ -82,13 +82,49 @@ Fill in the pull request template and include:
 - API, ownership, compatibility, and conformance impact
 
 All required CI checks must pass.
-Follow the [publication policy](docs/reports/README.md) to separate reusable tests and PR summaries from local configuration, temporary diagnostics, and detailed run output.
+Follow the [test evidence policy](#test-evidence-and-publication) when summarizing validation.
 
 Reviewers check correctness and test coverage.
 Approvers check the wider API, ownership, compatibility, and project direction.
 The root `OWNERS` file is the current source for those roles.
 Until the project has more than one approver, independent maintainer approval is not always possible.
 Record that limitation openly rather than adding inactive names.
+
+## Test evidence and publication
+
+Commit reusable tests, synthetic fixtures, and execution instructions that protect a continuing contract.
+Keep temporary diagnostics, environment setup scripts, and timing experiments local unless they produce a reusable regression test or fix.
+Judge a test by the behavior it protects, not the development phase that introduced it.
+
+| Material | Location |
+| --- | --- |
+| Validation for an ordinary change | PR testing section with the commands, tested revision, results, cleanup, and unresolved failures. |
+| Generated reports, logs, metrics, and resource snapshots | Ignored local storage or reviewed CI artifacts. Publish only the excerpt needed to explain the result. |
+| Internal cloud and cluster names, private endpoints and IDs, populated configuration, and local image references | Private run records. |
+| Credentials, tokens, kubeconfig, certificates, and credential-bearing output | Protected storage outside the report bundle. Never publish them. |
+| Release compatibility and conformance claims | Reviewed public evidence with relevant versions, topology, an immutable public artifact identity, results, limitations, and durable links. |
+
+For local tests, commands and results are enough.
+Use the [OpenStack validation summary](docs/testing-openstack-e2e.md#summarize-a-run) for cloud runs and the [conformance gap guidance](docs/testing-conformance.md#record-conformance-gaps) for upstream diagnostics.
+Identify uncommitted changes so a result is not attributed to an untested PR revision.
+Include an earlier unresolved failure even when a later retry passed.
+Link public CI when available, or state that the run was local and detailed evidence is retained privately.
+Do not link private filesystem paths in public reviews.
+
+Use `.local/` for private tools and notes that must survive `make clean`, and `_artifacts/` or `test-results/` for disposable output.
+Git ignore rules do not restrict file access.
+Retain evidence through review and any related investigation.
+Pin test images by digest, but include the digest publicly only when the image is accessible and its identity matters to the claim or defect.
+
+For shared OpenStack projects, compare independent inventories before and after a run before claiming cleanup is complete.
+Summarize the outcome and attribution limits without publishing tenant inventories or other users' resource counts.
+CI artifacts may be public and may expire, so review their contents and access settings before uploading.
+Preserve release evidence while the project relies on the claim it supports.
+The [release guide](docs/releasing.md) defines the publication workflow.
+
+These practices follow the separation of PR summaries and test artifacts used by [Cluster API](https://github.com/kubernetes-sigs/cluster-api/blob/main/CONTRIBUTING.md#triaging-pr-or-periodic-test-failures), [CAPO](https://cluster-api-openstack.sigs.k8s.io/development/ci#prow), and [cloud-provider-openstack](https://github.com/kubernetes/cloud-provider-openstack/blob/master/tests/ci-occm-e2e.sh).
+The restrictions on internal cloud names and local image references are this project's policy.
+[Prow's artifact guidance](https://docs.prow.k8s.io/docs/components/pod-utilities/) explains the exposure of public logs and uploaded files.
 
 ## Documentation
 

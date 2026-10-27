@@ -68,7 +68,7 @@ The cloud graph contains the Gateway's load balancer, listener, optional Floatin
 A resource that stops selecting this controller remains its cleanup responsibility when a durable finalizer or binding records prior ownership.
 That responsibility permits cleanup of the recorded graph, not provisioning for the new controller.
 
-Reading a Service, EndpointSlice, Node, class parameter, or OpenStack network does not confer ownership.
+Reading a Service, EndpointSlice, Node, class parameter, OpenStack network, security group, or worker port does not confer ownership.
 The controller does not create tenant networks, subnets, routers, or routes as a side effect of a Gateway.
 Secrets, ReferenceGrants, security group policies, and Barbican resources enter the graph only when their future feature contracts are implemented.
 
@@ -96,8 +96,8 @@ Ownership of a security group alone is insufficient authority to change a port.
 | NodePort backend | Members on eligible worker Node addresses | Pod IP and ClusterIP backends are unsupported. |
 | Class health settings | HTTP health monitor for the route pool | Backend-specific policy is deferred. |
 | TLS Secret | Future Barbican secret or container | Requires certificate identity, rotation, and deletion design. |
-| Frontend security | Octavia-managed security | Referenced VIP security groups are deferred. |
-| Backend security | Connectivity managed by the operator | The controller does not modify worker ports or security groups. |
+| Frontend security | Octavia-managed or referenced VIP security groups | Referenced groups require API 2.29 and validated ingress prerequisites. Their rules remain operator-owned. |
+| Backend security | Unmanaged or referenced existing groups | Referenced mode validates worker ports and rule prerequisites without modifying them. |
 
 A pool and its children include the exact HTTPRoute identity.
 Reusing a Service read within one reconciliation does not share its pool across routes.
@@ -204,8 +204,10 @@ External drift is observed through a slow resync with stable UID-based jitter, w
 
 The graph writer measures lock wait, Gateway input, route input, validation, and provider stages with bounded labels.
 OpenStack client metrics record request outcomes and latency.
+`gateway_api_openstack_openstack_request_starts_total` counts requests admitted by the shared limiter, using only service and method labels.
+Completion counters remain separate because in-flight requests can finish in a later measurement window.
 The provider stage includes waits within one call and does not measure full asynchronous convergence or traffic recovery.
-Use the [measurement guide](../development-priorities.md#measure-before-increasing-concurrency) before increasing worker concurrency.
+Use the [measurement guide](../development-layout.md#measure-reconciliation-changes) before increasing worker concurrency.
 
 ## Controller responsibilities
 
@@ -221,12 +223,7 @@ The writer reuses those resource packages through small source interfaces and ow
 ## Backend connectivity
 
 NodePort is the only implemented member mode.
-The controller uses the class-selected Node address type and a user-provided NodePort Service.
-It checks readiness, schedulability, address family, Service ports, and EndpointSlice state.
-
-Control plane Nodes are excluded.
-`externalTrafficPolicy: Cluster` can use every eligible worker, while `Local` requires a ready endpoint on that worker.
-The [class configuration reference](../reference/class-configuration.md#worker-nodeport-members) defines the full eligibility and exclusion-label rules.
+The [class configuration reference](../reference/class-configuration.md#worker-nodeport-members) defines worker, Service port, EndpointSlice, and address-family eligibility for Cluster and Local traffic policies.
 The controller does not alter Node labels or create helper Services.
 
 The operator must provide routing and security rules that let Amphora reach NodePorts.
@@ -236,25 +233,16 @@ Pod IP mode remains deferred until direct reachability, CNI behavior, endpoint c
 
 ## Class configuration and frozen topology
 
-[ADR 0002](adr/0002-class-configuration.md) and the [class configuration reference](../reference/class-configuration.md) define OpenStackGatewayClassConfig.
-Its cluster-scoped `v1alpha1` API supplies VIP and member subnet references, Floating IP policy, optional Amphora flavor and availability zone, Node address type, and health monitor settings.
-The GatewayClass parameter reference has no namespace.
-Credentials, cloud, region, authenticated project, cluster identity, and controller identity remain deployment settings.
+[ADR 0002](adr/0002-class-configuration.md) defines the class API and frozen binding contract.
+The [class configuration reference](../reference/class-configuration.md) documents fields, selectors, capabilities, and worker eligibility.
+Credentials, cloud, region, authenticated project, and controller and cluster identity remain deployment settings.
 
-A reference selects an ID, exact name, or all specified tags and must resolve to exactly one permitted resource.
-VIP and member subnets must belong to the authenticated project.
-An allocated Floating IP requires a visible, enabled external network, which can belong to the cloud operator.
-The controller checks requested capabilities against visible API and topology evidence and rejects unknown support.
-These reads do not modify networks or security groups.
-
-Before the first cloud create, the Gateway binding records the resolved configuration, parameter identity and generation, and an integrity finalizer.
-Existing Gateways use that snapshot even when class parameters change or disappear.
-The complete topology is required for bound Gateway lifecycle work.
-A replacement cloud graph for the same Gateway UID retains it, including health settings and Node addressing.
+Before creating cloud resources, the Gateway binding durably records the resolved topology and parameter identity and generation.
+Existing Gateways retain that snapshot when the class changes or disappears, including during listener replacement or invalid-spec cleanup.
+Only complete deletion or controller handoff releases it.
 A new Gateway can use the updated template.
 
-Requested Gateway addresses, `Gateway.spec.infrastructure.parametersRef`, security policy modes, and per-backend health policies remain unsupported.
-Future per-Gateway or Direct Policy Attachment APIs need their own scope, precedence, and merge decisions.
+Per-Gateway infrastructure settings, managed backend security, and per-backend policies need separate scope, precedence, and ownership decisions.
 
 ## HTTP and HTTPS boundaries
 
@@ -264,7 +252,7 @@ PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so th
 
 The [conformance guide](../testing-conformance.md) records current Core gaps.
 The [feasibility assessment](conformance-feasibility.md) identifies Octavia API blockers and designs needed for the broader compiler.
-Those designs require accepted decisions before changing ownership or resource mapping.
+The proposed [Core mapping ADR](adr/0005-core-resource-mapping.md) keeps those decisions separate from the implemented graph.
 
 Terminated HTTPS requires a Barbican identity and certificate lifecycle design, including rotation, rollback, SNI, and safe deletion.
 Cross-namespace Service or Secret references also require ReferenceGrant implementation.
@@ -281,23 +269,57 @@ A collision or incomplete identity stops mutation rather than triggering adoptio
 After an asynchronous transition, timeout, or lost response, recovery observes cloud identity again.
 
 Floating IP discovery searches the authenticated project by complete Gateway identity, including when the load balancer is absent or the address is detached.
-If an owned Floating IP is detached or remains after its load balancer disappears, normal provisioning stops without allocating a duplicate address or reconnecting the existing one.
+When its validated load balancer exists, the controller restores a detached owned address with a revision-conditional update to the exact VIP port and fixed IP.
+Both allocation and reassociation wait for unresolved route fragments before restoring external access.
+If the load balancer is absent, provisioning stops without allocating a duplicate address.
+[ADR 0004](adr/0004-network-access-and-recovery.md) defines this recovery boundary.
 Whole-Gateway deletion can clean up a uniquely owned, fully detached address after validating any remaining load balancer graph.
 Duplicate candidates, inconsistent project identity, unexpected associations, and foreign addresses on the VIP port are ownership conflicts.
 Route-only cleanup preserves the Gateway's Floating IP, and another user's address is never a cleanup target.
 
-The [ownership audit](ownership-audit.md) remains advisory and read-only.
-A report never authorizes mutation, adoption, or finalizer removal.
-The [operator recovery guide](../operator-recovery.md) describes investigation of blocked cleanup.
+### Ownership audit
+
+The experimental `openstack-gateway-audit` command compares durable Kubernetes bindings with resources discovered in the authenticated project.
+Its proposed command and report contract still require an accepted ADR before being treated as stable.
+The [operator recovery guide](../operator-recovery.md#run-the-ownership-audit) documents invocation, findings, and recovery steps.
+
+The Kubernetes collector includes Gateways and HTTPRoutes with this controller's binding or finalizer, including deleting objects and cleanup after controller handoff.
+Missing, incomplete, or conflicting bindings are reported as Kubernetes issues rather than ownership evidence.
+Objects with neither a binding nor this controller's finalizer are ignored.
+The scanner scopes OpenStack discovery by project, cluster, and controller identity, follows descendants only through verified parents, and reads every page before producing a report.
+A required Kubernetes or OpenStack read failure stops the command without a partial report.
+
+The experimental `formatVersion: v1alpha1` is independent of the Kubernetes API version.
+The report contains generation and tool metadata, controller and cluster identity, binding and finding counts, object references, resource and parent IDs, and fixed advisories.
+It excludes the project ID, complete ownership tuples, raw tags, descriptions, addresses, credentials, API response bodies, and provider error details.
+The remaining identifiers still require private storage and review before publication.
+
+The audit never authorizes mutation, adoption, or finalizer removal.
+Kubernetes and OpenStack reads are not one transaction, so findings can change during collection.
+A complete assessment means the observed bindings were valid, not that the desired graph is complete or safe to delete.
+Missing bindings can make an apparent orphan unsafe to classify.
+
+#### Discovery limits
+
+The audit cannot find resources after all controller scope metadata is removed.
+Members and L7 rules require a trusted ancestor, and an unmatched detached Floating IP cannot be attributed from its description digest alone.
+An empty scoped report therefore does not prove project-wide cleanup, isolation, quota availability, or who changed another resource.
+The [E2E guide](../testing-openstack-e2e.md#audit-and-evidence-limits) requires independent inventory comparison where appropriate.
+
+Before stabilization, an ADR must define the command and format compatibility policy, support window, and whether machine consumers are in scope.
+Any future cleanup command needs a separate design and fresh ownership validation at mutation time.
+It cannot use a saved report as authority.
+
 
 ## Security and releases
 
 Use Keystone application credentials and Kubernetes RBAC with only the permissions needed by enabled behavior.
 Credentials remain in standard authentication inputs or Secrets and never enter topology bindings, Events, status, or public fixtures.
-Worker-port mutation and Barbican access remain separate future privileges.
+Worker-port mutation and Barbican certificate writes remain separate future privileges.
+The optional diagnostic command can list Barbican metadata but never reads secret payloads.
 
 The [compatibility record](../providers/compatibility.md) describes the current validation scope.
-Release evidence and artifact requirements follow the [release workflow](../releasing.md) and [test evidence policy](../reports/README.md).
+Release evidence and artifact requirements follow the [release workflow](../releasing.md) and [test evidence policy](../../CONTRIBUTING.md#test-evidence-and-publication).
 
 Control-plane metrics describe reconciliation and API requests.
 Traffic and Amphora health come from Octavia or the data plane and must be identified separately in dashboards.
@@ -321,7 +343,7 @@ The following boundaries remain open:
 
 - public artifact registry, promotion, signing, and any future identity migration
 - per-Gateway infrastructure parameters and merge semantics
-- referenced frontend security and managed changes to worker security groups
+- managed changes to worker security groups
 - shared resource identity, reference counting, and uninstall behavior
 - listener grouping, multiple routes, and global precedence
 - weighted and invalid backend behavior

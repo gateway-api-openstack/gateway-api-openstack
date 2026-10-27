@@ -239,3 +239,19 @@ The [compatibility record](providers/compatibility.md#evidence-matrix) describes
 `test/e2e/` contains the opt-in [OpenStack E2E runner](testing-openstack-e2e.md).
 Ordinary verification does not enable live execution.
 The [conformance guide](testing-conformance.md) describes the planned full-profile suite and its prerequisites.
+
+## Measure reconciliation changes
+
+Run the local benchmarks without cluster or cloud credentials:
+
+```sh
+go test -run '^$' -bench BenchmarkNodePortModel -benchmem ./internal/controller/httproute
+go test -run '^$' -bench 'Benchmark(Node|EndpointSlice)EventFanout' -benchmem ./internal/controller/httproute
+go test -run '^$' -bench BenchmarkWriterCoordination -benchmem ./internal/controller/graph
+go test -run '^$' -bench BenchmarkGatewayGraphCalculation -benchmem ./internal/cloud/openstack/graph
+```
+
+Compare results on the same machine and toolchain.
+These benchmarks measure model calculation, read budgets, and queue coordination, not cloud capacity or end-to-end latency.
+Measure rate limiter wait, Octavia pending duration, and total convergence separately before increasing concurrency.
+The [architecture](design/architecture.md#kubernetes-events-and-measurements) describes the metric boundaries.

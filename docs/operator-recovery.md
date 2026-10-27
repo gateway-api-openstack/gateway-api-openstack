@@ -134,5 +134,5 @@ A saved audit report is not sufficient.
 
 ## Discovery limits
 
-Review the audit's [discovery limits](design/ownership-audit.md#known-limits) before interpreting an empty report.
+Review the audit's [discovery limits](design/architecture.md#discovery-limits) before interpreting an empty report.
 Keep recovery scoped to resources whose ownership can be proved, and never use the report for broad project cleanup.

@@ -6,7 +6,7 @@ The target is an OpenStack implementation listed upstream as Conformant for GATE
 Phase 5 requires the pinned profile's complete Core suite and every declared Extended feature to pass.
 Partial results document progress but do not satisfy that milestone.
 
-The Phase 3 implementation is complete, with broader validation and release work remaining.
+Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
 The project remains pre-alpha.
 The [compatibility record](docs/providers/compatibility.md) describes the evidence available for the current implementation.
 
@@ -30,20 +30,19 @@ The [architecture](docs/design/architecture.md) defines the ownership and reconc
 | 1: HTTP slice | Implemented and development-tested | One Gateway, listener, route, and NodePort backend | Published evidence is required for release compatibility claims |
 | 2: Reconciliation | Development milestone complete | Reliability foundations for the HTTP and NodePort path | Baseline OpenStack E2E passed, with remaining work carried into Phase 3 |
 | 3: Class API | Implemented, with validation remaining | Typed topology configuration, one graph writer, and worker members | Broader live coverage and artifacts for outside testing |
-| 4: Connectivity and Core design | Planned, with API blockers | Safe connectivity and validated Core mappings | Accepted designs, resolved Core API blockers, and scoped OpenStack evidence |
+| 4: Connectivity and Core design | Connectivity implemented, Core blocked | Safe connectivity and validated Core mappings | Accepted designs, resolved Core API blockers, and scoped OpenStack evidence |
 | 5: HTTP/HTTPS conformance | Planned, depends on Phase 4 | Complete GATEWAY-HTTP Core implementation | All Core and declared Extended tests pass, with safe resource lifecycle |
 | 6: Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible successful conformance report |
 | 7: Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, upstream Conformant listing, and release evidence |
 
 Version milestones below are planning targets, not published releases.
-The [development priorities](docs/development-priorities.md) identify the next actions.
 Community maturity, independent review, and maintainers from more than one organization are separate release requirements.
 A Kubernetes SIG or OpenInfra home is a later community decision, not an engineering milestone.
 
 ## Evidence and compatibility rules
 
 Compatibility applies to a particular release and environment.
-Use the [compatibility record](docs/providers/compatibility.md) for environment requirements and the [test evidence policy](docs/reports/README.md) for publication rules.
+Use the [compatibility record](docs/providers/compatibility.md) for environment requirements and the [test evidence policy](CONTRIBUTING.md#test-evidence-and-publication) for publication rules.
 Keep exact build details, raw logs, and private environment configuration local during development.
 
 `Probed` means an API primitive worked in one environment.
@@ -145,11 +144,14 @@ The remaining work is:
 
 ## Phase 4 - Core design, network, address, and security automation
 
-**Status:** Planned, with Core API blockers identified in Octavia 19.0.0.
+**Status:** Base connectivity implementation complete.
+Local regression coverage and E2E preparation are in place.
+Unaccepted Core mappings, upstream API blockers, and live evidence prevent phase completion.
 
 **Milestone:** `v0.4.0`
 
 Phase 4 validates the designs needed for full GATEWAY-HTTP Core support and reduces manual network configuration without taking ownership of the cluster's network topology.
+[ADR 0004](docs/design/adr/0004-network-access-and-recovery.md) defines the implemented security modes, address recovery, and read-only diagnostics.
 The initial target is Gateway API v1.6.1 Standard Channel.
 Reassess the requirements when changing the pinned Gateway API version.
 
@@ -158,7 +160,12 @@ Reassess the requirements when changing the pinned Gateway API version.
 The [feasibility assessment](docs/design/conformance-feasibility.md) records the Octavia API blockers and proof cases.
 The reviewed API lacks arbitrary request header modification, the required HTTP 404 and 500 responses, and redirects that retain an arbitrary request hostname.
 Resolve these gaps through reviewed Octavia API and Amphora changes, then record the released version and capability checks required by the controller.
-Independent connectivity work can proceed while those blockers remain, but Phase 4 cannot close.
+The HTTPRoute compiler has explicit unsupported functions and upstream TODOs for those missing primitives.
+Tests verify that these paths create neither bindings nor cloud resources.
+They do not count as Core implementations, and Phase 4 cannot close while the blockers remain.
+
+[ADR 0005](docs/design/adr/0005-core-resource-mapping.md) records the proposed mappings and their acceptance gates.
+The [conformance guide](docs/testing-conformance.md#prepare-the-suite) explains the pinned Core inventory and local verification.
 
 Before implementing the corresponding Phase 5 features, accept designs for:
 
@@ -172,71 +179,25 @@ Member mode, resource mapping, capability requirements, and certificate ownershi
 A proxy, synthetic error backend, or direct Amphora configuration change would require a separate product decision.
 Live proofs require an approved resource scope and cleanup evidence.
 
-### Floating IP lifecycle
+### Connectivity implementation and validation
 
-Phase 3 implements class modes `None` and `Allocate`, external network resolution, and cleanup of a proven detached Floating IP after its load balancer disappears.
-It also detects detachment while the load balancer exists and stops provisioning to prevent duplicate allocation.
-Phase 4 completes the remaining connectivity and recovery behavior:
+The implemented behavior follows [ADR 0004](docs/design/adr/0004-network-access-and-recovery.md):
 
-- Recover an owned Floating IP that becomes detached while its load balancer still exists.
-- Validate external deletion, quota failure, and address recovery with live traffic tests.
-- Report failures in the VIP or Floating IP network path with useful diagnostics.
-- Preserve the rule that existing addresses are never adopted and foreign addresses on a VIP port cause an ownership conflict.
+- Allocate and recover owned Floating IPs with revision-conditional reassociation and complete graph validation.
+- Support frontend `OctaviaManaged` and `Referenced` security groups and backend `Referenced` and `Unmanaged` modes.
+- Validate referenced rules and worker associations without changing them, and retry after operator repairs.
+- Provide read-only diagnostics for authentication, capabilities, topology, security prerequisites, quota, and optional Barbican metadata.
 
-### Frontend security groups
+The [class reference](docs/reference/class-configuration.md) defines configuration and capability requirements.
+The [recovery design](docs/design/architecture.md#failure-and-recovery) defines identity checks and traffic restoration ordering.
+Managed backend security remains excluded under ADR 0004 because it would change foreign worker ports.
+Any later proposal must define explicit opt-in, conditional preservation of foreign associations, ownership, and restart and uninstall recovery.
 
-`OctaviaManaged` remains the default: the controller omits `vip_sg_ids` and Octavia manages listener access.
-A `Referenced` mode may pass security groups supplied by the user through `vip_sg_ids` only after the controller verifies API support.
-The controller validates the groups and does not change their rules.
-
-[Custom VIP security groups](https://docs.openstack.org/octavia/latest/contributor/specs/version15.0/custom-security-groups-for-VIP-ports.html) were added in Octavia API microversion 2.29 with Octavia 16.0 (OpenStack 2025.1).
-They are applied to the VIP and Amphora VRRP ports.
-Octavia retains its internal VRRP and HAProxy peer rules but no longer manages listener ingress rules.
-The option is incompatible with listener `allowed_cidrs` and SR-IOV load balancers.
-Those consequences must be validated and visible before a Gateway is programmed.
-The currently pinned Gophercloud version does not expose `vip_sg_ids` in its typed create options, so implementation also requires an appropriate dependency update or a narrow, tested extension.
-The initial implementation will rely on frontend security groups managed by Octavia and will not create a separate frontend group.
-
-### Backend security groups
-
-Start with `Referenced` and `Unmanaged` modes.
-`Referenced` validates the configuration supplied by the operator without modifying the referenced group.
-`Unmanaged` leaves backend security to the environment.
-API discovery can validate structural prerequisites, but it cannot prove that Amphora members can reach NodePort backends.
-Octavia health status, an active reachability check, or end-to-end test results from OpenStack must demonstrate that connectivity.
-
-A `Managed` mode may be introduced only after its ADR defines a narrow shared ownership contract.
-Worker Neutron ports belong to CAPO, another controller, or the operator.
-Changing their `security_groups` list is a mutation of a foreign object even when this controller created the group being attached.
-
-If accepted, managed mode follows these rules:
-
-- Enable it only through an explicit class opt-in.
-- Create only groups and rules tagged with the controller's complete ownership identity.
-- Map each Node provider ID to its Nova server UUID and selected address.
-  Then validate exactly one Neutron port in the authenticated project by `device_owner`, `device_id`, selected fixed IP and subnet, and `port_security_enabled`.
-- Preserve every foreign security group association.
-  Add or remove only the group ID added by this controller.
-- Include the observed Neutron revision in each update where the API supports it.
-  If the port changes concurrently, reject the mutation and observe the port again before retrying.
-- Reconcile only NodePorts still referenced by managed routes.
-- Use exact ports by default.
-  Opening the whole NodePort range requires an explicit choice between quota use and network exposure.
-- Take backend source CIDRs from explicit configuration or verified environment evidence.
-  Do not assume the VIP subnet is the source.
-- Define the identity and reference counting for a shared group, along with restart recovery, uninstall, and rollback behavior.
-
-Both `externalTrafficPolicy: Cluster` and `externalTrafficPolicy: Local` need separate tests because their member selection differs.
-Node addition, removal, address change, readiness, and EndpointSlice changes must converge the member set and security access together without causing a burst of OpenStack API calls.
-
-### Diagnostics
-
-Add a read-only diagnostic command or dedicated binary for authentication, Amphora and microversion checks, network resolution, mapping from each Node to a Neutron port, NodePort reachability prerequisites, permissions to read and update security groups, Floating IP quota, and optional Barbican access.
-Diagnostic output must be redacted and suitable for attaching to an issue.
-
-Compatibility work in this phase records IPv4, IPv6, or dual-stack behavior instead of assuming the IP family.
-It also records Amphora topology and the tested kube-proxy implementation or replacement.
-Unsupported combinations are reported as such before they become a release promise.
+The [compatibility matrix](docs/providers/compatibility.md#evidence-matrix) tracks local evidence and outstanding live validation.
+Run approved coverage for Floating IP recovery and deletion, referenced security, Node lifecycle, topology isolation, and fault recovery.
+Record IP family, Amphora topology, and kube-proxy or replacement behavior rather than assuming portability.
+The [E2E guide](docs/testing-openstack-e2e.md) describes optional scenarios and the recurring Cluster and Local profiles.
+Activating scheduled validation still requires an approved dedicated environment and an immutable controller image.
 
 ### Phase 4 exit criteria
 
@@ -246,12 +207,11 @@ Unsupported combinations are reported as such before they become a release promi
 - Any required Octavia extensions are available in a named release and have focused evidence for the selected Amphora environment.
   A proposal, development branch, or capability probe alone does not close this gate.
 - Network selection never chooses arbitrarily and does not mutate OpenStack when resolution is ambiguous.
-- The controller safely recovers from Floating IP detachment and from drift in security rules that it created.
+- The controller safely recovers from Floating IP detachment and resumes after the operator repairs referenced security rules.
+  It does not create or repair security rules in this phase.
 - Frontend `OctaviaManaged` and `Referenced` modes and backend `Referenced` and `Unmanaged` modes have documented results from an OpenStack environment.
-- If `Managed` backend security is enabled, Node lifecycle and concurrent port changes pass E2E without changing or removing foreign groups or rules.
-- The ADR for modifying worker ports owned by another component decides whether managed backend security will be supported.
-  If managed mode is accepted, the tests must show that NodePort backends are reachable without manually changing the rules on each port.
-  Otherwise, the operator remains responsible for the referenced configuration.
+- Keep managed backend security outside this phase under ADR 0004.
+  The operator remains responsible for referenced groups, source rules, and worker associations.
 - No network, subnet, router, CAPO resource, or OCCM resource is adopted or deleted.
 - The recurring environment job exercises both claimed NodePort traffic policies, endpoint changes, and leak detection without an unbounded burst of Kubernetes or OpenStack API calls.
 

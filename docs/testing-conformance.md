@@ -44,13 +44,38 @@ Before a full run:
 3. Isolate test resources and verify ownership and cleanup between runs using the [OpenStack E2E guidance](testing-openstack-e2e.md).
 4. Run every Core test and every test for declared Extended features.
    Do not remove required behavior from fixtures to obtain a pass.
-5. Retain the suite-generated report and reproduction details under the [publication policy](reports/README.md).
+5. Retain the suite-generated report and reproduction details under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication).
 
 Selecting one upstream test can still invoke shared setup that requires unsupported features.
 Check the fixture and setup dependencies before choosing an incremental test.
 An adapted diagnostic can help investigate behavior, but it does not establish profile conformance.
 One-off runners and environment-specific adaptations remain local.
-Use the [gap template](reports/conformance-gap-template.md) to distinguish setup blockers, failures, and tests that have not run.
+Record the gaps below to distinguish setup blockers, failures, and tests that have not run.
+
+## Record conformance gaps
+
+Keep exploratory records local under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication).
+Identify whether the run used an upstream profile or an adapted diagnostic, then record the controller revision, Gateway API version, environment, command, selected profile or tests, feature flags, and original result artifact.
+List fixture changes and setup blockers.
+
+Summarize passed, failed, skipped, and setup-blocked tests within the selected scope.
+Unselected tests have not run and do not count as skipped or passed.
+For each failure, skipped test, or setup blocker, record the cause and a follow-up issue:
+
+| Classification | Use for |
+| --- | --- |
+| Controller defect | Implemented behavior that does not meet its contract. |
+| Routing translation work | Missing or incomplete compiler behavior. |
+| Backend mode or topology requirement | Required Service inputs or connectivity not covered by the current design. |
+| Octavia API limitation | A missing primitive established by cited API or implementation evidence. |
+| Planned Gateway API extension | An Extended feature outside the current claim. |
+| Intentional non-goal | Behavior outside the project's target profile. |
+| Environment or harness failure | Setup, permissions, network, or test execution failures. |
+
+Record the observed `GatewayClass.status.supportedFeatures` and explain differences from the test selection.
+Do not change feature declarations merely to enable a test or hide a failure.
+Link required implementation and design changes to the roadmap, and state whether the result is eligible for upstream submission.
+This record does not replace the suite-generated conformance report.
 
 ## Publish results
 

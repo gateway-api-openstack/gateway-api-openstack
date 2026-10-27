@@ -40,7 +40,9 @@ The controller uses Gateway API v1.6.1 Standard Channel and supports:
 - At most one exact route hostname
 - Eligible worker NodePort members with Local or Cluster traffic policy
 - Typed GatewayClass configuration with topology settings fixed for each Gateway
-- Optional Floating IP allocation
+- Optional Floating IP allocation and recovery after detachment
+- Referenced frontend and backend security groups without changing their rules
+- Read-only environment diagnostics
 - Ownership validation, restart recovery, and ordered cleanup
 
 The [class configuration reference](docs/reference/class-configuration.md) describes deployment options and worker selection.
@@ -49,7 +51,7 @@ OVN, non-HTTP Route kinds, existing resource adoption, and proxy data planes are
 
 ## Development status
 
-Phase 3 implementation is complete, with broader validation and release work remaining.
+Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
 See the [compatibility record](docs/providers/compatibility.md) for completed checks and outstanding evidence.
 Development results do not establish general OpenStack support or Gateway API conformance.
 
