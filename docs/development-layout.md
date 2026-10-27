@@ -122,6 +122,10 @@ cmd/openstack-gateway-controller
 
 controller/graph -------------> cloud and Gateway API types
 controller/ownershipaudit ----> controller, audit, cloud
+
+cmd/openstack-gateway-diagnostics
+  |--> controller/classconfig, diagnostics
+  `--> cloud/openstack/diagnostics --> diagnostics, cloud
 ```
 
 Use the following file boundaries inside a reconciler package:
@@ -148,6 +152,7 @@ Do not add general `common`, `helpers`, or `util` packages.
 It imports neither Kubernetes nor Gophercloud.
 `internal/audit` likewise contains provider-neutral inventory and report types.
 Its findings remain advisory and cannot authorize graph mutation.
+`internal/diagnostics` defines the environment report and redacted outcomes without Kubernetes or Gophercloud dependencies.
 
 ## OpenStack adapter layout
 
@@ -193,9 +198,11 @@ internal/cloud/openstack/
 │   ├── gateway_deletion_plan.go
 │   ├── delete.go
 │   └── loadbalancer_status.go
-└── inventory/
-    ├── scanner.go
-    └── classification.go
+├── inventory/
+│   ├── scanner.go
+│   └── classification.go
+└── diagnostics/
+    └── scanner.go
 ```
 
 `clients` creates shared authenticated clients, applies request limits, and emits bounded observations.
@@ -209,6 +216,9 @@ It returns cloud values, not SDK objects or Kubernetes conditions.
 `graph` validates the complete desired model, observes cloud ownership, builds one ordered plan, and executes at most one mutation.
 Its resource files contain focused observation, diff, and execution logic used by that operation.
 `inventory` exposes only read operations for the ownership audit.
+`diagnostics` reads endpoint capabilities, topology, permissions, and quota metadata and returns provider-neutral diagnostics.
+It never changes resources or reads Barbican secret payloads.
+The `openstack-gateway-diagnostics` command supplies provider-neutral values read from Kubernetes, wires the scanner directly, and renders the report.
 
 The root `openstack` package is the facade used by commands and probes.
 It delegates to graph reconciliation, topology resolution, and read-only inventory without leaking SDK types into callers.

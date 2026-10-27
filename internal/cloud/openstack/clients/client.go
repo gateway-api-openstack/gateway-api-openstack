@@ -84,6 +84,7 @@ type ServiceClients struct {
 	Network      *gophercloud.ServiceClient
 	ProjectID    string
 	Region       string
+	endpointOpts gophercloud.EndpointOpts
 }
 
 // NewServiceClients authenticates from a selected clouds.yaml entry when a
@@ -149,7 +150,17 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 		Network:      networkClient,
 		ProjectID:    projectID,
 		Region:       endpointOptions.Region,
+		endpointOpts: endpointOptions,
 	}, nil
+}
+
+// NewKeyManagerClient discovers Barbican only when a caller requests it.
+// HTTP-only controller deployments do not require a key manager endpoint.
+func (c ServiceClients) NewKeyManagerClient() (*gophercloud.ServiceClient, error) {
+	if c.Network == nil || c.Network.ProviderClient == nil {
+		return nil, fmt.Errorf("authenticated service clients are required")
+	}
+	return gopheropenstack.NewKeyManagerV1(c.Network.ProviderClient, c.endpointOpts)
 }
 
 func newRateLimitedHTTPClient(tlsConfig *tls.Config, qps float64, burst int) http.Client {

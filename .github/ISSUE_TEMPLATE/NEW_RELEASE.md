@@ -22,7 +22,7 @@ assignees: ""
 - [ ] The version follows SemVer and the target commit is on `main`.
 - [ ] CI is green for the exact target commit.
 - [ ] `make verify`, `make build`, `make release-check`, and `make release-snapshot` pass from a clean checkout.
-- [ ] The snapshot contains Linux `amd64` and `arm64` archives with all three binaries, `LICENSE`, `README.md`, `SECURITY.md`, and the version-matched `config/` and `examples/` YAML files.
+- [ ] The snapshot contains Linux `amd64` and `arm64` archives with all four binaries, `LICENSE`, `README.md`, `SECURITY.md`, and the version-matched `config/` and `examples/` YAML files.
 - [ ] `checksums.txt` verifies every generated archive.
 - [ ] README, the getting started guide, ROADMAP, support and security policies, governance, and Amphora compatibility evidence are current for this release.
 - [ ] Exact tested Kubernetes and Gateway API versions, OpenStack and Octavia releases, negotiated API microversions, Amphora topology, CNI, kube-proxy mode, and relationships among the VIP, member, and external networks are recorded below.

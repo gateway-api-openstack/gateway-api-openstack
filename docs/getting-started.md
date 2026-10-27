@@ -145,11 +145,45 @@ Both request settings must be greater than zero.
 The equivalent command line flags are `--openstack-api-qps` and `--openstack-api-burst`.
 
 The base Deployment also sets these binary flags: leader election enabled, metrics on `:8080`, probes on `:8081`, and Octavia microversion `2.5`.
-Optional flavor and availability zone placement require higher microversions and additional profile reads, as described in the [configuration reference](reference/class-configuration.md#validation-and-permissions).
+Optional flavor, availability zone placement, and referenced frontend security groups require higher microversions and additional profile reads, as described in the [configuration reference](reference/class-configuration.md#validation-and-permissions).
 The binary additionally supports `--openstack-operation-timeout` and `--openstack-poll-interval`.
 The manifests do not override these two flags, so the binary uses defaults of 10 minutes and 2 seconds.
 The timeout limits each provider reconciliation call, including all OpenStack requests made by that call.
 After starting an asynchronous Octavia change, the controller returns and observes it again after the poll interval instead of waiting for it to finish in the same reconciliation.
+
+## Inspect network prerequisites
+
+Use the read-only diagnostic tool after installing an OpenStackGatewayClassConfig and before creating test Gateways:
+
+```sh
+make build-diagnostics
+bin/openstack-gateway-diagnostics \
+  --class-config=openstack \
+  --kubeconfig=<path-to-kubeconfig> \
+  --context=<context-name> \
+  --clouds-yaml=<path-to-clouds.yaml> \
+  --openstack-cloud=<cloud-name> \
+  --openstack-region=<region> \
+  --octavia-microversion=<controller-microversion> \
+  > environment-diagnostics.json
+```
+
+Use the same credential scope, region, and microversion as the controller.
+The Kubernetes identity needs get access to the selected OpenStackGatewayClassConfig and list access to Nodes.
+`--node-selector` can narrow the worker selection.
+`--check-barbican` adds a metadata access check without reading secret payloads.
+The default deadline is two minutes, with the same 10 QPS and burst 20 defaults as the controller.
+
+The command inspects the current class template, not an existing Gateway's frozen binding.
+It checks label-eligible workers, including unready Nodes, without claiming the member eligibility of a particular Service.
+Results distinguish `passed`, `failed`, `unknown`, and `skipped` checks.
+Update permissions, actual backend reachability, Amphora topology, and the kube-proxy implementation remain unknown because these reads cannot establish them.
+Observed IP families describe selected Node addresses, not verified IPv6 or dual-stack support.
+
+The JSON report omits resource names, cloud IDs, addresses, credentials, and raw API errors.
+Exit status 0 means no observed failure, 2 means at least one failed check, and 1 means invalid command options or an output error.
+Unknown checks still require evidence even when the command exits successfully.
+This report does not replace traffic tests or the [ownership audit](operator-recovery.md#run-the-ownership-audit).
 
 ## Apply the basic example
 
