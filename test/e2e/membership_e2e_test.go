@@ -20,9 +20,11 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/auditexec"
 )
 
 type membershipInventory struct {
@@ -44,8 +47,8 @@ type membershipInventory struct {
 
 func (s *openStackSuite) verifyWorkerMembershipTransitions(ctx context.Context) error {
 	const replicas int32 = 2
-	if s.config.BackendReplicas != replicas || s.config.BackendExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || len(s.config.BackendNodeSelector) == 0 {
-		return fmt.Errorf("backend transition requires the selected Local worker profile")
+	if err := s.validateMembershipWorkers(ctx); err != nil {
+		return err
 	}
 	if err := s.waitForMembershipBackends(ctx, replicas); err != nil {
 		return err
@@ -58,23 +61,140 @@ func (s *openStackSuite) verifyWorkerMembershipTransitions(ctx context.Context) 
 	if err != nil {
 		return err
 	}
+	address, err := s.gatewayAddress(ctx)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	before, beforeLease, beforeProcess, err := s.scrapeCurrentLeaderMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if err := validateMetricEndpointIdentity(before, s.config.LeaderLease); err != nil {
+		return err
+	}
+	if _, found := before.values[requestStartsMetricName]; !found {
+		return fmt.Errorf("controller metrics do not expose OpenStack request admissions")
+	}
+	samples, failures, transitionErr := observeTransitionTraffic(ctx, max(s.config.PollInterval, time.Second),
+		func(ctx context.Context) bool { return s.probeExternalTraffic(ctx, address) },
+		func() error { return s.transitionWorkerMembership(ctx, baseline) })
+	evidence := membershipEvidence{TrafficSamples: samples, TrafficFailures: failures}
+	s.report.Membership = &evidence
+	if transitionErr != nil {
+		return transitionErr
+	}
+	after, afterLease, afterProcess, err := s.scrapeCurrentLeaderMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if beforeLease.holder != afterLease.holder || beforeLease.transitions != afterLease.transitions || beforeProcess != afterProcess {
+		return fmt.Errorf("controller leader changed during the membership observation")
+	}
+	mutations := 0
+	if s.config.BackendExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal {
+		mutations = 2 // Delete the departed member, then create its replacement.
+	}
+	evidence, err = membershipMetricEvidence(before, after, s.config.LeaderLease, time.Since(started), mutations)
+	evidence.TrafficSamples, evidence.TrafficFailures = samples, failures
+	return err
+}
+
+func (s *openStackSuite) validateMembershipWorkers(ctx context.Context) error {
+	const replicas int32 = 2
+	if s.config.BackendReplicas != replicas || len(s.config.BackendNodeSelector) == 0 {
+		return fmt.Errorf("backend transition requires two replicas and an explicit worker selector")
+	}
+	nodes, err := s.selectedBackendNodes(ctx)
+	if err != nil {
+		return err
+	}
+	if len(nodes) != int(replicas) {
+		return fmt.Errorf("backend transition requires exactly two selected eligible workers")
+	}
+	if s.config.BackendExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyCluster {
+		// The current class API does not filter Cluster members by Node label.
+		// Placement labels alone cannot authorize registering other workers.
+		all, err := s.eligibleBackendNodes(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if s.config.Project.Mode != projectModeDedicated || !maps.Equal(nodes, all) {
+			return fmt.Errorf("Cluster membership transition requires a dedicated project with exactly the two selected eligible workers")
+		}
+	}
+	return nil
+}
+
+func (s *openStackSuite) transitionWorkerMembership(ctx context.Context, baseline membershipInventory) error {
 	if err := s.scaleBackendAndWait(ctx, 1); err != nil {
 		return err
 	}
-	retained, err := s.waitForMembershipInventory(ctx, 1, baseline, nil)
+	members := 1
+	if s.config.BackendExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyCluster {
+		members = len(baseline.members)
+	}
+	retained, err := s.waitForMembershipInventory(ctx, members, baseline, nil)
 	if err != nil {
 		return err
 	}
 	if err := s.verifyExternalTraffic(ctx); err != nil {
 		return err
 	}
-	if err := s.scaleBackendAndWait(ctx, replicas); err != nil {
+	if err := s.scaleBackendAndWait(ctx, s.config.BackendReplicas); err != nil {
 		return err
 	}
-	if _, err := s.waitForMembershipInventory(ctx, int(replicas), baseline, retained.members); err != nil {
+	if _, err := s.waitForMembershipInventory(ctx, len(baseline.members), baseline, retained.members); err != nil {
 		return err
 	}
 	return s.verifyWorkloadAfterRecovery(ctx)
+}
+
+// observeTransitionTraffic sends one request per interval without retrying a
+// failed sample. It checks continuity only for a transition retaining a healthy
+// backend, not for arbitrary Node removal or address replacement.
+func observeTransitionTraffic(ctx context.Context, interval time.Duration, probe func(context.Context) bool, transition func() error) (int, int, error) {
+	if !probe(ctx) {
+		return 1, 1, fmt.Errorf("traffic failed before the membership transition")
+	}
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type observation struct{ samples, failures int }
+	done := make(chan observation, 1)
+	go func() {
+		result := observation{samples: 1}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		defer func() { done <- result }()
+		for {
+			select {
+			case <-probeCtx.Done():
+				return
+			case <-ticker.C:
+				passed := probe(probeCtx)
+				if probeCtx.Err() != nil {
+					return
+				}
+				result.samples++
+				if !passed {
+					result.failures++
+				}
+			}
+		}
+	}()
+	err := transition()
+	cancel()
+	result := <-done
+	if ctx.Err() == nil {
+		result.samples++
+		if !probe(ctx) {
+			result.failures++
+		}
+	}
+	if result.failures > 0 {
+		err = errors.Join(err, fmt.Errorf("traffic failed in %d of %d membership transition samples", result.failures, result.samples))
+	}
+	return result.samples, result.failures, errors.Join(err, ctx.Err())
 }
 
 func (s *openStackSuite) scaleBackendAndWait(ctx context.Context, replicas int32) error {
@@ -124,9 +244,9 @@ func (s *openStackSuite) transitionBackendObjects(ctx context.Context) (*appsv1.
 	if !backendDeploymentMatchesProfile(&deployment, wanted) {
 		return nil, nil, fmt.Errorf("backend Deployment no longer matches its test profile")
 	}
-	if service.Spec.Type != corev1.ServiceTypeNodePort || service.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal ||
+	if service.Spec.Type != corev1.ServiceTypeNodePort || service.Spec.ExternalTrafficPolicy != s.config.BackendExternalTrafficPolicy ||
 		!maps.Equal(service.Spec.Selector, wanted.Spec.Template.Labels) || len(service.Spec.Ports) != 1 {
-		return nil, nil, fmt.Errorf("backend Service no longer matches its selected Local worker profile")
+		return nil, nil, fmt.Errorf("backend Service no longer matches its selected worker profile")
 	}
 	port := service.Spec.Ports[0]
 	if port.Name != "http" || port.Protocol != corev1.ProtocolTCP || port.Port != listenerPort || port.TargetPort != s.backendService().Spec.Ports[0].TargetPort || port.NodePort == 0 {
@@ -255,22 +375,28 @@ func (s *openStackSuite) membershipEndpointsReady(ctx context.Context, deploymen
 
 func membershipFromAudit(report audit.Report, expected int) (membershipInventory, error) {
 	if report.Summary.KubernetesBindings != 2 || report.Summary.OpenStackResources != len(report.Resources) || report.Summary.Matched != len(report.Resources) {
-		return membershipInventory{}, fmt.Errorf("membership audit does not describe the expected Gateway and HTTPRoute")
+		return membershipInventory{}, fmt.Errorf("membership audit does not describe the expected Gateway and HTTPRoute: %w", auditexec.ErrInvalidReport)
 	}
 	inventory := membershipInventory{members: make(map[string]struct{}, expected)}
 	parents := make([]audit.ResourceFinding, 0, len(report.Resources))
 	for _, resource := range report.Resources {
 		if resource.Service == "Octavia" && resource.Type == "Member" {
 			if resource.ID == "" || resource.ParentID == "" {
-				return membershipInventory{}, fmt.Errorf("membership audit contains an incomplete member identity")
+				return membershipInventory{}, fmt.Errorf("membership audit contains an incomplete member identity: %w", auditexec.ErrInvalidReport)
+			}
+			if _, duplicate := inventory.members[resource.ID]; duplicate {
+				return membershipInventory{}, fmt.Errorf("membership audit repeats a member identity: %w", auditexec.ErrInvalidReport)
 			}
 			inventory.members[resource.ID] = struct{}{}
 			continue
 		}
 		parents = append(parents, resource)
 	}
-	if len(inventory.members) != expected || len(parents) == 0 {
-		return membershipInventory{}, fmt.Errorf("membership audit has not converged to the expected member count")
+	if len(parents) == 0 {
+		return membershipInventory{}, fmt.Errorf("membership audit lacks the parent graph: %w", auditexec.ErrInvalidReport)
+	}
+	if len(inventory.members) != expected {
+		return membershipInventory{}, errInventoryPending
 	}
 	inventory.parents = ownershipAuditFingerprint(parents)
 	return inventory, nil
@@ -278,16 +404,19 @@ func membershipFromAudit(report audit.Report, expected int) (membershipInventory
 
 func (s *openStackSuite) waitForMembershipInventory(ctx context.Context, expected int, baseline membershipInventory, retained map[string]struct{}) (membershipInventory, error) {
 	var observed membershipInventory
-	err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
+	err := waitForOwnershipInventory(ctx, s.config.PollInterval, func(ctx context.Context) error {
 		report, err := s.readOwnershipAudit(ctx, false)
 		if err != nil {
-			return false, nil
+			return err
 		}
 		observed, err = membershipFromAudit(report, expected)
 		if err != nil {
-			return false, nil
+			return err
 		}
-		return membershipTransitionMatches(baseline, observed, retained), nil
+		if !membershipTransitionMatches(baseline, observed, retained) {
+			return errInventoryPending
+		}
+		return nil
 	})
 	return observed, err
 }

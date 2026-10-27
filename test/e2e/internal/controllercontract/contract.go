@@ -20,6 +20,7 @@ package controllercontract
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +43,10 @@ const (
 	MetricsPortName = "metrics"
 	// MetricsPort is the required controller metrics port number.
 	MetricsPort int32 = 8080
+	// APIQPS is the shared OpenStack request rate used by the test controller.
+	APIQPS = 10
+	// APIBurst is the maximum initial OpenStack request burst for the test controller.
+	APIBurst = 20
 
 	// EnvControllerName selects the Gateway API controller identity.
 	EnvControllerName = "GATEWAY_OPENSTACK_CONTROLLER_NAME"
@@ -77,8 +82,6 @@ const (
 
 const (
 	resyncInterval = "10m"
-	apiQPS         = "10"
-	apiBurst       = "20"
 	cloudsYAMLPath = CloudsMountPath + "/clouds.yaml"
 )
 
@@ -137,8 +140,8 @@ func (s Settings) Environment() map[string]string {
 		EnvControllerName: s.ControllerName,
 		EnvClusterID:      s.ClusterID,
 		EnvResyncInterval: resyncInterval,
-		EnvAPIQPS:         apiQPS,
-		EnvAPIBurst:       apiBurst,
+		EnvAPIQPS:         strconv.Itoa(APIQPS),
+		EnvAPIBurst:       strconv.Itoa(APIBurst),
 		EnvCloudsYAML:     cloudsYAMLPath,
 		EnvCloud:          s.Cloud,
 		EnvRegion:         s.Region,

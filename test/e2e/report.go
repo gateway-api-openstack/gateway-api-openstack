@@ -31,15 +31,30 @@ import (
 const reportFormatVersion = "v1alpha1"
 
 const (
-	checkFrozenClass       = "frozen class configuration after template and reference changes"
-	checkFrozenRestart     = "frozen class configuration after controller restart"
-	checkSequentialClasses = "sequential Gateway class configuration"
-	checkMemberTransitions = "worker member removal and restoration"
+	checkPreflight          = "preflight safety validation"
+	checkBackend            = "isolated NodePort backend"
+	checkGatewayClass       = "GatewayClass status"
+	checkGateway            = "Gateway status"
+	checkHTTPRoute          = "HTTPRoute status"
+	checkActiveAudit        = "active ownership inventory audit"
+	checkTraffic            = "external HTTP traffic"
+	checkLeaderRecovery     = "leader pod deletion and recovery"
+	checkColdRestart        = "cold controller restart and recovery"
+	checkMetrics            = "converged metrics snapshot"
+	checkCleanup            = "orderly deletion and finalizer completion"
+	checkCleanupAudit       = "post-test ownership audit returns to baseline"
+	checkFrozenClass        = "frozen class configuration after template and reference changes"
+	checkFrozenRestart      = "frozen class configuration after controller restart"
+	checkSequentialClasses  = "sequential Gateway class configuration"
+	checkMemberTransitions  = "worker member removal and restoration"
+	checkFloatingIPRecovery = "owned Floating IP detachment and recovery"
+	checkFloatingIPDeletion = "owned Floating IP external deletion and replacement"
+	checkReferencedSecurity = "referenced security groups and member port validation"
 )
 
 const (
 	checkSummaryPassed             = "The check completed with the expected result"
-	checkSummaryFailed             = "The check did not reach the expected result. Details are omitted."
+	checkSummaryFailed             = "The check did not reach the expected result"
 	checkSummaryFaultNotConfigured = "No safe fault injector was configured for this run"
 )
 
@@ -52,29 +67,45 @@ const (
 	statusNotRun  checkStatus = "Not run"
 )
 
-// reportChecks defines display order and the checks required for a passing run.
-// The remaining checks need a separately configured fault injector.
-var reportChecks = []struct {
-	name     string
-	required bool
-}{
-	{name: "preflight safety validation", required: true},
-	{name: "isolated NodePort backend", required: true},
-	{name: "GatewayClass status", required: true},
-	{name: "Gateway status", required: true},
-	{name: "HTTPRoute status", required: true},
-	{name: "active ownership inventory audit", required: true},
-	{name: "external HTTP traffic", required: true},
-	{name: "leader pod deletion and recovery", required: true},
-	{name: "cold controller restart and recovery", required: true},
-	{name: "converged metrics snapshot", required: true},
-	{name: "orderly deletion and finalizer completion", required: true},
-	{name: "post-test ownership audit returns to baseline", required: true},
-	{name: "external deletion of an owned child resource"},
-	{name: "blocked finalization"},
-	{name: "quota failure"},
-	{name: "request timeout and rate limiting"},
-	{name: "Octavia resource failure"},
+// configuredChecks is the execution order and pass requirement for this run.
+// The cleanup audit runs after emergency cleanup even if an earlier check fails.
+func configuredChecks(config e2eConfig) []string {
+	checks := []string{
+		checkPreflight,
+		checkBackend,
+		checkGatewayClass,
+		checkGateway,
+		checkHTTPRoute,
+		checkActiveAudit,
+		checkTraffic,
+	}
+	if len(config.Project.FrontendSecurityGroupIDs) > 0 || len(config.Project.BackendSecurityGroupIDs) > 0 {
+		checks = append(checks, checkReferencedSecurity)
+	}
+	if config.FloatingIPRecovery {
+		checks = append(checks, checkFloatingIPRecovery)
+	}
+	if config.FloatingIPDeletion {
+		checks = append(checks, checkFloatingIPDeletion)
+	}
+	if config.LocalLifecycle {
+		checks = append(checks, checkFrozenClass)
+	}
+	checks = append(checks,
+		checkLeaderRecovery,
+		checkColdRestart,
+		checkMetrics,
+	)
+	if config.LocalLifecycle {
+		checks = append(checks, checkFrozenRestart)
+	}
+	if config.MemberTransitions || config.LocalLifecycle && config.BackendReplicas == 2 {
+		checks = append(checks, checkMemberTransitions)
+	}
+	if config.LocalLifecycle {
+		checks = append(checks, checkSequentialClasses)
+	}
+	return append(checks, checkCleanup, checkCleanupAudit)
 }
 
 type checkResult struct {
@@ -115,21 +146,27 @@ type backendEvidence struct {
 }
 
 type e2eReport struct {
-	FormatVersion         string           `json:"formatVersion"`
-	Suite                 string           `json:"suite"`
-	Status                checkStatus      `json:"status"`
-	StartedAt             time.Time        `json:"startedAt"`
-	CompletedAt           time.Time        `json:"completedAt"`
-	GatewayAPIBundle      string           `json:"gatewayAPIBundle"`
-	ControllerRevision    string           `json:"controllerRevision"`
-	ControllerImageDigest string           `json:"controllerImageDigest"`
-	ProjectMode           projectMode      `json:"projectMode"`
-	RestartMode           string           `json:"restartMode"`
-	Backend               backendEvidence  `json:"backend"`
-	LocalLifecycle        bool             `json:"localLifecycle"`
-	Checks                []checkResult    `json:"checks"`
-	Audit                 *auditEvidence   `json:"audit,omitempty"`
-	Metrics               *metricsEvidence `json:"metrics,omitempty"`
+	requiredChecks        []string
+	FormatVersion         string              `json:"formatVersion"`
+	Suite                 string              `json:"suite"`
+	Status                checkStatus         `json:"status"`
+	StartedAt             time.Time           `json:"startedAt"`
+	CompletedAt           time.Time           `json:"completedAt"`
+	GatewayAPIBundle      string              `json:"gatewayAPIBundle"`
+	ControllerRevision    string              `json:"controllerRevision"`
+	ControllerImageDigest string              `json:"controllerImageDigest"`
+	ProjectMode           projectMode         `json:"projectMode"`
+	RestartMode           string              `json:"restartMode"`
+	Backend               backendEvidence     `json:"backend"`
+	LocalLifecycle        bool                `json:"localLifecycle"`
+	FloatingIPRecovery    bool                `json:"floatingIPRecovery"`
+	FloatingIPDeletion    bool                `json:"floatingIPDeletion"`
+	MemberTransitions     bool                `json:"memberTransitions"`
+	Membership            *membershipEvidence `json:"membership,omitempty"`
+	ReferencedSecurity    bool                `json:"referencedSecurity"`
+	Checks                []checkResult       `json:"checks"`
+	Audit                 *auditEvidence      `json:"audit,omitempty"`
+	Metrics               *metricsEvidence    `json:"metrics,omitempty"`
 }
 
 func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
@@ -144,41 +181,33 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 		ProjectMode:           config.Project.Mode,
 		RestartMode:           config.RestartMode,
 		LocalLifecycle:        config.LocalLifecycle,
+		FloatingIPRecovery:    config.FloatingIPRecovery,
+		FloatingIPDeletion:    config.FloatingIPDeletion,
+		MemberTransitions:     config.MemberTransitions,
+		ReferencedSecurity:    len(config.Project.FrontendSecurityGroupIDs) > 0 || len(config.Project.BackendSecurityGroupIDs) > 0,
 		Backend: backendEvidence{
 			Replicas:               config.BackendReplicas,
 			ExternalTrafficPolicy:  config.BackendExternalTrafficPolicy,
 			NodeSelectorConfigured: len(config.BackendNodeSelector) != 0,
 		},
-		Checks: make([]checkResult, 0, len(reportChecks)),
+		requiredChecks: configuredChecks(config),
 	}
-	for _, check := range reportChecks {
-		summary := "The check was not executed"
-		if !check.required {
-			summary = checkSummaryFaultNotConfigured
-		}
-		report.Checks = append(report.Checks, checkResult{
-			Name:    check.name,
-			Status:  statusNotRun,
-			Summary: summary,
-		})
+	for _, name := range report.requiredChecks {
+		report.Checks = append(report.Checks, checkResult{Name: name, Status: statusNotRun, Summary: "The check was not executed"})
 	}
-	if config.LocalLifecycle {
-		for _, name := range localLifecycleChecks(config.BackendReplicas) {
-			report.Checks = append(report.Checks, checkResult{Name: name, Status: statusNotRun, Summary: "The check was not executed"})
-		}
-		if config.BackendReplicas == 1 {
-			report.Checks = append(report.Checks, checkResult{Name: checkMemberTransitions, Status: statusSkipped, Summary: "Member removal requires two selected worker Nodes"})
-		}
+	if config.LocalLifecycle && config.BackendReplicas == 1 {
+		report.Checks = append(report.Checks, checkResult{Name: checkMemberTransitions, Status: statusSkipped, Summary: "Member removal requires two selected worker Nodes"})
+	}
+	for _, name := range []string{
+		"external deletion of an owned child resource",
+		"blocked finalization",
+		"quota failure",
+		"request timeout and rate limiting",
+		"Octavia resource failure",
+	} {
+		report.Checks = append(report.Checks, checkResult{Name: name, Status: statusNotRun, Summary: checkSummaryFaultNotConfigured})
 	}
 	return report
-}
-
-func localLifecycleChecks(replicas int32) []string {
-	checks := []string{checkFrozenClass, checkFrozenRestart, checkSequentialClasses}
-	if replicas == 2 {
-		checks = append(checks, checkMemberTransitions)
-	}
-	return checks
 }
 
 func (r *e2eReport) setCheck(name string, status checkStatus, summary string) error {
@@ -200,7 +229,11 @@ func (r *e2eReport) setCheck(name string, status checkStatus, summary string) er
 
 func validCheckSummary(summary string) bool {
 	switch summary {
-	case checkSummaryPassed, checkSummaryFailed, checkSummaryFaultNotConfigured:
+	case checkSummaryPassed, checkSummaryFailed, checkSummaryFaultNotConfigured,
+		checkSummaryAuthentication, checkSummaryAuthorization, checkSummaryRateLimit,
+		checkSummaryQuota, checkSummaryTimeout, checkSummaryCanceled, checkSummaryUnavailable,
+		checkSummaryOwnership, checkSummaryAuditCommand, checkSummaryAuditInvalid,
+		checkSummaryAuditFindings, checkSummaryInventoryPending, checkSummaryInventoryTimeout:
 		return true
 	default:
 		return false
@@ -223,11 +256,7 @@ func writeE2EArtifacts(directory string, report *e2eReport) error {
 	if report.CompletedAt.IsZero() {
 		report.CompletedAt = time.Now().UTC()
 	}
-	var required []string
-	if report.LocalLifecycle {
-		required = localLifecycleChecks(report.Backend.Replicas)
-	}
-	report.Status = overallStatus(report.Checks, required...)
+	report.Status = overallStatus(report.Checks, report.requiredChecks...)
 	parent := filepath.Dir(filepath.Clean(directory))
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("create artifact parent directory: %w", err)
@@ -357,11 +386,6 @@ func overallStatus(checks []checkResult, required ...string) checkStatus {
 		}
 		if check.Status == statusPassed {
 			passed[check.Name] = true
-		}
-	}
-	for _, check := range reportChecks {
-		if check.required && !passed[check.name] {
-			return statusNotRun
 		}
 	}
 	for _, name := range required {

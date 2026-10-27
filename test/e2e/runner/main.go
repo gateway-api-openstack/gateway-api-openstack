@@ -37,10 +37,12 @@ func runMain(arguments []string) int {
 	var repositoryRoot string
 	var auditBinary string
 	var preflightOnly bool
+	var recurring bool
 	flags.StringVar(&configPath, "config", "", "absolute path to the OpenStack E2E config")
 	flags.StringVar(&repositoryRoot, "repository-root", "", "repository root; defaults to the current repository")
 	flags.StringVar(&auditBinary, "audit-binary", "", "ownership audit binary; defaults to bin/openstack-gateway-audit")
 	flags.BoolVar(&preflightOnly, "preflight-only", false, "validate the target and empty ownership scope without installing or creating test resources")
+	flags.BoolVar(&recurring, "recurring", false, "run Cluster and Local member transitions sequentially in a dedicated project")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
@@ -59,7 +61,7 @@ func runMain(arguments []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
-	config, err := resolveFileConfig(file, resolveOptions{repositoryRoot: repositoryRoot})
+	configs, err := resolveRunConfigs(file, resolveOptions{repositoryRoot: repositoryRoot}, recurring)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -71,13 +73,13 @@ func runMain(arguments []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, config, runOptions{
+	if err := runSequentially(ctx, configs, runOptions{
 		repositoryRoot: repositoryRoot,
 		auditBinary:    auditBinary,
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		preflightOnly:  preflightOnly,
-	}); err != nil {
+	}, run); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}

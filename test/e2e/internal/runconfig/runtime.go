@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,9 @@ type Runtime struct {
 	ExpectedAPIServer            string                              `json:"expectedAPIServer,omitempty"`
 	ExpectedClusterUID           string                              `json:"expectedClusterUID,omitempty"`
 	LocalLifecycle               bool                                `json:"localLifecycle,omitempty"`
+	FloatingIPRecovery           bool                                `json:"floatingIPRecovery,omitempty"`
+	FloatingIPDeletion           bool                                `json:"floatingIPDeletion,omitempty"`
+	MemberTransitions            bool                                `json:"memberTransitions,omitempty"`
 	ControllerName               string                              `json:"controllerName"`
 	ControllerNamespace          string                              `json:"controllerNamespace"`
 	ControllerDeployment         string                              `json:"controllerDeployment"`
@@ -77,6 +81,8 @@ type Project struct {
 	ExpectedMemberSubnetID    string      `json:"expectedMemberSubnetID"`
 	ExpectedExternalNetworkID string      `json:"expectedExternalNetworkID"`
 	ControllerCloudsSecret    string      `json:"controllerCloudsSecret"`
+	FrontendSecurityGroupIDs  []string    `json:"frontendSecurityGroupIDs,omitempty"`
+	BackendSecurityGroupIDs   []string    `json:"backendSecurityGroupIDs,omitempty"`
 }
 
 // Audit is the required ownership audit configuration for the run.
@@ -101,10 +107,42 @@ func (c Runtime) Validate() error {
 		c.validateOpenStack,
 		c.validateExecution,
 		c.validateLocalLifecycle,
+		c.validateMemberTransitions,
+		c.validateNetworkScenarios,
 	} {
 		if err := validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c Runtime) validateNetworkScenarios() error {
+	major, minor, found := strings.Cut(c.Audit.Microversion, ".")
+	version, err := strconv.Atoi(minor)
+	if !found || major != "2" || err != nil || version < 5 || strconv.Itoa(version) != minor {
+		return fmt.Errorf("openstack.microversion must be an Octavia 2.x version at least 2.5")
+	}
+	if len(c.Project.FrontendSecurityGroupIDs) > 0 && version < 29 {
+		return fmt.Errorf("referenced frontend security groups require openstack.microversion 2.29 or later")
+	}
+	for _, ids := range [][]string{c.Project.FrontendSecurityGroupIDs, c.Project.BackendSecurityGroupIDs} {
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			if id == "" || strings.ContainsAny(id, "/\\?# \t\r\n") {
+				return fmt.Errorf("referenced security group IDs must be nonempty resource IDs")
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return fmt.Errorf("referenced security group IDs must be unique")
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	if (c.FloatingIPRecovery || c.FloatingIPDeletion) && (c.Project.ExpectedExternalNetworkID == "" || c.ExpectedAPIServer == "" || c.ExpectedClusterUID == "") {
+		return fmt.Errorf("floating IP fault scenarios require Floating IP allocation and exact Kubernetes cluster identity")
+	}
+	if (c.FloatingIPRecovery || c.FloatingIPDeletion) && c.Project.Mode != ProjectModeDedicated {
+		return fmt.Errorf("floating IP fault scenarios require a dedicated OpenStack project")
 	}
 	return nil
 }
@@ -177,21 +215,34 @@ func (c Runtime) validateArtifacts() error {
 	if c.BackendReplicas != 1 && c.BackendReplicas != 2 {
 		return fmt.Errorf("backend.replicas must be 1 or 2")
 	}
-	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector)
+	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector, c.Project.Mode)
 }
 
 func (c Runtime) validateLocalLifecycle() error {
 	if !c.LocalLifecycle {
 		return nil
 	}
-	if c.Project.Mode != ProjectModeShared || c.Project.ExpectedExternalNetworkID != "" {
-		return fmt.Errorf("scenarios.localLifecycle requires a shared project without Floating IP allocation")
+	if c.Project.ExpectedExternalNetworkID != "" {
+		return fmt.Errorf("scenarios.localLifecycle requires a profile without Floating IP allocation")
 	}
 	if c.BackendExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal || len(c.BackendNodeSelector) == 0 {
 		return fmt.Errorf("scenarios.localLifecycle requires Local backend traffic policy and an explicit Node selector")
 	}
 	if c.ExpectedAPIServer == "" || c.ExpectedClusterUID == "" {
 		return fmt.Errorf("scenarios.localLifecycle requires kubernetes.expectedAPIServer and kubernetes.expectedClusterUID")
+	}
+	return nil
+}
+
+func (c Runtime) validateMemberTransitions() error {
+	if !c.MemberTransitions {
+		return nil
+	}
+	if c.BackendReplicas != 2 || len(c.BackendNodeSelector) == 0 {
+		return fmt.Errorf("scenarios.memberTransitions requires two backend replicas and an explicit Node selector")
+	}
+	if c.ExpectedAPIServer == "" || c.ExpectedClusterUID == "" {
+		return fmt.Errorf("scenarios.memberTransitions requires exact Kubernetes cluster identity")
 	}
 	return nil
 }

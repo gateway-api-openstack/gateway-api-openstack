@@ -45,6 +45,20 @@ func TestTopologySettingsUsesOnlyApprovedInfrastructure(t *testing.T) {
 	}
 }
 
+func TestTopologySettingsReferencesExistingSecurityGroups(t *testing.T) {
+	settings := TopologySettings{VIPSubnetID: "vip-subnet", MemberSubnetID: "member-subnet", FrontendSecurityGroupIDs: []string{"sg-frontend"}, BackendSecurityGroupIDs: []string{"sg-worker"}}
+	parameters := settings.ClassConfig("run-config", "run-id")
+	if parameters.Spec.FrontendSecurity.Mode != configv1alpha1.FrontendReferenced || parameters.Spec.BackendSecurity.Mode != configv1alpha1.BackendReferenced ||
+		len(parameters.Spec.FrontendSecurity.Groups) != 1 || parameters.Spec.FrontendSecurity.Groups[0].ID != "sg-frontend" ||
+		len(parameters.Spec.BackendSecurity.Groups) != 1 || parameters.Spec.BackendSecurity.Groups[0].ID != "sg-worker" {
+		t.Fatalf("referenced security configuration = %#v", parameters.Spec)
+	}
+	defaults := (TopologySettings{VIPSubnetID: "vip-subnet", MemberSubnetID: "member-subnet"}).ClassConfig("run-config", "run-id")
+	if defaults.Spec.FrontendSecurity.Mode != configv1alpha1.FrontendOctaviaManaged || defaults.Spec.BackendSecurity.Mode != configv1alpha1.BackendUnmanaged {
+		t.Fatal("fixture security defaults differ from API server defaults")
+	}
+}
+
 func TestRequireClassConfigCRDRejectsUnavailableOrDifferentAPI(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {

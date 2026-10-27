@@ -32,6 +32,7 @@ const (
 	metricsSubsystem = "openstack"
 
 	requestsMetricName  = "gateway_api_openstack_openstack_requests_total"
+	startsMetricName    = "gateway_api_openstack_openstack_request_starts_total"
 	durationMetricName  = "gateway_api_openstack_openstack_request_duration_seconds"
 	mutationsMetricName = "gateway_api_openstack_openstack_mutations_total"
 	inFlightMetricName  = "gateway_api_openstack_openstack_mutations_in_flight"
@@ -41,6 +42,7 @@ const (
 // implements clients.RequestObserver.
 type RequestMetrics struct {
 	requests  *prometheus.CounterVec
+	starts    *prometheus.CounterVec
 	durations *prometheus.HistogramVec
 	mutations *prometheus.CounterVec
 	inFlight  *prometheus.GaugeVec
@@ -65,6 +67,18 @@ func RegisterRequestMetrics(registerer prometheus.Registerer) (*RequestMetrics, 
 	))
 	if err != nil {
 		return nil, fmt.Errorf("register %s: %w", requestsMetricName, err)
+	}
+	starts, err := registerCounterVec(registerer, prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Subsystem: metricsSubsystem,
+			Name:      "request_starts_total",
+			Help:      "Total OpenStack API requests admitted by the client-side rate limiter after service discovery.",
+		},
+		[]string{"service", "method"},
+	))
+	if err != nil {
+		return nil, fmt.Errorf("register %s: %w", startsMetricName, err)
 	}
 	durations, err := registerHistogramVec(registerer, prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -128,6 +142,7 @@ func RegisterRequestMetrics(registerer prometheus.Registerer) (*RequestMetrics, 
 
 	return &RequestMetrics{
 		requests:  requests,
+		starts:    starts,
 		durations: durations,
 		mutations: mutations,
 		inFlight:  inFlight,
@@ -142,6 +157,7 @@ func (m *RequestMetrics) ObserveRequestStart(observation clients.RequestStartObs
 	}
 	service := boundedService(observation.Service)
 	method := boundedMethod(observation.Method)
+	m.starts.WithLabelValues(string(service), string(method)).Inc()
 	if !isBoundedMutation(service, method) {
 		return
 	}

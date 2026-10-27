@@ -1,0 +1,69 @@
+name: OpenStack E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openstack-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    if: >-
+      github.repository == 'gateway-api-openstack/gateway-api-openstack' &&
+      github.ref == 'refs/heads/main' && vars.OPENSTACK_E2E_ENABLED == 'true'
+    environment: openstack-e2e
+    runs-on: [self-hosted, linux, openstack-e2e]
+    timeout-minutes: 360
+    env:
+      E2E_CONFIG: ${{ vars.OPENSTACK_E2E_CONFIG }}
+    steps:
+      - name: Check durable run state before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ "${E2E_CONFIG}" != /* || ! -f "${E2E_CONFIG}" || "${E2E_CONFIG}" == *$'\n'* || "${E2E_CONFIG}" == *$'\r'* ]]; then
+            echo '::error::Configure an absolute private E2E config path on the runner'
+            exit 1
+          fi
+          config="$(realpath -e -- "${E2E_CONFIG}")"
+          workspace="$(realpath -m -- "${GITHUB_WORKSPACE}")"
+          if [[ "${config}" == "${workspace}" || "${config}" == "${workspace}/"* ]]; then
+            echo '::error::E2E config and pending state must be outside the checkout'
+            exit 1
+          fi
+          if ! mkdir -- "${config}.pending" 2>/dev/null; then
+            echo '::error::A previous run needs cleanup review before another run can start'
+            exit 1
+          fi
+          printf 'E2E_CONFIG=%s\n' "${config}" >>"${GITHUB_ENV}"
+
+      - name: Check out reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Run both traffic policies and require cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          marker="${E2E_CONFIG}.pending"
+          if ! make test-e2e-recurring E2E_CONFIG="${E2E_CONFIG}" >"${marker}/run.log" 2>&1; then
+            echo '::error::E2E failed; private evidence and the pending marker remain on the runner'
+            exit 1
+          fi
+          rm -- "${marker}/run.log"
+          rmdir -- "${marker}"

@@ -23,7 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestResolveLocalLifecycleRequiresSharedProjectAndExactTarget(t *testing.T) {
+func TestResolveLocalLifecycleRequiresExactTarget(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		change func(*File)
@@ -35,7 +35,7 @@ func TestResolveLocalLifecycleRequiresSharedProjectAndExactTarget(t *testing.T) 
 			config.OpenStack.ProjectMode = ProjectModeDedicated
 			config.OpenStack.DedicatedForE2E = true
 			config.OpenStack.AcceptProjectWideCredentialRisk = false
-		}, want: "shared project"},
+		}},
 		{name: "floating IP", change: func(config *File) { config.OpenStack.ExternalNetworkID = "external-network" }, want: "without Floating IP"},
 		{name: "Cluster policy", change: func(config *File) {
 			config.Backend.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
@@ -79,7 +79,6 @@ func TestRuntimeLocalLifecycleCannotBypassFilePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, change := range []func(*Runtime){
-		func(config *Runtime) { config.Project.Mode = ProjectModeDedicated },
 		func(config *Runtime) { config.Project.ExpectedExternalNetworkID = "external-network" },
 		func(config *Runtime) { config.BackendNodeSelector = nil },
 		func(config *Runtime) {
@@ -104,4 +103,37 @@ func localLifecycleFile() File {
 	config.Backend.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
 	config.Backend.NodeSelector = map[string]string{"e2e.example.test/backend": "true"}
 	return config
+}
+
+func TestResolveMemberTransitionsScope(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		change   func(*File)
+		rejected bool
+	}{
+		{name: "shared Local"},
+		{name: "dedicated Cluster", change: func(c *File) {
+			c.OpenStack.ProjectMode, c.OpenStack.DedicatedForE2E, c.OpenStack.AcceptProjectWideCredentialRisk = ProjectModeDedicated, true, false
+			c.Backend.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
+		}},
+		{name: "shared Cluster", change: func(c *File) { c.Backend.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster }, rejected: true},
+		{name: "missing selector", change: func(c *File) { c.Backend.NodeSelector = nil }, rejected: true},
+		{name: "one replica", change: func(c *File) { c.Backend.Replicas = 1 }, rejected: true},
+		{name: "no cluster fence", change: func(c *File) { c.Kubernetes.ExpectedAPIServer, c.Kubernetes.ExpectedClusterUID = "", "" }, rejected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := localLifecycleFile()
+			config.Scenarios.LocalLifecycle, config.Scenarios.MemberTransitions = false, true
+			if test.change != nil {
+				test.change(&config)
+			}
+			resolved, err := Resolve(config, ResolveOptions{RepositoryRoot: t.TempDir()})
+			if (err != nil) != test.rejected {
+				t.Fatalf("Resolve() = %v", err)
+			}
+			if !test.rejected && !resolved.MemberTransitions {
+				t.Fatal("member scenario selection lost")
+			}
+		})
+	}
 }

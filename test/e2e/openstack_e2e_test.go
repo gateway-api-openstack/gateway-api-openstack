@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/controllercontract"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
@@ -81,6 +83,7 @@ type openStackSuite struct {
 	secondClass            *gatewayv1.GatewayClass
 	classParametersName    string
 	frozenGateway          *gatewayv1.Gateway
+	cloudClients           *openstack.ServiceClients
 
 	controllerDeploymentUID types.UID
 	backendDeploymentUID    types.UID
@@ -114,9 +117,9 @@ func TestOpenStackE2E(t *testing.T) {
 	suite := requireOpenStackSuite(t, config, report)
 	runErr := runOpenStackWithCleanup(ctx, suite, report)
 	runErr = verifyOpenStackPostCleanupAudit(suite, report, runErr)
-	runErr = writeOpenStackArtifacts(t, config.ArtifactDirectory, report, runErr)
+	runErr = writeOpenStackArtifacts(config.ArtifactDirectory, report, runErr)
 	if runErr != nil {
-		t.Fatal("OpenStack E2E did not complete. Details were omitted from test output.")
+		t.Fatalf("OpenStack E2E did not complete: %v", runErr)
 	}
 }
 
@@ -126,9 +129,9 @@ func requireOpenStackSuite(t *testing.T, config e2eConfig, report *e2eReport) *o
 	if err == nil {
 		return suite
 	}
-	mustSetCheck(report, "preflight safety validation", statusFailed, checkSummaryFailed)
+	failure := report.failCheck(checkPreflight, err)
 	writeReportAfterSetupFailure(t, config.ArtifactDirectory, report)
-	t.Fatal("OpenStack E2E preflight could not create a Kubernetes client")
+	t.Fatal(failure)
 	return nil
 }
 
@@ -140,8 +143,7 @@ func runOpenStackWithCleanup(ctx context.Context, suite *openStackSuite, report 
 	if cleanupErr == nil {
 		return runErr
 	}
-	mustSetCheck(report, "orderly deletion and finalizer completion", statusFailed, checkSummaryFailed)
-	return firstOpenStackError(runErr, errors.New("ordered E2E cleanup did not complete"))
+	return errors.Join(runErr, report.failCheck(checkCleanup, cleanupErr))
 }
 
 func verifyOpenStackPostCleanupAudit(suite *openStackSuite, report *e2eReport, runErr error) error {
@@ -154,24 +156,14 @@ func verifyOpenStackPostCleanupAudit(suite *openStackSuite, report *e2eReport, r
 	if err == nil {
 		return runErr
 	}
-	mustSetCheck(report, "post-test ownership audit returns to baseline", statusFailed, checkSummaryFailed)
-	return firstOpenStackError(runErr, errors.New("post-test ownership audit did not match the baseline"))
+	return errors.Join(runErr, report.failCheck(checkCleanupAudit, err))
 }
 
-func writeOpenStackArtifacts(t *testing.T, directory string, report *e2eReport, runErr error) error {
-	t.Helper()
+func writeOpenStackArtifacts(directory string, report *e2eReport, runErr error) error {
 	if err := writeE2EArtifacts(directory, report); err != nil {
-		t.Errorf("OpenStack E2E artifacts could not be written: %v", err)
-		return firstOpenStackError(runErr, errors.New("E2E artifacts could not be written"))
+		return errors.Join(runErr, &checkFailure{name: "write E2E artifacts", cause: err})
 	}
 	return runErr
-}
-
-func firstOpenStackError(current, fallback error) error {
-	if current != nil {
-		return current
-	}
-	return fallback
 }
 
 func newOpenStackSuite(config e2eConfig, report *e2eReport) (*openStackSuite, error) {
@@ -221,43 +213,42 @@ func newOpenStackSuite(config e2eConfig, report *e2eReport) (*openStackSuite, er
 }
 
 func (s *openStackSuite) run(ctx context.Context) error {
-	type step struct {
-		name string
-		run  func(context.Context) error
-	}
-	steps := []step{
-		{name: "preflight safety validation", run: s.preflight},
-		{name: "isolated NodePort backend", run: s.createBackend},
-		{name: "GatewayClass status", run: s.createGatewayClass},
-		{name: "Gateway status", run: s.createGateway},
-		{name: "HTTPRoute status", run: s.createHTTPRoute},
-		{name: "active ownership inventory audit", run: s.verifyActiveOwnershipInventoryAudit},
-		{name: "external HTTP traffic", run: s.verifyExternalTraffic},
-	}
-	if s.config.LocalLifecycle {
-		steps = append(steps, step{name: checkFrozenClass, run: s.verifyFrozenClassConfiguration})
-	}
-	steps = append(steps,
-		step{name: "leader pod deletion and recovery", run: s.deleteLeaderAndVerifyRecovery},
-		step{name: "cold controller restart and recovery", run: s.coldRestartAndVerifyRecovery},
-		step{name: "converged metrics snapshot", run: s.verifyConvergedNoOp},
-	)
-	if s.config.LocalLifecycle {
-		steps = append(steps, step{name: checkFrozenRestart, run: s.verifyFrozenGatewayAfterRestart})
-		if s.config.BackendReplicas == 2 {
-			steps = append(steps, step{name: checkMemberTransitions, run: s.verifyWorkerMembershipTransitions})
+	steps := s.checkRunners()
+	for _, name := range s.report.requiredChecks {
+		// This audit must also run after a failed check and emergency cleanup.
+		if name == checkCleanupAudit {
+			continue
 		}
-		steps = append(steps, step{name: checkSequentialClasses, run: s.verifySequentialClassConfiguration})
-	}
-	steps = append(steps, step{name: "orderly deletion and finalizer completion", run: s.orderlyCleanup})
-	for _, step := range steps {
-		if err := step.run(ctx); err != nil {
-			mustSetCheck(s.report, step.name, statusFailed, checkSummaryFailed)
-			return errors.New("an E2E step failed")
+		if err := steps[name](ctx); err != nil {
+			return s.report.failCheck(name, err)
 		}
-		mustSetCheck(s.report, step.name, statusPassed, checkSummaryPassed)
+		mustSetCheck(s.report, name, statusPassed, checkSummaryPassed)
 	}
 	return nil
+}
+
+func (s *openStackSuite) checkRunners() map[string]func(context.Context) error {
+	return map[string]func(context.Context) error{
+		checkPreflight:          s.preflight,
+		checkBackend:            s.createBackend,
+		checkGatewayClass:       s.createGatewayClass,
+		checkGateway:            s.createGateway,
+		checkHTTPRoute:          s.createHTTPRoute,
+		checkActiveAudit:        s.verifyActiveOwnershipInventoryAudit,
+		checkTraffic:            s.verifyExternalTraffic,
+		checkReferencedSecurity: s.verifyReferencedSecurity,
+		checkFloatingIPRecovery: s.verifyFloatingIPRecovery,
+		checkFloatingIPDeletion: s.verifyFloatingIPDeletion,
+		checkFrozenClass:        s.verifyFrozenClassConfiguration,
+		checkLeaderRecovery:     s.deleteLeaderAndVerifyRecovery,
+		checkColdRestart:        s.coldRestartAndVerifyRecovery,
+		checkMetrics:            s.verifyConvergedNoOp,
+		checkFrozenRestart:      s.verifyFrozenGatewayAfterRestart,
+		checkMemberTransitions:  s.verifyWorkerMembershipTransitions,
+		checkSequentialClasses:  s.verifySequentialClassConfiguration,
+		checkCleanup:            s.orderlyCleanup,
+		checkCleanupAudit:       s.verifyPostCleanupAudit,
+	}
 }
 
 func (s *openStackSuite) preflight(ctx context.Context) error {
@@ -266,6 +257,11 @@ func (s *openStackSuite) preflight(ctx context.Context) error {
 	}
 	if err := s.verifyPreflightKubernetesState(ctx); err != nil {
 		return err
+	}
+	if slices.Contains(s.report.requiredChecks, checkMemberTransitions) {
+		if err := s.validateMembershipWorkers(ctx); err != nil {
+			return err
+		}
 	}
 	return s.prepareBaselineAudit(ctx)
 }
@@ -511,5 +507,23 @@ func writeReportAfterSetupFailure(t *testing.T, directory string, report *e2eRep
 	t.Helper()
 	if err := writeE2EArtifacts(directory, report); err != nil {
 		t.Error("OpenStack E2E failure artifacts could not be written")
+	}
+}
+
+func TestEveryConfiguredCheckHasRunner(t *testing.T) {
+	config := reportTestConfig(projectModeDedicated)
+	config.LocalLifecycle, config.MemberTransitions = true, true
+	config.FloatingIPRecovery, config.FloatingIPDeletion = true, true
+	config.Project.FrontendSecurityGroupIDs = []string{"test-group"}
+	suite := &openStackSuite{config: config}
+	runners := suite.checkRunners()
+	checks := configuredChecks(config)
+	if len(runners) != len(checks) {
+		t.Fatalf("%d configured checks have %d runners", len(checks), len(runners))
+	}
+	for _, name := range checks {
+		if runners[name] == nil {
+			t.Fatalf("configured check %q has no runner", name)
+		}
 	}
 }
