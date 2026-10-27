@@ -37,6 +37,9 @@ func TestRequestMetricsRecordsRequestsDurationsAndMutations(t *testing.T) {
 		Method:  clients.RequestMethodPost,
 	})
 	mutationLabels := map[string]string{"service": "octavia", "method": "POST"}
+	if got := gatheredCounterValue(t, registry, startsMetricName, mutationLabels); got != 1 {
+		t.Fatalf("request admissions before completion = %v, want 1", got)
+	}
 	if got := gatheredCounterValue(t, registry, mutationsMetricName, mutationLabels); got != 1 {
 		t.Fatalf("mutation counter before completion = %v, want 1", got)
 	}
@@ -94,7 +97,7 @@ func TestRegisterRequestMetricsReusesCompatibleCollectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second RegisterRequestMetrics() error = %v", err)
 	}
-	if first.requests != second.requests || first.durations != second.durations || first.mutations != second.mutations ||
+	if first.requests != second.requests || first.starts != second.starts || first.durations != second.durations || first.mutations != second.mutations ||
 		first.inFlight != second.inFlight {
 		t.Fatal("RegisterRequestMetrics() did not reuse registered collectors")
 	}
@@ -134,6 +137,9 @@ func TestRequestMetricsBoundsUnexpectedObservationValues(t *testing.T) {
 		t.Fatalf("bounded request counter = %v, want 1", got)
 	}
 	mutationLabels := map[string]string{"service": "unknown", "method": "OTHER"}
+	if got := gatheredCounterValue(t, registry, startsMetricName, mutationLabels); got != 1 {
+		t.Fatalf("bounded request admissions = %v, want 1", got)
+	}
 	if got := gatheredCounterValue(t, registry, mutationsMetricName, mutationLabels); got != 1 {
 		t.Fatalf("bounded mutation counter = %v, want 1", got)
 	}
@@ -168,11 +174,33 @@ func TestRequestMetricsDoesNotCountKeystoneAsMutation(t *testing.T) {
 		Method:  clients.RequestMethodPost,
 	})
 	labels := map[string]string{"service": "keystone", "method": "POST"}
+	if got := gatheredCounterValue(t, registry, startsMetricName, labels); got != 1 {
+		t.Fatalf("Keystone request admissions = %v, want 1", got)
+	}
 	if got := gatheredCounterValue(t, registry, mutationsMetricName, labels); got != 0 {
 		t.Fatalf("Keystone mutation counter = %v, want 0", got)
 	}
 	if got := gatheredGaugeValue(t, registry, inFlightMetricName, labels); got != 0 {
 		t.Fatalf("Keystone in-flight mutations = %v, want 0", got)
+	}
+}
+
+func TestRequestMetricsCountsReadAdmissionBeforeCompletion(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := RegisterRequestMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics.ObserveRequestStart(clients.RequestStartObservation{Service: clients.RequestServiceOctavia, Method: clients.RequestMethodGet})
+	labels := map[string]string{"service": "octavia", "method": "GET"}
+	if got := gatheredCounterValue(t, registry, startsMetricName, labels); got != 1 {
+		t.Fatalf("read admissions = %v, want 1", got)
+	}
+	if got := gatheredCounterValue(t, registry, requestsMetricName, labels); got != 0 {
+		t.Fatalf("read completions = %v, want 0", got)
+	}
+	if got := gatheredCounterValue(t, registry, mutationsMetricName, labels); got != 0 {
+		t.Fatalf("read mutations = %v, want 0", got)
 	}
 }
 

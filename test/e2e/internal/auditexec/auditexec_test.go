@@ -189,3 +189,23 @@ func validReport() audit.Report {
 		},
 	}
 }
+
+func TestCommandFailureRetainsCauseWithoutPrintingIt(t *testing.T) {
+	config := validConfig()
+	cause := errors.New("credential-secret-sentinel")
+	config.RunCommand = func(context.Context, string, []string, []string, io.Writer, io.Writer) error { return cause }
+	_, err := Run(t.Context(), config, Validation{})
+	if !errors.Is(err, ErrCommand) || !errors.Is(err, cause) {
+		t.Fatalf("command failure lost its classification or cause: %v", err)
+	}
+	if strings.Contains(err.Error(), cause.Error()) {
+		t.Fatal("command failure exposed its cause")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = Run(ctx, config, Validation{})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrCommand) {
+		t.Fatalf("command failure lost context cancellation: %v", err)
+	}
+}

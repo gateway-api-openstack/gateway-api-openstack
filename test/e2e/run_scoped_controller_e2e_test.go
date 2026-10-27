@@ -86,9 +86,11 @@ func (s *openStackSuite) verifyRunScopedClassConfig(ctx context.Context) error {
 	wanted := s.classConfig
 	if wanted == nil {
 		wanted = controllercontract.TopologySettings{
-			VIPSubnetID:       s.config.Project.ExpectedVIPSubnetID,
-			MemberSubnetID:    s.config.Project.ExpectedMemberSubnetID,
-			ExternalNetworkID: s.config.Project.ExpectedExternalNetworkID,
+			VIPSubnetID:              s.config.Project.ExpectedVIPSubnetID,
+			MemberSubnetID:           s.config.Project.ExpectedMemberSubnetID,
+			ExternalNetworkID:        s.config.Project.ExpectedExternalNetworkID,
+			FrontendSecurityGroupIDs: s.config.Project.FrontendSecurityGroupIDs,
+			BackendSecurityGroupIDs:  s.config.Project.BackendSecurityGroupIDs,
 		}.ClassConfig(s.config.GatewayClassName, s.config.RunID)
 	}
 	if err := s.validateClassParameters(&parameters, wanted); err != nil {

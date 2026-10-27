@@ -218,8 +218,12 @@ func (s *openStackSuite) backendEndpointsReady(ctx context.Context, replicas int
 }
 
 func (s *openStackSuite) selectedBackendNodes(ctx context.Context) (map[string]struct{}, error) {
+	return s.eligibleBackendNodes(ctx, s.config.BackendNodeSelector)
+}
+
+func (s *openStackSuite) eligibleBackendNodes(ctx context.Context, selector map[string]string) (map[string]struct{}, error) {
 	var nodes corev1.NodeList
-	if err := s.client.List(ctx, &nodes, client.MatchingLabels(s.config.BackendNodeSelector)); err != nil {
+	if err := s.client.List(ctx, &nodes, client.MatchingLabels(selector)); err != nil {
 		return nil, fmt.Errorf("list selected backend Nodes: %w", err)
 	}
 	selected := make(map[string]struct{})
@@ -415,33 +419,34 @@ func (s *openStackSuite) waitForHTTPRoute(ctx context.Context) error {
 }
 
 func (s *openStackSuite) verifyExternalTraffic(ctx context.Context) error {
-	expectedBody := "gateway-api-openstack-e2e-" + s.config.RunID
 	return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
 		address, err := s.gatewayAddress(ctx)
 		if err != nil {
 			return false, err
 		}
-		request, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			"http://"+net.JoinHostPort(address, "80")+"/echo?msg="+expectedBody,
-			nil,
-		)
-		if err != nil {
-			return false, fmt.Errorf("build external HTTP request: %w", err)
-		}
-		request.Host = s.hostname
-		response, err := s.httpClient.Do(request)
-		if err != nil {
-			return false, nil
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
-		closeErr := response.Body.Close()
-		if readErr != nil || closeErr != nil || len(body) > 4096 {
-			return false, nil
-		}
-		return response.StatusCode == http.StatusOK && string(body) == expectedBody, nil
+		return s.probeExternalTraffic(ctx, address), nil
 	})
+}
+
+func (s *openStackSuite) probeExternalTraffic(ctx context.Context, address string) bool {
+	expectedBody := "gateway-api-openstack-e2e-" + s.config.RunID
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://"+net.JoinHostPort(address, "80")+"/echo?msg="+expectedBody, nil)
+	if err != nil {
+		return false
+	}
+	request.Host = s.hostname
+	// Sample new connections so an existing keep-alive connection cannot hide
+	// a broken member transition.
+	request.Close = true
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return false
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+	closeErr := response.Body.Close()
+	return readErr == nil && closeErr == nil && len(body) <= 4096 &&
+		response.StatusCode == http.StatusOK && string(body) == expectedBody
 }
 
 func (s *openStackSuite) gatewayAddress(ctx context.Context) (string, error) {

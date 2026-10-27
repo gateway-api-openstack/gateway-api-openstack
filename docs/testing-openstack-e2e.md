@@ -115,13 +115,37 @@ The runner authenticates the controller and audit configurations independently b
 The generated artifacts and public report must not contain the project ID.
 
 Set `openstack.cloud` to the selected cloud entry and `openstack.region` to the exact region under test.
-The runner fixes the provider to Amphora, the member mode to NodePort, the Node address type to `InternalIP`, and the Octavia microversion to `2.5`.
+The runner fixes the provider to Amphora, the member mode to NodePort, and the Node address type to `InternalIP`.
+`openstack.microversion` defaults to `2.5` and must be at least `2.29` when frontend groups are referenced.
 
 Set `openstack.vipSubnetID` and `openstack.memberSubnetID` to the approved network IDs.
 Set `openstack.externalNetworkID` to an exact external network ID when the test should allocate a Floating IP, or to the literal `none` when it should not.
 The runner does not choose networks, reserve quota, or prove that the network path is safe.
 The baseline run creates one OpenStackGatewayClassConfig using these exact subnet and external network IDs.
 The test GatewayClass references this object through `spec.parametersRef`.
+
+### Select network checks
+
+Optional `openstack.frontendSecurityGroupIDs` and `openstack.backendSecurityGroupIDs` select existing groups for the test class.
+Each list accepts up to 16 unique UUIDs and enables the corresponding `Referenced` mode.
+The suite verifies frozen group IDs, the load balancer's VIP groups, backend port prerequisites, and ordinary HTTP traffic.
+It never changes group rules or worker associations, including in shared project mode.
+See the [security configuration requirements](reference/class-configuration.md#security-groups) before selecting these checks.
+
+`scenarios.floatingIPRecovery: true` opts into one conditional detachment of the suite's existing Floating IP.
+It requires `openstack.projectMode: dedicated`, an external network, and the exact cluster identity checks.
+The scenario verifies the same Floating IP ID, address, and VIP association after recovery, then requires successful HTTP traffic and unchanged ownership inventory.
+It does not create an additional address or load balancer.
+Shared project mode rejects this scenario.
+
+`scenarios.floatingIPDeletion: true` uses the same dedicated-project and cluster identity requirements.
+It conditionally deletes only the run's owned, attached address and confirms its absence before observing a replacement.
+The controller must recover through periodic observation without a Kubernetes spec edit, restore HTTP traffic, and preserve every other cloud resource ID.
+The scenario replaces one address on the existing load balancer and does not retain two addresses at once.
+
+These checks are disabled by default.
+A passing report requires every selected check and the normal cleanup audit to pass.
+Their availability is test coverage, not evidence of a completed OpenStack run.
 
 ### Set the credentials
 
@@ -166,7 +190,8 @@ backend:
 
 Replace the example label with one applied only to the intended worker Nodes, and keep those labels stable throughout the run.
 The runner reads Node labels but does not change them.
-It rejects a nonempty `backend.nodeSelector` unless `backend.externalTrafficPolicy` is `Local`.
+Shared project mode requires Local traffic policy when a selector is set.
+Dedicated mode also allows Cluster, but Pod placement alone does not restrict its cloud members.
 
 The suite requires at least as many matching Ready, schedulable worker Nodes as `backend.replicas` before it creates the backend.
 Required Pod anti-affinity places replicas on distinct selected Nodes.
@@ -179,8 +204,9 @@ Validate each traffic policy separately when making a support claim.
 ### Enable Local lifecycle checks
 
 Set `scenarios.localLifecycle: true` to add class configuration and backend transition checks.
-This profile requires shared project mode, `externalNetworkID: none`, Local traffic policy, an explicit Node selector, and both cluster identity fields.
-Keep the shared project acknowledgement described above, then update these fields in the existing configuration:
+This profile requires `externalNetworkID: none`, Local traffic policy, an explicit Node selector, and both cluster identity fields.
+It supports either project mode with the corresponding acknowledgement.
+Update these fields in the existing configuration:
 
 ```yaml
 kubernetes:
@@ -210,10 +236,28 @@ It does not test simultaneous Gateways on different topologies.
 | Backend replicas | Transition check |
 | --- | --- |
 | `1` | Run the class configuration and restart checks without a member transition. |
-| `2` | Scale the test backend from two replicas to one and back. Verify member counts, preserve the surviving member and other cloud resource IDs, and check traffic after convergence. |
+| `2` | Run the member transition checks described below. |
 
-The member transition requires two workers so the test can verify that an unchanged member survives.
-These checks do not establish uninterrupted traffic or a drain policy.
+### Enable member transition checks
+
+Set `scenarios.memberTransitions: true` to run the two-worker transition without the additional class lifecycles.
+Use two backend replicas, a Node selector matching exactly two eligible workers, and both cluster identity fields.
+Local supports either project mode.
+Cluster requires a dedicated project, and the selected workers must be exactly the cluster's two eligible workers.
+The runner checks this before creating a Gateway graph.
+
+The scenario scales backend replicas from two to one and back.
+Local must remove one member and later add its replacement while preserving the surviving member.
+Cluster must retain both members throughout.
+Both preserve every parent resource ID and perform the normal cleanup audit.
+The runner does not create, delete, relabel, or change the readiness of Nodes.
+
+During the transition, the runner samples HTTP with fresh connections at the configured polling interval and records failed samples without retrying them away.
+This tests the transition that retains a healthy backend, not arbitrary Node replacement or a general drain policy.
+The cloud mutation budget is two attempts for Local and zero for Cluster.
+The request admission budget is the configured QPS multiplied by the observation duration plus burst, with rounding to a whole request.
+This bounds the complete observation window rather than measuring every subsecond burst.
+The leader and controller process must remain unchanged so counters remain comparable.
 
 ## Run the suite
 
@@ -247,7 +291,29 @@ make test-e2e-compile
 ```
 
 Live E2E remains opt-in and is not part of `make verify`.
-A scheduled cloud job still needs a dedicated environment and an agreed controller image registry.
+
+### Recurring dedicated validation
+
+`make test-e2e-recurring E2E_CONFIG=/absolute/private/path/openstack.yaml` resolves the configuration for Cluster and Local and runs them sequentially with separate identities.
+It overrides only the backend traffic policy for each profile.
+It requires a dedicated project, `scenarios.memberTransitions: true`, two selected workers, both cluster identity fields, no fixed `runID`, and `scenarios.localLifecycle` disabled.
+Set `artifacts.root` to an existing absolute directory outside the checkout, including after resolving symlinks.
+The second profile starts only after the first passes its audit and removes its controller installation.
+Any failure or cancellation stops the sequence.
+
+The workflow in `.github/workflows/openstack-e2e.yml` can run weekly or through manual dispatch.
+It accepts only `main` in the project repository and remains disabled unless the repository variable `OPENSTACK_E2E_ENABLED` is `true`.
+Configure the protected `openstack-e2e` environment and one dedicated Linux runner carrying the `openstack-e2e` label.
+That runner must have the approved API and VIP connectivity, tools, credentials, and immutable images described above.
+Set `OPENSTACK_E2E_CONFIG` to a private configuration file outside the checkout on persistent storage.
+Keep the configuration path stable so successive jobs use the same pending marker.
+
+Before checkout, the workflow creates an exclusive `<config-path>.pending` directory.
+It retains that marker and any private test logs if checkout, setup, testing, or cleanup fails.
+A later job refuses to start while the marker exists, and raw logs are not uploaded to GitHub.
+After failure, follow the recovery procedure below and confirm the owned graph and installation are absent before removing the marker.
+Changing the configuration path or replacing the runner's persistent storage is not a cleanup procedure.
+Successful jobs remove the marker and keep the per-run reports in `artifacts.root`.
 
 ## Installation and isolation
 
@@ -278,7 +344,8 @@ The automated run covers the following checks:
 The no-op check reads metrics from the current leader through the Kubernetes API.
 It requires the OpenStack mutation counter to remain unchanged and the Octavia GET observation counter to increase while the leader and controller process remain stable.
 
-The runner does not inject quota, timeout, rate limiting, Octavia failure, blocked finalization, or external deletion faults.
+The optional network scenarios inject only the approved owned-FIP detachment or deletion.
+The runner does not inject quota, timeout, rate limiting, Octavia failure, blocked finalization, or referenced-security rule faults.
 Keep those rows `Not run` unless a separate, reviewed mechanism exercises them in a dedicated project.
 Unit, adapter, or envtest coverage does not turn an OpenStack E2E row into a pass.
 
@@ -291,6 +358,7 @@ See the [ownership audit contract](design/ownership-audit.md) for its discovery 
 
 The runner writes `report.json` and `report.md` in a new artifact directory.
 They record the tested artifact, configuration summary, check results, and aggregate audit and metrics evidence without cloud resource IDs or backend selector values.
+Failures retain a fixed classification and the failed check, while raw API and audit errors remain excluded from the report.
 Review them under the [publication policy](reports/README.md) before sharing.
 
 The overall result is `Passed` only when every foundation check and selected lifecycle check passes, including active ownership evidence, finalization, and the post-test empty audit.

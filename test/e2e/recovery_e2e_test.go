@@ -465,17 +465,9 @@ func (s *openStackSuite) verifyRecoveryAudit(ctx context.Context, stage string) 
 	if s.activeAudit == nil {
 		return nil
 	}
-	var observed auditSummary
-	if err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
-		var fingerprint [32]byte
-		summary, err := s.runOwnershipAudit(ctx, false, &fingerprint)
-		if err != nil {
-			return false, nil
-		}
-		observed = summary
-		return summary == *s.activeAudit && fingerprint == s.activeAuditFingerprint, nil
-	}); err != nil {
-		return fmt.Errorf("wait for active ownership inventory after controller recovery: %w", err)
+	observed, err := s.waitForActiveOwnershipInventory(ctx)
+	if err != nil {
+		return err
 	}
 	switch stage {
 	case "leader":
@@ -486,6 +478,28 @@ func (s *openStackSuite) verifyRecoveryAudit(ctx context.Context, stage string) 
 		return fmt.Errorf("unsupported ownership audit recovery stage")
 	}
 	return nil
+}
+
+func (s *openStackSuite) waitForActiveOwnershipInventory(ctx context.Context) (auditSummary, error) {
+	if s.activeAudit == nil {
+		return auditSummary{}, fmt.Errorf("active ownership inventory is missing")
+	}
+	var observed auditSummary
+	if err := waitForOwnershipInventory(ctx, s.config.PollInterval, func(ctx context.Context) error {
+		var fingerprint [32]byte
+		summary, err := s.runOwnershipAudit(ctx, false, &fingerprint)
+		if err != nil {
+			return err
+		}
+		observed = summary
+		if summary != *s.activeAudit || fingerprint != s.activeAuditFingerprint {
+			return errInventoryPending
+		}
+		return nil
+	}); err != nil {
+		return auditSummary{}, fmt.Errorf("wait for active ownership inventory after recovery: %w", err)
+	}
+	return observed, nil
 }
 
 func (s *openStackSuite) orderlyCleanup(ctx context.Context) error {
@@ -730,19 +744,22 @@ func sanitizeAuditSummary(report audit.Report) auditSummary {
 
 func (s *openStackSuite) verifyPostCleanupAudit(ctx context.Context) error {
 	var observed auditSummary
-	err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
+	err := waitForOwnershipInventory(ctx, s.config.PollInterval, func(ctx context.Context) error {
 		summary, err := s.runOwnershipAudit(ctx, true, nil)
 		if err != nil {
-			return false, nil
+			return err
 		}
 		observed = summary
-		return summary == *s.baselineAudit, nil
+		if summary != *s.baselineAudit {
+			return errInventoryPending
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("wait for ownership audit to return to baseline: %w", err)
 	}
 	s.report.Audit.AfterCleanup = &observed
-	mustSetCheck(s.report, "post-test ownership audit returns to baseline", statusPassed, checkSummaryPassed)
+	mustSetCheck(s.report, checkCleanupAudit, statusPassed, checkSummaryPassed)
 	return nil
 }
 

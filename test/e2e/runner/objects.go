@@ -135,9 +135,11 @@ func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML 
 		configMap:          configMap,
 		secret:             secret,
 		classConfig: controllercontract.TopologySettings{
-			VIPSubnetID:       config.Project.ExpectedVIPSubnetID,
-			MemberSubnetID:    config.Project.ExpectedMemberSubnetID,
-			ExternalNetworkID: config.Project.ExpectedExternalNetworkID,
+			VIPSubnetID:              config.Project.ExpectedVIPSubnetID,
+			MemberSubnetID:           config.Project.ExpectedMemberSubnetID,
+			ExternalNetworkID:        config.Project.ExpectedExternalNetworkID,
+			FrontendSecurityGroupIDs: config.Project.FrontendSecurityGroupIDs,
+			BackendSecurityGroupIDs:  config.Project.BackendSecurityGroupIDs,
 		}.ClassConfig(config.GatewayClassName, config.RunID),
 		deployment: deployment,
 	}, nil

@@ -94,6 +94,15 @@ test-e2e-preflight: build-audit ## Check the selected E2E cluster and cloud scop
 		--audit-binary "$(abspath $(AUDIT_BINARY))" \
 		--preflight-only
 
+.PHONY: test-e2e-recurring
+test-e2e-recurring: build-audit ## Run Cluster and Local profiles sequentially in a dedicated project.
+	@test -n "$(E2E_CONFIG)" || { printf 'Set E2E_CONFIG to the OpenStack E2E YAML path.\n'; exit 1; }
+	$(GO) run ./test/e2e/runner \
+		--config "$(abspath $(E2E_CONFIG))" \
+		--repository-root "$(CURDIR)" \
+		--audit-binary "$(abspath $(AUDIT_BINARY))" \
+		--recurring
+
 .PHONY: envtest-assets
 envtest-assets: ## Download the pinned envtest control-plane binaries.
 	@mkdir -p "$(BINARY_DIR)" "$(ENVTEST_ASSETS_DIR)"

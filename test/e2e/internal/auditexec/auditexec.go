@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -31,6 +32,24 @@ import (
 )
 
 const defaultOutputLimit = 8 << 20
+
+var (
+	// ErrCommand means the audit process failed without a usable report.
+	ErrCommand = errors.New("ownership audit command failed")
+	// ErrInvalidReport means the output is malformed, incomplete, or outside the configured scope.
+	ErrInvalidReport = errors.New("ownership audit report is invalid")
+	// ErrFindings means the audit found an unresolved ownership or binding issue.
+	ErrFindings = errors.New("ownership audit reported unresolved findings")
+	// ErrScopeNotEmpty means the validated scope still contains resources or bindings.
+	ErrScopeNotEmpty = errors.New("ownership audit scope was not empty")
+)
+
+// commandError retains the process cause without printing process arguments,
+// stderr, or provider response bodies.
+type commandError struct{ cause error }
+
+func (e *commandError) Error() string   { return ErrCommand.Error() }
+func (e *commandError) Unwrap() []error { return []error{ErrCommand, e.cause} }
 
 // CommandRunner runs one audit process. Tests may replace it without starting
 // an external process.
@@ -80,15 +99,15 @@ func Run(ctx context.Context, config Config, validation Validation) (audit.Repor
 	}
 	runErr := runCommand(ctx, config.Binary, arguments, config.Environment, &stdout, &stderr)
 	if stdout.overflow || stderr.overflow {
-		return audit.Report{}, fmt.Errorf("ownership audit output exceeded the safe in-memory limit")
+		return audit.Report{}, fmt.Errorf("ownership audit output exceeded the safe in-memory limit: %w", ErrInvalidReport)
 	}
 	if runErr != nil {
-		return audit.Report{}, fmt.Errorf("ownership audit command failed")
+		return audit.Report{}, &commandError{cause: errors.Join(ctx.Err(), runErr)}
 	}
 
 	var report audit.Report
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		return audit.Report{}, fmt.Errorf("ownership audit output was not valid JSON")
+		return audit.Report{}, fmt.Errorf("ownership audit output was not valid JSON: %w", ErrInvalidReport)
 	}
 	if err := ValidateReport(report, config.ControllerName, config.ClusterID, validation); err != nil {
 		return audit.Report{}, err
@@ -135,7 +154,7 @@ func ValidateReport(report audit.Report, controllerName, clusterID string, valid
 		return err
 	}
 	if validation.RequireEmpty && !reportIsEmpty(report) {
-		return fmt.Errorf("ownership audit scope was not empty")
+		return ErrScopeNotEmpty
 	}
 	return nil
 }
@@ -145,20 +164,20 @@ func validateReportHeader(report audit.Report, controllerName, clusterID string)
 		return fmt.Errorf("ownership audit expected scope is incomplete")
 	}
 	if report.FormatVersion != audit.ReportFormatVersion || report.Assessment != audit.AssessmentComplete {
-		return fmt.Errorf("ownership audit did not produce a complete supported report")
+		return fmt.Errorf("ownership audit did not produce a complete supported report: %w", ErrInvalidReport)
 	}
 	if report.Scope.ControllerName != controllerName || report.Scope.ClusterID != clusterID {
-		return fmt.Errorf("ownership audit report scope did not match the configured run")
+		return fmt.Errorf("ownership audit report scope did not match the configured run: %w", ErrInvalidReport)
 	}
 	return nil
 }
 
 func validateNoFindings(report audit.Report) error {
 	if len(report.KubernetesIssues) != 0 || report.HasFindings() {
-		return fmt.Errorf("ownership audit reported unresolved findings")
+		return ErrFindings
 	}
 	if hasUnmatchedResources(report.Resources) {
-		return fmt.Errorf("ownership audit reported unresolved findings")
+		return ErrFindings
 	}
 	return nil
 }

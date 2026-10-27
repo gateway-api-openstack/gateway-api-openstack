@@ -5,7 +5,7 @@ kubernetes:
   dedicatedForE2E: true
   kubeconfig: /absolute/path/to/e2e.kubeconfig
   context: openstack-e2e
-  # Supply both identity fields for Local lifecycle, or to pin the baseline target.
+  # Supply both identity fields for lifecycle, member, or Floating IP scenarios.
   # expectedAPIServer: https://api.example.test:6443
   # expectedClusterUID: 33333333-3333-4333-8333-333333333333
 openstack:
@@ -22,6 +22,12 @@ openstack:
   vipSubnetID: 11111111-1111-1111-1111-111111111111
   memberSubnetID: 22222222-2222-2222-2222-222222222222
   externalNetworkID: none
+  # Referenced frontend groups require 2.29 or later. The default is 2.5.
+  # microversion: "2.29"
+  # Referenced groups and worker port associations must already exist.
+  # The suite only reads these groups and ports.
+  # frontendSecurityGroupIDs: [44444444-4444-4444-4444-444444444444]
+  # backendSecurityGroupIDs: [55555555-5555-4555-8555-555555555555]
 controller:
   domain: e2e.example.test
   image: registry.example.test/gateway-api-openstack/controller@sha256:<digest>
@@ -35,11 +41,22 @@ backend:
   # externalTrafficPolicy: Local
   # nodeSelector:
   #   e2e.example.test/backend: "true"
-# Local lifecycle also requires shared project mode and its acknowledgement above,
-# externalNetworkID: none, Local traffic policy, a Node selector, and both
+# Local lifecycle requires externalNetworkID: none, Local traffic policy, a Node selector, and both
 # Kubernetes identity fields. It creates two Gateway graphs sequentially.
 # scenarios:
 #   localLifecycle: true
+# Member transitions alone require two replicas, a Node selector, and both identity fields.
+# Cluster additionally requires a dedicated project with exactly two eligible workers.
+# scenarios:
+#   memberTransitions: true
+# To approve one detachment of this run's own Floating IP, select the scenario below.
+# It requires a dedicated project, an externalNetworkID, both Kubernetes identity fields, and Neutron revision extensions.
+# It reuses the initial Gateway graph and cannot be combined with localLifecycle.
+# scenarios:
+#   floatingIPRecovery: true
+# Under the same restrictions, delete and replace only this run's own Floating IP:
+#   floatingIPDeletion: true
 # Omit artifacts to use _artifacts/e2e/<run-id> below the repository.
+# Recurring validation requires an existing directory outside the checkout.
 # artifacts:
 #   root: /absolute/path/to/e2e-artifacts

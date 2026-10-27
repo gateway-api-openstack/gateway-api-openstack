@@ -20,7 +20,9 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"maps"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +37,96 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 )
+
+func TestMembershipWorkersRejectUnselectedClusterMembers(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		policy  corev1.ServiceExternalTrafficPolicy
+		mode    projectMode
+		extra   bool
+		wantErr bool
+	}{
+		{name: "Local shared", policy: corev1.ServiceExternalTrafficPolicyLocal, mode: projectModeShared, extra: true},
+		{name: "Local dedicated", policy: corev1.ServiceExternalTrafficPolicyLocal, mode: projectModeDedicated},
+		{name: "Cluster dedicated", policy: corev1.ServiceExternalTrafficPolicyCluster, mode: projectModeDedicated},
+		{name: "Cluster shared", policy: corev1.ServiceExternalTrafficPolicyCluster, mode: projectModeShared, wantErr: true},
+		{name: "Cluster extra worker", policy: corev1.ServiceExternalTrafficPolicyCluster, mode: projectModeDedicated, extra: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objects := []client.Object{selectedBackendTestNode("worker-a"), selectedBackendTestNode("worker-b")}
+			if test.extra {
+				node := selectedBackendTestNode("other-worker")
+				node.Labels = nil
+				objects = append(objects, node)
+			}
+			suite := selectedBackendTestSuite(t, objects...)
+			suite.config.BackendReplicas = 2
+			suite.config.BackendExternalTrafficPolicy = test.policy
+			suite.config.Project.Mode = test.mode
+			if err := suite.validateMembershipWorkers(t.Context()); (err != nil) != test.wantErr {
+				t.Fatalf("validateMembershipWorkers() = %v, want error %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestTransitionTrafficDoesNotHideFailedSamples(t *testing.T) {
+	for _, cancelInFlight := range []bool{false, true} {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		var calls atomic.Int32
+		observed := make(chan struct{})
+		probe := func(ctx context.Context) bool {
+			call := calls.Add(1)
+			if !cancelInFlight && call == 3 {
+				close(observed)
+			}
+			if call != 2 {
+				return true
+			}
+			if cancelInFlight {
+				close(observed)
+				<-ctx.Done()
+			}
+			return false
+		}
+		samples, failures, err := observeTransitionTraffic(ctx, time.Millisecond, probe, func() error {
+			select {
+			case <-observed:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		if cancelInFlight {
+			if samples < 2 || failures != 0 || err != nil {
+				t.Fatalf("cancelled final probe was counted as failure: samples=%d failures=%d err=%v", samples, failures, err)
+			}
+		} else if samples < 3 || failures != 1 || err == nil {
+			t.Fatalf("failed sample was hidden: samples=%d failures=%d err=%v", samples, failures, err)
+		}
+	}
+}
+
+func TestTransitionTrafficPreservesTransitionError(t *testing.T) {
+	want := errors.New("transition failed")
+	_, _, err := observeTransitionTraffic(t.Context(), time.Second, func(context.Context) bool { return true }, func() error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("transition error was lost: %v", err)
+	}
+}
+
+func TestBackendScalingAcceptsConfiguredClusterPolicy(t *testing.T) {
+	suite, _, service := membershipFixture(t)
+	suite.config.BackendExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
+	service.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
+	if err := suite.client.Update(t.Context(), service); err != nil {
+		t.Fatal(err)
+	}
+	if err := suite.scaleBackend(t.Context(), 0); err != nil {
+		t.Fatalf("configured Cluster policy was rejected: %v", err)
+	}
+}
 
 func TestMembershipTransitionPreservesUnchangedResources(t *testing.T) {
 	baseline := membershipInventory{members: map[string]struct{}{"first": {}, "second": {}}, parents: [32]byte{1}}
@@ -70,8 +162,8 @@ func TestMembershipAuditUsesMemberIDsAndParentGraph(t *testing.T) {
 	if err != nil || !maps.Equal(inventory.members, map[string]struct{}{"member": {}}) {
 		t.Fatalf("membershipFromAudit() = %#v, %v", inventory, err)
 	}
-	if _, err := membershipFromAudit(report, 2); err == nil {
-		t.Fatal("member count mismatch was accepted")
+	if _, err := membershipFromAudit(report, 2); !errors.Is(err, errInventoryPending) {
+		t.Fatalf("member count mismatch must remain pending: %v", err)
 	}
 	resources[2].ID = "recreated-pool"
 	recreated, err := membershipFromAudit(report, 1)

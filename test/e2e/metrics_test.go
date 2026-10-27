@@ -20,7 +20,48 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestMembershipMetricEvidence(t *testing.T) {
+	const lease = "gateway-api-openstack-controller"
+	for _, test := range []struct {
+		name      string
+		admitted  float64
+		mutations int
+		budget    int
+		wantError bool
+	}{
+		{name: "Cluster preserves members", admitted: 30},
+		{name: "Local removes and restores one", admitted: 30, mutations: 2, budget: 2},
+		{name: "excess admission", admitted: 31, wantError: true},
+		{name: "unexpected Cluster mutation", admitted: 30, mutations: 1, wantError: true},
+		{name: "extra Local mutation", admitted: 30, mutations: 3, budget: 2, wantError: true},
+		{name: "missing Local mutation", admitted: 30, mutations: 1, budget: 2, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before, after := validMetricSnapshots()
+			labels := map[string]string{"service": "octavia", "method": "GET"}
+			addMetricSample(&before, requestStartsMetricName, labels, 100)
+			addMetricSample(&after, requestStartsMetricName, labels, 100+test.admitted)
+			setOnlyMetricSample(&after, mutationCounterMetricName, before.values[mutationCounterMetricName]+float64(test.mutations))
+			evidence, err := membershipMetricEvidence(before, after, lease, time.Second, test.budget)
+			if (err != nil) != test.wantError {
+				t.Fatalf("membershipMetricEvidence() = %#v, %v", evidence, err)
+			}
+			if evidence.Requests != test.admitted || evidence.ReadRequests != 2 || evidence.MutationAttempts != float64(test.mutations) {
+				t.Fatalf("unexpected observation counts: %#v", evidence)
+			}
+		})
+	}
+}
+
+func TestMembershipMetricEvidenceRequiresAdmissionCounter(t *testing.T) {
+	before, after := validMetricSnapshots()
+	if _, err := membershipMetricEvidence(before, after, "gateway-api-openstack-controller", time.Second, 0); err == nil {
+		t.Fatal("completion counts were accepted as request admission evidence")
+	}
+}
 
 func TestReadMetricSnapshotRequiresEvidenceFamilies(t *testing.T) {
 	body := strings.NewReader(
@@ -82,10 +123,39 @@ go_memstats_alloc_bytes 999
 	}
 }
 
-func TestParseMetricSnapshotRejectsNonFiniteValue(t *testing.T) {
-	_, err := parseMetricSnapshot(strings.NewReader(requestCounterMetricName + " NaN\n"))
-	if err == nil {
-		t.Fatal("parseMetricSnapshot() accepted NaN")
+func TestParseMetricSnapshotReadsTypedMetrics(t *testing.T) {
+	const input = `# TYPE gateway_api_openstack_openstack_requests_total counter
+gateway_api_openstack_openstack_requests_total{service="octavia",method="GET"} 3
+# TYPE gateway_api_openstack_openstack_request_duration_seconds histogram
+gateway_api_openstack_openstack_request_duration_seconds_bucket{service="octavia",method="GET",le="+Inf"} 3
+gateway_api_openstack_openstack_request_duration_seconds_sum{service="octavia",method="GET"} 1.5
+gateway_api_openstack_openstack_request_duration_seconds_count{service="octavia",method="GET"} 3
+# TYPE go_unrelated_metric gauge
+go_unrelated_metric NaN
+`
+	snapshot, err := parseMetricSnapshot(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parseMetricSnapshot() error = %v", err)
+	}
+	if len(snapshot.values) != 2 || snapshot.values[requestCounterMetricName] != 3 || snapshot.values[requestDurationCountMetricName] != 3 {
+		t.Fatalf("unexpected selected metrics: %v", snapshot.values)
+	}
+	labels := map[string]string{"service": "octavia", "method": "GET"}
+	if got := sumMetricSamples(snapshot.samples[requestDurationCountMetricName], labels); got != 3 {
+		t.Fatalf("duration count = %v, want 3", got)
+	}
+	if _, err := parseMetricSnapshot(strings.NewReader(input + requestDurationCountMetricName + "{method=\"GET\",service=\"octavia\"} 3\n")); err == nil {
+		t.Fatal("accepted a repeated histogram count with reordered labels")
+	}
+}
+
+func TestParseMetricSnapshotRejectsInvalidValue(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf", "-1", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parseMetricSnapshot(strings.NewReader(requestCounterMetricName + " " + value + "\n")); err == nil {
+				t.Fatalf("parseMetricSnapshot() accepted %s", value)
+			}
+		})
 	}
 }
 

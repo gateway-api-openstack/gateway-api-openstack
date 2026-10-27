@@ -19,6 +19,7 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,18 +31,15 @@ import (
 
 func TestOverallStatusRequiresBaseline(t *testing.T) {
 	report := newE2EReport(time.Unix(1, 0), reportTestConfig(projectModeDedicated))
-	if got := overallStatus(report.Checks); got != statusNotRun {
+	if got := overallStatus(report.Checks, report.requiredChecks...); got != statusNotRun {
 		t.Fatalf("overallStatus() = %q, want %q", got, statusNotRun)
 	}
-	for _, check := range reportChecks {
-		if !check.required {
-			continue
-		}
-		if err := report.setCheck(check.name, statusPassed, checkSummaryPassed); err != nil {
+	for _, name := range report.requiredChecks {
+		if err := report.setCheck(name, statusPassed, checkSummaryPassed); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := overallStatus(report.Checks); got != statusPassed {
+	if got := overallStatus(report.Checks, report.requiredChecks...); got != statusPassed {
 		t.Fatalf("overallStatus() = %q, want %q", got, statusPassed)
 	}
 	for _, test := range []struct {
@@ -49,9 +47,9 @@ func TestOverallStatusRequiresBaseline(t *testing.T) {
 		status checkStatus
 		want   checkStatus
 	}{
-		{name: "orderly deletion and finalizer completion", status: statusNotRun, want: statusNotRun},
-		{name: "orderly deletion and finalizer completion", status: statusSkipped, want: statusNotRun},
-		{name: "orderly deletion and finalizer completion", status: statusFailed, want: statusFailed},
+		{name: checkCleanup, status: statusNotRun, want: statusNotRun},
+		{name: checkCleanup, status: statusSkipped, want: statusNotRun},
+		{name: checkCleanup, status: statusFailed, want: statusFailed},
 		{name: "quota failure", status: statusFailed, want: statusFailed},
 	} {
 		t.Run(test.name+"/"+string(test.status), func(t *testing.T) {
@@ -61,7 +59,7 @@ func TestOverallStatusRequiresBaseline(t *testing.T) {
 					checks[i].Status = test.status
 				}
 			}
-			if got := overallStatus(checks); got != test.want {
+			if got := overallStatus(checks, report.requiredChecks...); got != test.want {
 				t.Fatalf("overallStatus() = %q, want %q", got, test.want)
 			}
 		})
@@ -69,24 +67,24 @@ func TestOverallStatusRequiresBaseline(t *testing.T) {
 	// A duplicate success cannot replace the required cleanup audit.
 	checks := append([]checkResult(nil), report.Checks...)
 	for i := range checks {
-		if checks[i].Name == "post-test ownership audit returns to baseline" {
+		if checks[i].Name == checkCleanupAudit {
 			checks[i] = checks[0]
 		}
 	}
-	if got := overallStatus(checks); got != statusNotRun {
+	if got := overallStatus(checks, report.requiredChecks...); got != statusNotRun {
 		t.Fatalf("overallStatus() without cleanup audit = %q, want %q", got, statusNotRun)
 	}
 }
 
 func TestSetCheckRejectsUnsafeSummaryShape(t *testing.T) {
 	report := newE2EReport(time.Now(), reportTestConfig(projectModeDedicated))
-	if err := report.setCheck("Gateway status", statusPassed, "line one\nline two"); err == nil {
+	if err := report.setCheck(checkGateway, statusPassed, "line one\nline two"); err == nil {
 		t.Fatal("setCheck() accepted a multiline summary")
 	}
 	if err := report.setCheck("missing check", statusPassed, checkSummaryPassed); err == nil || !strings.Contains(err.Error(), "unknown report check") {
 		t.Fatal("setCheck() accepted an unknown check")
 	}
-	if err := report.setCheck("Gateway status", statusFailed, "secret-token"); err == nil {
+	if err := report.setCheck(checkGateway, statusFailed, "secret-token"); err == nil {
 		t.Fatal("setCheck() accepted a non-fixed summary")
 	}
 }
@@ -101,7 +99,7 @@ func TestLocalLifecycleReportRequiresEverySelectedScenario(t *testing.T) {
 				report.Checks[i].Status = statusPassed
 			}
 		}
-		required := localLifecycleChecks(replicas)
+		required := report.requiredChecks
 		if got := overallStatus(report.Checks, required...); got != statusPassed {
 			t.Fatalf("completed %d-worker report = %s", replicas, got)
 		}
@@ -141,6 +139,31 @@ func TestLocalLifecycleReportRequiresEverySelectedScenario(t *testing.T) {
 	}
 }
 
+func TestNetworkReportRequiresEverySelectedCheck(t *testing.T) {
+	config := reportTestConfig(projectModeDedicated)
+	config.FloatingIPRecovery = true
+	config.FloatingIPDeletion = true
+	config.Project.FrontendSecurityGroupIDs = []string{"private-group-id"}
+	report := newE2EReport(time.Now(), config)
+	for index := range report.Checks {
+		report.Checks[index].Status = statusPassed
+	}
+	for _, name := range []string{checkFloatingIPRecovery, checkFloatingIPDeletion, checkReferencedSecurity} {
+		if err := report.setCheck(name, statusNotRun, checkSummaryFailed); err != nil {
+			t.Fatal(err)
+		}
+		if got := overallStatus(report.Checks, report.requiredChecks...); got != statusNotRun {
+			t.Fatalf("unexecuted %s report = %s", name, got)
+		}
+		if err := report.setCheck(name, statusPassed, checkSummaryPassed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(string(renderMarkdownReport(report)), "private-group-id") {
+		t.Fatal("network evidence disclosed a configured security group ID")
+	}
+}
+
 func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "run-1234")
@@ -152,7 +175,7 @@ func TestWriteE2EArtifactsIsExclusiveAndSanitized(t *testing.T) {
 		t.Fatalf("report backend profile = %#v", report.Backend)
 	}
 	report.CompletedAt = time.Unix(2, 0)
-	if err := report.setCheck("preflight safety validation", statusPassed, checkSummaryPassed); err != nil {
+	if err := report.setCheck(checkPreflight, statusPassed, checkSummaryPassed); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeE2EArtifacts(directory, report); err != nil {
@@ -194,5 +217,75 @@ func reportTestConfig(mode projectMode) e2eConfig {
 		ControllerRevision:           strings.Repeat("b", 40),
 		ControllerImageDigest:        "sha256:" + strings.Repeat("a", 64),
 		BackendExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyCluster,
+	}
+}
+
+func TestIndependentMemberTransitionCheckIsRequiredOnce(t *testing.T) {
+	for _, lifecycle := range []bool{false, true} {
+		config := reportTestConfig(projectModeDedicated)
+		config.LocalLifecycle, config.MemberTransitions, config.BackendReplicas = lifecycle, true, 2
+		report := newE2EReport(time.Now(), config)
+		count := 0
+		for i := range report.Checks {
+			if report.Checks[i].Name == checkMemberTransitions {
+				count++
+				continue
+			}
+			report.Checks[i].Status = statusPassed
+		}
+		if count != 1 {
+			t.Fatalf("member check count = %d", count)
+		}
+		path := filepath.Join(t.TempDir(), "report")
+		if err := writeE2EArtifacts(path, report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Status != statusNotRun {
+			t.Fatalf("unexecuted member scenario passed: %s", report.Status)
+		}
+	}
+}
+
+func TestConfiguredChecksSelectScenariosInExecutionOrder(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*e2eConfig)
+		selected  []string
+	}{
+		{name: "baseline"},
+		{name: "single-worker lifecycle", configure: func(c *e2eConfig) { c.LocalLifecycle = true; c.BackendReplicas = 1 }, selected: []string{checkFrozenClass, checkFrozenRestart, checkSequentialClasses}},
+		{name: "two-worker lifecycle", configure: func(c *e2eConfig) { c.LocalLifecycle = true }, selected: []string{checkFrozenClass, checkFrozenRestart, checkMemberTransitions, checkSequentialClasses}},
+		{name: "independent members", configure: func(c *e2eConfig) { c.MemberTransitions = true }, selected: []string{checkMemberTransitions}},
+		{name: "network", configure: func(c *e2eConfig) {
+			c.FloatingIPRecovery, c.FloatingIPDeletion = true, true
+			c.Project.BackendSecurityGroupIDs = []string{"private-group"}
+		}, selected: []string{checkReferencedSecurity, checkFloatingIPRecovery, checkFloatingIPDeletion}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := reportTestConfig(projectModeDedicated)
+			if test.configure != nil {
+				test.configure(&config)
+			}
+			checks := configuredChecks(config)
+			seen := make(map[string]bool)
+			var selected []string
+			for _, name := range checks {
+				if seen[name] {
+					t.Fatalf("check %q was selected more than once", name)
+				}
+				seen[name] = true
+				switch name {
+				case checkReferencedSecurity, checkFloatingIPRecovery, checkFloatingIPDeletion,
+					checkFrozenClass, checkFrozenRestart, checkMemberTransitions, checkSequentialClasses:
+					selected = append(selected, name)
+				}
+			}
+			if !slices.Equal(selected, test.selected) {
+				t.Fatalf("selected checks = %v, want %v", selected, test.selected)
+			}
+			if checks[0] != checkPreflight || checks[len(checks)-2] != checkCleanup || checks[len(checks)-1] != checkCleanupAudit {
+				t.Fatalf("checks lost preflight or final cleanup ordering: %v", checks)
+			}
+		})
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,7 +100,10 @@ type Kubernetes struct {
 
 // Scenarios selects additional checks within the approved E2E resource scope.
 type Scenarios struct {
-	LocalLifecycle bool `json:"localLifecycle,omitempty"`
+	LocalLifecycle     bool `json:"localLifecycle,omitempty"`
+	FloatingIPRecovery bool `json:"floatingIPRecovery,omitempty"`
+	FloatingIPDeletion bool `json:"floatingIPDeletion,omitempty"`
+	MemberTransitions  bool `json:"memberTransitions,omitempty"`
 }
 
 // OpenStack selects the project, credentials, and networks used by the run.
@@ -115,6 +119,9 @@ type OpenStack struct {
 	VIPSubnetID                     string      `json:"vipSubnetID"`
 	MemberSubnetID                  string      `json:"memberSubnetID"`
 	ExternalNetworkID               string      `json:"externalNetworkID"`
+	Microversion                    string      `json:"microversion,omitempty"`
+	FrontendSecurityGroupIDs        []string    `json:"frontendSecurityGroupIDs,omitempty"`
+	BackendSecurityGroupIDs         []string    `json:"backendSecurityGroupIDs,omitempty"`
 }
 
 // Controller identifies the immutable controller artifact used by the run.
@@ -230,6 +237,9 @@ func newRuntime(
 		ExpectedAPIServer:            strings.TrimSpace(config.Kubernetes.ExpectedAPIServer),
 		ExpectedClusterUID:           strings.TrimSpace(config.Kubernetes.ExpectedClusterUID),
 		LocalLifecycle:               config.Scenarios.LocalLifecycle,
+		FloatingIPRecovery:           config.Scenarios.FloatingIPRecovery,
+		FloatingIPDeletion:           config.Scenarios.FloatingIPDeletion,
+		MemberTransitions:            config.Scenarios.MemberTransitions,
 		ControllerName:               identity.controllerName,
 		ControllerNamespace:          controllerNamespacePrefix + identity.runID,
 		ControllerDeployment:         controllerDeploymentName,
@@ -260,6 +270,8 @@ func newRuntime(
 			ExpectedMemberSubnetID:    strings.TrimSpace(config.OpenStack.MemberSubnetID),
 			ExpectedExternalNetworkID: externalNetworkID,
 			ControllerCloudsSecret:    controllerSecretName,
+			FrontendSecurityGroupIDs:  sortedStrings(config.OpenStack.FrontendSecurityGroupIDs),
+			BackendSecurityGroupIDs:   sortedStrings(config.OpenStack.BackendSecurityGroupIDs),
 		},
 		Audit: Audit{
 			Binary:       artifacts.auditBinary,
@@ -267,9 +279,22 @@ func newRuntime(
 			CloudsYAML:   artifacts.auditCloudsYAML,
 			Cloud:        strings.TrimSpace(config.OpenStack.Cloud),
 			Region:       strings.TrimSpace(config.OpenStack.Region),
-			Microversion: octaviaMicroversion,
+			Microversion: resolvedMicroversion(config.OpenStack.Microversion),
 		},
 	}
+}
+
+func sortedStrings(values []string) []string {
+	result := slices.Clone(values)
+	slices.Sort(result)
+	return result
+}
+
+func resolvedMicroversion(value string) string {
+	if value == "" {
+		return octaviaMicroversion
+	}
+	return value
 }
 
 func normalizeResolveOptions(options ResolveOptions) (ResolveOptions, error) {
@@ -295,7 +320,7 @@ func validateFilePolicy(config File) error {
 	if err := validateProjectAcknowledgement(config.OpenStack); err != nil {
 		return err
 	}
-	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector); err != nil {
+	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector, config.OpenStack.ProjectMode); err != nil {
 		return err
 	}
 	for _, item := range []struct {
@@ -330,12 +355,12 @@ func backendReplicas(replicas int32) int32 {
 	return replicas
 }
 
-func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string) error {
+func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string, mode ProjectMode) error {
 	if policy != corev1.ServiceExternalTrafficPolicyCluster && policy != corev1.ServiceExternalTrafficPolicyLocal {
 		return fmt.Errorf("backend.externalTrafficPolicy must be Cluster or Local")
 	}
-	if len(selector) != 0 && policy != corev1.ServiceExternalTrafficPolicyLocal {
-		return fmt.Errorf("backend.nodeSelector requires backend.externalTrafficPolicy Local to restrict member selection")
+	if len(selector) != 0 && policy != corev1.ServiceExternalTrafficPolicyLocal && mode != ProjectModeDedicated {
+		return fmt.Errorf("backend.nodeSelector requires Local traffic policy in a shared project to restrict member selection")
 	}
 	for key, value := range selector {
 		if len(validation.IsQualifiedName(key)) != 0 || len(validation.IsValidLabelValue(value)) != 0 {

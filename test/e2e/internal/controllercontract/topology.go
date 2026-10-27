@@ -32,9 +32,11 @@ const ClassConfigCRDName = "openstackgatewayclassconfigs." + configv1alpha1.Grou
 
 // TopologySettings contains existing infrastructure approved for one E2E run.
 type TopologySettings struct {
-	VIPSubnetID       string
-	MemberSubnetID    string
-	ExternalNetworkID string
+	VIPSubnetID              string
+	MemberSubnetID           string
+	ExternalNetworkID        string
+	FrontendSecurityGroupIDs []string
+	BackendSecurityGroupIDs  []string
 }
 
 // ClassConfig builds the run-scoped class parameters without cloud lookups.
@@ -44,15 +46,30 @@ func (s TopologySettings) ClassConfig(name, runID string) *configv1alpha1.OpenSt
 		floatingIP.Mode = configv1alpha1.FloatingIPAllocate
 		floatingIP.ExternalNetwork = &configv1alpha1.ResourceReference{ID: s.ExternalNetworkID}
 	}
-	return &configv1alpha1.OpenStackGatewayClassConfig{
+	config := &configv1alpha1.OpenStackGatewayClassConfig{
 		TypeMeta:   metav1.TypeMeta{APIVersion: configv1alpha1.GroupVersion.String(), Kind: configv1alpha1.GatewayClassConfigKind},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{RunAnnotation: runID}},
 		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
 			VIPSubnet: configv1alpha1.ResourceReference{ID: s.VIPSubnetID}, MemberSubnet: configv1alpha1.ResourceReference{ID: s.MemberSubnetID},
 			FloatingIP: floatingIP, NodeAddressType: "InternalIP",
-			HealthMonitor: configv1alpha1.HealthMonitorConfig{Path: "/", Delay: int32Pointer(10), Timeout: int32Pointer(5), MaxRetries: int32Pointer(3), MaxRetriesDown: int32Pointer(3)},
+			FrontendSecurity: configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendOctaviaManaged},
+			BackendSecurity:  configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendUnmanaged},
+			HealthMonitor:    configv1alpha1.HealthMonitorConfig{Path: "/", Delay: int32Pointer(10), Timeout: int32Pointer(5), MaxRetries: int32Pointer(3), MaxRetriesDown: int32Pointer(3)},
 		},
 	}
+	if len(s.FrontendSecurityGroupIDs) > 0 {
+		config.Spec.FrontendSecurity.Mode = configv1alpha1.FrontendReferenced
+		for _, id := range s.FrontendSecurityGroupIDs {
+			config.Spec.FrontendSecurity.Groups = append(config.Spec.FrontendSecurity.Groups, configv1alpha1.ResourceReference{ID: id})
+		}
+	}
+	if len(s.BackendSecurityGroupIDs) > 0 {
+		config.Spec.BackendSecurity.Mode = configv1alpha1.BackendReferenced
+		for _, id := range s.BackendSecurityGroupIDs {
+			config.Spec.BackendSecurity.Groups = append(config.Spec.BackendSecurity.Groups, configv1alpha1.ResourceReference{ID: id})
+		}
+	}
+	return config
 }
 
 // RequireClassConfigCRD verifies the installation prerequisite without changing
