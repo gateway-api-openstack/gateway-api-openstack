@@ -41,6 +41,11 @@ func (s *Service) CreateFloatingIP(ctx context.Context, opts floatingips.CreateO
 	return floatingips.Create(ctx, s.client, opts).Extract()
 }
 
+// UpdateFloatingIP updates one Neutron Floating IP association.
+func (s *Service) UpdateFloatingIP(ctx context.Context, id string, opts floatingips.UpdateOpts) (*floatingips.FloatingIP, error) {
+	return floatingips.Update(ctx, s.client, id, opts).Extract()
+}
+
 // DeleteFloatingIP deletes one Neutron Floating IP.
 func (s *Service) DeleteFloatingIP(ctx context.Context, id string) error {
 	return floatingips.Delete(ctx, s.client, id).ExtractErr()

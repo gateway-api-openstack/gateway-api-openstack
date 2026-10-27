@@ -46,6 +46,9 @@ const (
 	// ErrorCategoryTerminalValidation means the requested provider operation is
 	// invalid and will not succeed without an input change.
 	ErrorCategoryTerminalValidation ErrorCategory = "TerminalValidation"
+	// ErrorCategoryDependencyNotReady means a referenced cloud resource no
+	// longer satisfies a prerequisite and must be observed again later.
+	ErrorCategoryDependencyNotReady ErrorCategory = "DependencyNotReady"
 	// ErrorCategoryResourceFailure means an asynchronous OpenStack resource
 	// entered a terminal error state.
 	ErrorCategoryResourceFailure ErrorCategory = "ResourceFailure"
@@ -70,6 +73,9 @@ var (
 	// ErrTerminalValidation classifies an invalid provider operation that needs
 	// an input change rather than workqueue backoff.
 	ErrTerminalValidation = &ProviderError{category: ErrorCategoryTerminalValidation}
+	// ErrDependencyNotReady classifies an external prerequisite that can be
+	// repaired without changing Kubernetes inputs.
+	ErrDependencyNotReady = &ProviderError{category: ErrorCategoryDependencyNotReady}
 	// ErrResourceFailure classifies an OpenStack resource that entered a
 	// terminal error state.
 	ErrResourceFailure = &ProviderError{category: ErrorCategoryResourceFailure}
@@ -144,6 +150,8 @@ func errorCategoryMessage(category ErrorCategory) string {
 		return "retryable OpenStack service failure"
 	case ErrorCategoryTerminalValidation:
 		return "OpenStack request validation failed"
+	case ErrorCategoryDependencyNotReady:
+		return "OpenStack dependency is not ready"
 	case ErrorCategoryResourceFailure:
 		return "OpenStack resource entered an error state"
 	case ErrorCategoryOwnershipConflict:

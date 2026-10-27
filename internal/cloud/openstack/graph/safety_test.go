@@ -47,7 +47,7 @@ func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {
 					"description":         ownedDescription,
 					"floating_network_id": "external-network",
 					"floating_ip_address": "203.0.113.10",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 			},
 			wantID: "managed-fip",
@@ -60,14 +60,14 @@ func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {
 					"description":         ownedDescription,
 					"floating_network_id": "external-network",
 					"floating_ip_address": "203.0.113.10",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 				{
 					"id":                  "unmanaged-fip",
 					"description":         "created by another controller",
 					"floating_network_id": "external-network",
 					"floating_ip_address": "203.0.113.11",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 			},
 			wantConflict: true,
@@ -80,14 +80,14 @@ func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {
 					"description":         ownedDescription,
 					"floating_network_id": "external-network",
 					"floating_ip_address": "203.0.113.10",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 				{
 					"id":                  "managed-fip-2",
 					"description":         ownedDescription,
 					"floating_network_id": "external-network",
 					"floating_ip_address": "203.0.113.11",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 			},
 			wantConflict: true,
@@ -100,7 +100,7 @@ func TestEnsureFloatingIPValidatesEveryAttachedAddress(t *testing.T) {
 					"description":         ownedDescription,
 					"floating_network_id": "another-network",
 					"floating_ip_address": "203.0.113.12",
-					"port_id":             "vip-port",
+					"port_id":             "vip-port", "fixed_ip_address": "192.0.2.10",
 				},
 			},
 			wantConflict: true,
@@ -152,7 +152,7 @@ func TestEnsureNoFloatingIPValidatesBeforeDeletion(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	managed := map[string]string{
 		"id": "managed-fip", "description": identity.GatewayDescription(roleFloatingIP),
-		"project_id": "project-a", "port_id": "vip-port",
+		"project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 	}
 	tests := []struct {
 		name         string
@@ -163,7 +163,7 @@ func TestEnsureNoFloatingIPValidatesBeforeDeletion(t *testing.T) {
 		{name: "managed address is removed", floatingIPs: []map[string]string{managed}, wantDeletes: 1},
 		{name: "foreign address blocks every deletion", floatingIPs: []map[string]string{
 			managed,
-			{"id": "foreign-fip", "description": "owned elsewhere", "project_id": "project-a", "port_id": "vip-port"},
+			{"id": "foreign-fip", "description": "owned elsewhere", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10"},
 		}, wantConflict: true},
 	}
 	for _, test := range tests {
@@ -323,7 +323,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 			items := []any{}
 			if !deletedLoadBalancer {
 				items = append(items, map[string]any{
-					"id": "load-balancer-1", "project_id": "project-a", "vip_port_id": "vip-port", "tags": loadBalancerTags,
+					"id": "load-balancer-1", "project_id": "project-a", "vip_port_id": "vip-port", "vip_address": "192.0.2.10", "tags": loadBalancerTags,
 				})
 			}
 			safetyWriteJSON(t, w, map[string]any{"loadbalancers": items})
@@ -333,7 +333,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 				return
 			}
 			safetyWriteJSON(t, w, map[string]any{"loadbalancer": map[string]any{
-				"id": "load-balancer-1", "project_id": "project-a", "vip_port_id": "vip-port", "provisioning_status": "ACTIVE", "tags": loadBalancerTags,
+				"id": "load-balancer-1", "project_id": "project-a", "vip_port_id": "vip-port", "vip_address": "192.0.2.10", "provisioning_status": "ACTIVE", "tags": loadBalancerTags,
 			}})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			items := []any{}
@@ -399,7 +399,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 			items := []any{}
 			if deleted["/floatingips/floating-ip-1"] == 0 {
 				items = append(items, map[string]any{
-					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "description": floatingIPDescription,
+					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10", "description": floatingIPDescription,
 				})
 			}
 			safetyWriteJSON(t, w, map[string]any{"floatingips": items})

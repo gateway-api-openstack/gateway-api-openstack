@@ -21,6 +21,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 // Identity is the immutable ownership anchor for a Gateway and its resources.
@@ -41,14 +42,15 @@ type Identity struct {
 
 // GatewaySpec describes the OpenStack resources owned by a Gateway.
 type GatewaySpec struct {
-	Identity          Identity
-	Provider          string
-	VIPSubnetID       string
-	ExternalNetworkID string
-	FlavorID          string
-	AvailabilityZone  string
-	ListenerName      string
-	ListenerPort      int
+	Identity            Identity
+	Provider            string
+	VIPSubnetID         string
+	ExternalNetworkID   string
+	FlavorID            string
+	AvailabilityZone    string
+	ListenerName        string
+	ListenerPort        int
+	VIPSecurityGroupIDs []string
 }
 
 // GatewayState is the provider-neutral result published to Gateway status and
@@ -65,12 +67,21 @@ type GatewayState struct {
 // GatewayRequirements contains the immutable Gateway fields and the settings
 // that route reconciliation must verify before it can restore traffic.
 type GatewayRequirements struct {
-	Provider          string
-	VIPSubnetID       string
-	ExternalNetworkID string
-	FlavorID          string
-	AvailabilityZone  string
-	ListenerPort      int
+	Provider            string
+	VIPSubnetID         string
+	ExternalNetworkID   string
+	FlavorID            string
+	AvailabilityZone    string
+	ListenerPort        int
+	VIPSecurityGroupIDs []string
+}
+
+// Equal compares the frozen requirements, including canonical security group IDs.
+func (r GatewayRequirements) Equal(other GatewayRequirements) bool {
+	return r.Provider == other.Provider && r.VIPSubnetID == other.VIPSubnetID &&
+		r.ExternalNetworkID == other.ExternalNetworkID && r.FlavorID == other.FlavorID &&
+		r.AvailabilityZone == other.AvailabilityZone && r.ListenerPort == other.ListenerPort &&
+		slices.Equal(r.VIPSecurityGroupIDs, other.VIPSecurityGroupIDs)
 }
 
 // Address returns the client-facing address, preferring a Floating IP when
@@ -97,19 +108,23 @@ const (
 type Member struct {
 	Address string
 	Port    int
+	// ProviderID identifies the Node's server for read-only worker-port validation.
+	// It is not part of the Octavia member identity, which remains address and port.
+	ProviderID string
 }
 
 // RouteSpec describes the pool and L7 policies owned by one route.
 type RouteSpec struct {
-	Identity            Identity
-	Gateway             GatewayState
-	GatewayRequirements GatewayRequirements
-	MemberSubnetID      string
-	HealthMonitor       HealthMonitorConfig
-	Hostname            string
-	PathType            PathMatchType
-	PathValue           string
-	Members             []Member
+	Identity                Identity
+	Gateway                 GatewayState
+	GatewayRequirements     GatewayRequirements
+	MemberSubnetID          string
+	BackendSecurityGroupIDs []string
+	HealthMonitor           HealthMonitorConfig
+	Hostname                string
+	PathType                PathMatchType
+	PathValue               string
+	Members                 []Member
 }
 
 // RouteState records the OpenStack objects produced for one HTTPRoute.

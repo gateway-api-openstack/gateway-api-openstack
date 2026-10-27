@@ -153,9 +153,24 @@ func validateStoredTopology(resolved classconfig.Resolved) error {
 	if resolved.Topology.ExternalNetworkID != "" {
 		spec.FloatingIP = configv1alpha1.FloatingIPConfig{Mode: configv1alpha1.FloatingIPAllocate, ExternalNetwork: &configv1alpha1.ResourceReference{ID: resolved.Topology.ExternalNetworkID}}
 	}
+	if len(resolved.Topology.VIPSecurityGroupIDs) != 0 {
+		spec.FrontendSecurity = configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendReferenced, Groups: securityGroupReferences(resolved.Topology.VIPSecurityGroupIDs)}
+	}
+	if len(resolved.Topology.BackendSecurityGroupIDs) != 0 {
+		spec.BackendSecurity = configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendReferenced, Groups: securityGroupReferences(resolved.Topology.BackendSecurityGroupIDs)}
+	}
 	_, addressType, validatedMonitor, err := classconfig.Validate(spec)
-	if err != nil || addressType != resolved.NodeAddressType || validatedMonitor != monitor {
+	if err != nil || addressType != resolved.NodeAddressType || validatedMonitor != monitor ||
+		!slices.IsSorted(resolved.Topology.VIPSecurityGroupIDs) || !slices.IsSorted(resolved.Topology.BackendSecurityGroupIDs) {
 		return fmt.Errorf("%w: Gateway topology contains an invalid resolved configuration", cloud.ErrOwnershipConflict)
 	}
 	return nil
+}
+
+func securityGroupReferences(ids []string) []configv1alpha1.ResourceReference {
+	references := make([]configv1alpha1.ResourceReference, len(ids))
+	for i, id := range ids {
+		references[i] = configv1alpha1.ResourceReference{ID: id}
+	}
+	return references
 }

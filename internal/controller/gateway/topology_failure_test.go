@@ -105,3 +105,17 @@ type failingTopologyResolver struct{ err error }
 func (r failingTopologyResolver) ResolveTopology(context.Context, cloud.TopologyRequest) (cloud.Topology, error) {
 	return cloud.Topology{}, r.err
 }
+
+func TestGatewaySpecCopiesFrozenSecurityGroups(t *testing.T) {
+	topology := testBoundTopology()
+	topology.Topology.VIPSecurityGroupIDs = []string{"33333333-3333-3333-3333-333333333333"}
+	r := &Reconciler{Config: testConfig()}
+	spec := r.gatewaySpec(&gatewayv1.Gateway{}, &gatewayv1.Listener{Name: "http", Port: 80}, topology)
+	if len(spec.VIPSecurityGroupIDs) != 1 || spec.VIPSecurityGroupIDs[0] != topology.Topology.VIPSecurityGroupIDs[0] {
+		t.Fatalf("Gateway security groups=%v", spec.VIPSecurityGroupIDs)
+	}
+	spec.VIPSecurityGroupIDs[0] = "changed"
+	if topology.Topology.VIPSecurityGroupIDs[0] != "33333333-3333-3333-3333-333333333333" {
+		t.Fatal("Gateway model aliases the frozen security configuration")
+	}
+}

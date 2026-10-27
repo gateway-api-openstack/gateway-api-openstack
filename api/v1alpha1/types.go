@@ -50,6 +50,44 @@ type FloatingIPConfig struct {
 	ExternalNetwork *ResourceReference `json:"externalNetwork,omitempty"`
 }
 
+// FrontendSecurityMode determines who configures access to the listener ports.
+type FrontendSecurityMode string
+
+const (
+	// FrontendOctaviaManaged lets Octavia maintain listener security groups.
+	FrontendOctaviaManaged FrontendSecurityMode = "OctaviaManaged"
+	// FrontendReferenced uses existing groups without changing their rules.
+	FrontendReferenced FrontendSecurityMode = "Referenced"
+)
+
+// FrontendSecurityConfig selects the existing groups supplied to Octavia.
+// Referenced requires Octavia API 2.29 or newer and operator-managed ingress rules.
+type FrontendSecurityConfig struct {
+	Mode FrontendSecurityMode `json:"mode,omitempty"`
+	// Groups selects 1 to 16 existing groups when Mode is Referenced.
+	// +listType=atomic
+	Groups []ResourceReference `json:"groups,omitempty"`
+}
+
+// BackendSecurityMode determines how backend security prerequisites are checked.
+type BackendSecurityMode string
+
+const (
+	// BackendUnmanaged leaves backend security configuration to the operator.
+	BackendUnmanaged BackendSecurityMode = "Unmanaged"
+	// BackendReferenced verifies existing groups without changing groups or ports.
+	BackendReferenced BackendSecurityMode = "Referenced"
+)
+
+// BackendSecurityConfig selects groups that must already protect the worker ports.
+// Structural validation does not establish connectivity from Amphora to members.
+type BackendSecurityConfig struct {
+	Mode BackendSecurityMode `json:"mode,omitempty"`
+	// Groups selects 1 to 16 existing groups when Mode is Referenced.
+	// +listType=atomic
+	Groups []ResourceReference `json:"groups,omitempty"`
+}
+
 // HealthMonitorConfig configures HTTP checks for each backend pool.
 // Intervals use seconds. The method is GET and successful codes are 200-399.
 type HealthMonitorConfig struct {
@@ -63,9 +101,11 @@ type HealthMonitorConfig struct {
 // OpenStackGatewayClassConfigSpec supplies infrastructure defaults for new
 // Gateways. Existing Gateways retain the complete validated configuration.
 type OpenStackGatewayClassConfigSpec struct {
-	VIPSubnet    ResourceReference `json:"vipSubnet"`
-	MemberSubnet ResourceReference `json:"memberSubnet"`
-	FloatingIP   FloatingIPConfig  `json:"floatingIP,omitempty"`
+	VIPSubnet        ResourceReference      `json:"vipSubnet"`
+	MemberSubnet     ResourceReference      `json:"memberSubnet"`
+	FloatingIP       FloatingIPConfig       `json:"floatingIP,omitempty"`
+	FrontendSecurity FrontendSecurityConfig `json:"frontendSecurity,omitempty"`
+	BackendSecurity  BackendSecurityConfig  `json:"backendSecurity,omitempty"`
 	// NodeAddressType is InternalIP or ExternalIP. It defaults to InternalIP.
 	NodeAddressType string `json:"nodeAddressType,omitempty"`
 	// FlavorID selects an enabled Amphora flavor by UUID.

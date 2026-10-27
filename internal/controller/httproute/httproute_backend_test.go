@@ -115,6 +115,39 @@ func TestNodePortMembersNoEligibleWorker(t *testing.T) {
 	}
 }
 
+func TestNodePortMembersRejectConflictingProviderIDs(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		providerID string
+		conflict   bool
+	}{
+		{name: "same instance", providerID: "openstack:///server-a"},
+		{name: "different instance", providerID: "openstack:///server-b", conflict: true},
+		{name: "missing identity", conflict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, _, first := validNodePortBackend("default", "backend")
+			first.Spec.ProviderID = "openstack:///server-a"
+			second := first.DeepCopy()
+			second.Name = "second-worker"
+			second.Spec.ProviderID = test.providerID
+			nodes := []corev1.Node{*first, *second}
+			for range 2 {
+				members, err := nodePortMembersForNodes(service, 30080, corev1.NodeInternalIP, map[string]struct{}{"": {}}, nodes)
+				if test.conflict {
+					var buildError *routeBuildError
+					if !errors.As(err, &buildError) || buildError.kind != routeErrorPending || len(members) != 0 {
+						t.Fatalf("ambiguous provider identity produced members: %v, %v", members, err)
+					}
+				} else if err != nil || len(members) != 1 || members[0].ProviderID != first.Spec.ProviderID {
+					t.Fatalf("identical member tuples did not deduplicate: %v, %v", members, err)
+				}
+				slices.Reverse(nodes)
+			}
+		})
+	}
+}
+
 func TestNodePortMembersFollowWorkerLabelChanges(t *testing.T) {
 	for _, policy := range []corev1.ServiceExternalTrafficPolicy{corev1.ServiceExternalTrafficPolicyCluster, corev1.ServiceExternalTrafficPolicyLocal} {
 		t.Run(string(policy), func(t *testing.T) {

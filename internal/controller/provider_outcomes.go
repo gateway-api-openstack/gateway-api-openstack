@@ -50,6 +50,8 @@ const (
 	ProviderReasonUnavailable = "ProviderUnavailable"
 	// ProviderReasonInvalidConfiguration identifies terminal provider validation.
 	ProviderReasonInvalidConfiguration = "InvalidProviderConfiguration"
+	// ProviderReasonDependencyNotReady identifies an external prerequisite.
+	ProviderReasonDependencyNotReady = "DependencyNotReady"
 	// ProviderReasonResourceFailed identifies an OpenStack resource error state.
 	ProviderReasonResourceFailed = "ResourceFailed"
 	// ProviderReasonOwnershipConflict identifies an immutable identity mismatch.
@@ -183,6 +185,13 @@ func ProviderFailurePolicyFor(err error) (ProviderFailurePolicy, bool) {
 		policy.ConditionStatus = metav1.ConditionFalse
 		policy.Reason = ProviderReasonResourceFailed
 		policy.Message = "An OpenStack resource entered an error state"
+		policy.RequeueAfter = providerFailureRequeue
+		policy.EmitEvent = true
+		policy.AdvancesObservedGeneration = true
+	case cloud.ErrorCategoryDependencyNotReady:
+		policy.ConditionStatus = metav1.ConditionFalse
+		policy.Reason = ProviderReasonDependencyNotReady
+		policy.Message = "A referenced OpenStack resource does not satisfy the network access prerequisites"
 		policy.RequeueAfter = providerFailureRequeue
 		policy.EmitEvent = true
 		policy.AdvancesObservedGeneration = true

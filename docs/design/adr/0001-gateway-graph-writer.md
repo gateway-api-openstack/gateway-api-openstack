@@ -149,6 +149,7 @@ The adapter discovers Floating IPs independently of the load balancer by listing
 This finds a detached owned address even when the load balancer still exists and detects foreign addresses on its VIP port.
 Normal provisioning stops when an owned address is detached or its load balancer is absent, preventing duplicate allocation.
 It does not reconnect the address automatically.
+[ADR 0004](0004-network-access-and-recovery.md) supersedes this detachment behavior with conditional recovery when the complete graph permits traffic restoration.
 Whole-Gateway deletion may remove a uniquely owned, fully detached address after validating any remaining load balancer graph.
 Duplicate candidates, inconsistent identity, and unexpected port, fixed-address, or router associations block mutation.
 Route-only cleanup preserves the Gateway's Floating IP.

@@ -83,6 +83,7 @@ type ServiceClients struct {
 	LoadBalancer *gophercloud.ServiceClient
 	Network      *gophercloud.ServiceClient
 	ProjectID    string
+	Region       string
 }
 
 // NewServiceClients authenticates from a selected clouds.yaml entry when a
@@ -147,6 +148,7 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (clients ServiceCl
 		LoadBalancer: loadBalancerClient,
 		Network:      networkClient,
 		ProjectID:    projectID,
+		Region:       endpointOptions.Region,
 	}, nil
 }
 

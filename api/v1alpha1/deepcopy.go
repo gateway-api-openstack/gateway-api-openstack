@@ -48,6 +48,8 @@ func (in *OpenStackGatewayClassConfigSpec) DeepCopyInto(out *OpenStackGatewayCla
 	*out = *in
 	out.VIPSubnet.Tags = append([]string(nil), in.VIPSubnet.Tags...)
 	out.MemberSubnet.Tags = append([]string(nil), in.MemberSubnet.Tags...)
+	out.FrontendSecurity.Groups = copyReferences(in.FrontendSecurity.Groups)
+	out.BackendSecurity.Groups = copyReferences(in.BackendSecurity.Groups)
 	if in.FloatingIP.ExternalNetwork != nil {
 		out.FloatingIP.ExternalNetwork = new(ResourceReference)
 		*out.FloatingIP.ExternalNetwork = *in.FloatingIP.ExternalNetwork
@@ -64,6 +66,18 @@ func (in *OpenStackGatewayClassConfigSpec) DeepCopyInto(out *OpenStackGatewayCla
 	out.HealthMonitor.Timeout = copyInt(in.HealthMonitor.Timeout)
 	out.HealthMonitor.MaxRetries = copyInt(in.HealthMonitor.MaxRetries)
 	out.HealthMonitor.MaxRetriesDown = copyInt(in.HealthMonitor.MaxRetriesDown)
+}
+
+func copyReferences(in []ResourceReference) []ResourceReference {
+	if in == nil {
+		return nil
+	}
+	out := make([]ResourceReference, len(in))
+	for i := range in {
+		out[i] = in[i]
+		out[i].Tags = append([]string(nil), in[i].Tags...)
+	}
+	return out
 }
 
 // DeepCopyInto copies a list and all of its objects.

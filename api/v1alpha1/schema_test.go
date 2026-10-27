@@ -67,6 +67,31 @@ func TestClassConfigurationSchema(t *testing.T) {
 		invalid bool
 	}{
 		{name: "defaults"},
+		{name: "referenced security", change: func(s map[string]any) {
+			s["frontendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"name": "frontend"}}}
+			s["backendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"tags": []any{"workers"}}}}
+		}},
+		{name: "frontend referenced without groups", invalid: true, change: func(s map[string]any) {
+			s["frontendSecurity"] = map[string]any{"mode": "Referenced"}
+		}},
+		{name: "frontend managed with groups", invalid: true, change: func(s map[string]any) {
+			s["frontendSecurity"] = map[string]any{"groups": []any{map[string]any{"name": "frontend"}}}
+		}},
+		{name: "backend referenced without groups", invalid: true, change: func(s map[string]any) {
+			s["backendSecurity"] = map[string]any{"mode": "Referenced"}
+		}},
+		{name: "backend unmanaged with groups", invalid: true, change: func(s map[string]any) {
+			s["backendSecurity"] = map[string]any{"groups": []any{map[string]any{"name": "backend"}}}
+		}},
+		{name: "managed backend unsupported", invalid: true, change: func(s map[string]any) {
+			s["backendSecurity"] = map[string]any{"mode": "Managed"}
+		}},
+		{name: "empty referenced security", invalid: true, change: func(s map[string]any) {
+			s["frontendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{}}
+		}},
+		{name: "invalid security group reference", invalid: true, change: func(s map[string]any) {
+			s["backendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"id": "invalid"}}}
+		}},
 		{name: "allocate", change: func(s map[string]any) {
 			s["floatingIP"] = map[string]any{"mode": "Allocate", "externalNetwork": map[string]any{"tags": []any{"public"}}}
 		}},
@@ -110,7 +135,7 @@ func TestClassConfigurationSchema(t *testing.T) {
 				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object, &typed); err != nil {
 					t.Fatal(err)
 				}
-				if typed.Spec.NodeAddressType != "InternalIP" || typed.Spec.FloatingIP.Mode != FloatingIPNone || typed.Spec.HealthMonitor.Delay == nil || *typed.Spec.HealthMonitor.Delay != 10 || typed.Spec.HealthMonitor.Timeout == nil || *typed.Spec.HealthMonitor.Timeout != 5 {
+				if typed.Spec.NodeAddressType != "InternalIP" || typed.Spec.FloatingIP.Mode != FloatingIPNone || typed.Spec.FrontendSecurity.Mode != FrontendOctaviaManaged || typed.Spec.BackendSecurity.Mode != BackendUnmanaged || typed.Spec.HealthMonitor.Delay == nil || *typed.Spec.HealthMonitor.Delay != 10 || typed.Spec.HealthMonitor.Timeout == nil || *typed.Spec.HealthMonitor.Timeout != 5 {
 					t.Fatalf("defaults=%#v", typed.Spec)
 				}
 			}
@@ -123,13 +148,17 @@ func TestClassConfigurationDeepCopy(t *testing.T) {
 	original := &OpenStackGatewayClassConfig{Spec: OpenStackGatewayClassConfigSpec{
 		VIPSubnet: ResourceReference{Tags: []string{"vip"}}, MemberSubnet: ResourceReference{Tags: []string{"member"}},
 		FloatingIP: FloatingIPConfig{ExternalNetwork: &ResourceReference{Tags: []string{"external"}}}, HealthMonitor: HealthMonitorConfig{Delay: &delay},
+		FrontendSecurity: FrontendSecurityConfig{Mode: FrontendReferenced, Groups: []ResourceReference{{Tags: []string{"frontend"}}}},
+		BackendSecurity:  BackendSecurityConfig{Mode: BackendReferenced, Groups: []ResourceReference{{Tags: []string{"backend"}}}},
 	}}
 	copied := original.DeepCopy()
 	copied.Spec.VIPSubnet.Tags[0] = "changed"
 	copied.Spec.MemberSubnet.Tags[0] = "changed"
 	copied.Spec.FloatingIP.ExternalNetwork.Tags[0] = "changed"
+	copied.Spec.FrontendSecurity.Groups[0].Tags[0] = "changed"
+	copied.Spec.BackendSecurity.Groups[0].Tags[0] = "changed"
 	*copied.Spec.HealthMonitor.Delay = 20
-	if original.Spec.VIPSubnet.Tags[0] != "vip" || original.Spec.MemberSubnet.Tags[0] != "member" || original.Spec.FloatingIP.ExternalNetwork.Tags[0] != "external" || *original.Spec.HealthMonitor.Delay != 10 {
+	if original.Spec.VIPSubnet.Tags[0] != "vip" || original.Spec.MemberSubnet.Tags[0] != "member" || original.Spec.FloatingIP.ExternalNetwork.Tags[0] != "external" || original.Spec.FrontendSecurity.Groups[0].Tags[0] != "frontend" || original.Spec.BackendSecurity.Groups[0].Tags[0] != "backend" || *original.Spec.HealthMonitor.Delay != 10 {
 		t.Fatal("deep copy aliases mutable specification fields")
 	}
 }

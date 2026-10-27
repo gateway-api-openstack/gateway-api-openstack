@@ -385,6 +385,7 @@ func endpointSliceBackendState(endpointSlice *discoveryv1.EndpointSlice) endpoin
 
 type nodeBackendState struct {
 	address       string
+	providerID    string
 	excluded      bool
 	ready         corev1.ConditionStatus
 	readyPresent  bool
@@ -395,6 +396,7 @@ type nodeBackendState struct {
 func nodeBackendStateFor(node *corev1.Node, addressType corev1.NodeAddressType) nodeBackendState {
 	state := nodeBackendState{
 		address:       nodeAddress(node, addressType),
+		providerID:    node.Spec.ProviderID,
 		excluded:      NodePortNodeExcluded(node),
 		unschedulable: node.Spec.Unschedulable,
 		deleting:      !node.DeletionTimestamp.IsZero(),

@@ -19,6 +19,7 @@ limitations under the License.
 package controller_test
 
 import (
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -54,6 +55,12 @@ func testGatewayClassTopologyIsolation(t *testing.T, apiClient, cacheClient clie
 	parametersB.Spec.AvailabilityZone = "zone-b"
 	parametersB.Spec.NodeAddressType = string(corev1.NodeExternalIP)
 	parametersB.Spec.HealthMonitor.Path = "/ready"
+	parametersB.Spec.FrontendSecurity = configv1alpha1.FrontendSecurityConfig{
+		Mode: configv1alpha1.FrontendReferenced, Groups: []configv1alpha1.ResourceReference{{ID: "77777777-7777-4777-8777-777777777777"}},
+	}
+	parametersB.Spec.BackendSecurity = configv1alpha1.BackendSecurityConfig{
+		Mode: configv1alpha1.BackendReferenced, Groups: []configv1alpha1.ResourceReference{{ID: "88888888-8888-4888-8888-888888888888"}},
+	}
 
 	classes := []struct {
 		parameters *configv1alpha1.OpenStackGatewayClassConfig
@@ -70,6 +77,7 @@ func testGatewayClassTopologyIsolation(t *testing.T, apiClient, cacheClient clie
 			Topology: cloud.Topology{
 				VIPSubnetID: "33333333-3333-3333-3333-333333333333", MemberSubnetID: "44444444-4444-4444-4444-444444444444",
 				ExternalNetworkID: "55555555-5555-5555-5555-555555555555", FlavorID: "66666666-6666-6666-6666-666666666666", AvailabilityZone: "zone-b",
+				VIPSecurityGroupIDs: []string{"77777777-7777-4777-8777-777777777777"}, BackendSecurityGroupIDs: []string{"88888888-8888-4888-8888-888888888888"},
 			},
 			NodeAddressType: corev1.NodeExternalIP,
 			HealthMonitor:   cloud.HealthMonitorConfig{Path: "/ready", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
@@ -153,11 +161,11 @@ func testGatewayClassTopologyIsolation(t *testing.T, apiClient, cacheClient clie
 				t.Fatalf("Gateway %s received another graph's identity or components: %#v", item.gateway.Name, call)
 			}
 			got := call.Gateway.Spec
-			if got.VIPSubnetID != wantTopology.VIPSubnetID || got.ExternalNetworkID != wantTopology.ExternalNetworkID || got.FlavorID != wantTopology.FlavorID || got.AvailabilityZone != wantTopology.AvailabilityZone {
+			if got.VIPSubnetID != wantTopology.VIPSubnetID || got.ExternalNetworkID != wantTopology.ExternalNetworkID || got.FlavorID != wantTopology.FlavorID || got.AvailabilityZone != wantTopology.AvailabilityZone || !reflect.DeepEqual(got.VIPSecurityGroupIDs, wantTopology.VIPSecurityGroupIDs) {
 				t.Fatalf("Gateway %s provider topology = %#v, want %#v", item.gateway.Name, got, wantTopology)
 			}
 			snapshot, err := controller.StoredGatewayTopology(config, item.gateway)
-			if err != nil || snapshot != item.want {
+			if err != nil || !reflect.DeepEqual(snapshot, item.want) {
 				t.Fatalf("Gateway %s stored configuration = %#v, error = %v, want %#v", item.gateway.Name, snapshot, err, item.want)
 			}
 		}

@@ -96,6 +96,28 @@ func TestValidateRejectsInvalidConfiguration(t *testing.T) {
 			s.FloatingIP.ExternalNetwork = &configv1alpha1.ResourceReference{Name: "external"}
 		}},
 		{"unknown mode", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.FloatingIP.Mode = "Adopt" }},
+		{"frontend missing groups", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.FrontendSecurity.Mode = configv1alpha1.FrontendReferenced
+		}},
+		{"frontend managed groups", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.FrontendSecurity.Groups = []configv1alpha1.ResourceReference{{Name: "frontend"}}
+		}},
+		{"backend missing groups", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.BackendSecurity.Mode = configv1alpha1.BackendReferenced
+		}},
+		{"backend unmanaged groups", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.BackendSecurity.Groups = []configv1alpha1.ResourceReference{{Name: "backend"}}
+		}},
+		{"backend managed unsupported", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.BackendSecurity.Mode = "Managed" }},
+		{"duplicate security references", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.FrontendSecurity = configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendReferenced, Groups: []configv1alpha1.ResourceReference{{Tags: []string{"one", "two"}}, {Tags: []string{"two", "one"}}}}
+		}},
+		{"invalid security reference", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.BackendSecurity = configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendReferenced, Groups: []configv1alpha1.ResourceReference{{ID: "invalid"}}}
+		}},
+		{"too many security groups", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.FrontendSecurity = configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendReferenced, Groups: make([]configv1alpha1.ResourceReference, 17)}
+		}},
 		{"unknown address", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.NodeAddressType = "Hostname" }},
 		{"flavor name", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.FlavorID = "small" }},
 		{"zone whitespace", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.AvailabilityZone = " zone" }},
@@ -260,5 +282,24 @@ func TestValidateUnicodeFieldLimits(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want invalid %t", err, test.invalid)
 			}
 		})
+	}
+}
+
+func TestValidateSecurityGroupReferences(t *testing.T) {
+	parameters := validParameters()
+	parameters.Spec.FrontendSecurity = configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendReferenced, Groups: []configv1alpha1.ResourceReference{{Tags: []string{"two", "one"}}}}
+	parameters.Spec.BackendSecurity = configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendReferenced, Groups: []configv1alpha1.ResourceReference{{Name: "workers"}}}
+	before := parameters.DeepCopy()
+	request, _, _, err := Validate(parameters.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(request.VIPSecurityGroups, []cloud.ResourceReference{{Tags: []string{"one", "two"}}}) || !reflect.DeepEqual(request.BackendSecurityGroups, []cloud.ResourceReference{{Name: "workers"}}) {
+		t.Fatalf("security references = %#v %#v", request.VIPSecurityGroups, request.BackendSecurityGroups)
+	}
+	request.VIPSecurityGroups[0].Tags[0] = "changed"
+	request.BackendSecurityGroups[0].Name = "changed"
+	if !reflect.DeepEqual(before, parameters) {
+		t.Fatal("security validation changed the class configuration")
 	}
 }

@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -40,14 +41,15 @@ func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gate
 
 func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, topology classconfig.Resolved) cloud.GatewaySpec {
 	return cloud.GatewaySpec{
-		Identity:          controller.GatewayIdentity(r.Config, gateway),
-		Provider:          "amphora",
-		VIPSubnetID:       topology.Topology.VIPSubnetID,
-		ExternalNetworkID: topology.Topology.ExternalNetworkID,
-		ListenerName:      resourceDisplayName(gateway.Namespace, gateway.Name, string(listener.Name)),
-		ListenerPort:      int(listener.Port),
-		FlavorID:          topology.Topology.FlavorID,
-		AvailabilityZone:  topology.Topology.AvailabilityZone,
+		Identity:            controller.GatewayIdentity(r.Config, gateway),
+		Provider:            "amphora",
+		VIPSubnetID:         topology.Topology.VIPSubnetID,
+		ExternalNetworkID:   topology.Topology.ExternalNetworkID,
+		ListenerName:        resourceDisplayName(gateway.Namespace, gateway.Name, string(listener.Name)),
+		ListenerPort:        int(listener.Port),
+		FlavorID:            topology.Topology.FlavorID,
+		AvailabilityZone:    topology.Topology.AvailabilityZone,
+		VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 	}
 }
 

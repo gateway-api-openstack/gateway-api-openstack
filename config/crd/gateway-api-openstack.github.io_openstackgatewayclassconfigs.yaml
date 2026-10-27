@@ -32,6 +32,92 @@ spec:
                 - vipSubnet
                 - memberSubnet
               properties:
+                frontendSecurity:
+                  type: object
+                  default:
+                    mode: OctaviaManaged
+                  x-kubernetes-validations:
+                    - rule: "self.mode == 'Referenced' ? has(self.groups) : !has(self.groups)"
+                      message: Referenced requires groups and OctaviaManaged forbids them.
+                  properties:
+                    mode:
+                      type: string
+                      default: OctaviaManaged
+                      enum:
+                        - OctaviaManaged
+                        - Referenced
+                    groups:
+                      type: array
+                      minItems: 1
+                      maxItems: 16
+                      x-kubernetes-list-type: atomic
+                      items:
+                        type: object
+                        x-kubernetes-validations:
+                          - rule: "(has(self.id) ? 1 : 0) + (has(self.name) ? 1 : 0) + (has(self.tags) ? 1 : 0) == 1"
+                            message: Select exactly one of id, name, or tags.
+                        properties:
+                          id:
+                            type: string
+                            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                          name:
+                            type: string
+                            minLength: 1
+                            maxLength: 255
+                            pattern: '^[^\p{Z}\p{Cc}]([^\p{Cc}]*[^\p{Z}\p{Cc}])?$'
+                          tags:
+                            type: array
+                            minItems: 1
+                            maxItems: 16
+                            x-kubernetes-list-type: set
+                            items:
+                              type: string
+                              minLength: 1
+                              maxLength: 60
+                              pattern: '^[^,\p{Z}\p{Cc}]([^,\p{Cc}]*[^,\p{Z}\p{Cc}])?$'
+                backendSecurity:
+                  type: object
+                  default:
+                    mode: Unmanaged
+                  x-kubernetes-validations:
+                    - rule: "self.mode == 'Referenced' ? has(self.groups) : !has(self.groups)"
+                      message: Referenced requires groups and Unmanaged forbids them.
+                  properties:
+                    mode:
+                      type: string
+                      default: Unmanaged
+                      enum:
+                        - Unmanaged
+                        - Referenced
+                    groups:
+                      type: array
+                      minItems: 1
+                      maxItems: 16
+                      x-kubernetes-list-type: atomic
+                      items:
+                        type: object
+                        x-kubernetes-validations:
+                          - rule: "(has(self.id) ? 1 : 0) + (has(self.name) ? 1 : 0) + (has(self.tags) ? 1 : 0) == 1"
+                            message: Select exactly one of id, name, or tags.
+                        properties:
+                          id:
+                            type: string
+                            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                          name:
+                            type: string
+                            minLength: 1
+                            maxLength: 255
+                            pattern: '^[^\p{Z}\p{Cc}]([^\p{Cc}]*[^\p{Z}\p{Cc}])?$'
+                          tags:
+                            type: array
+                            minItems: 1
+                            maxItems: 16
+                            x-kubernetes-list-type: set
+                            items:
+                              type: string
+                              minLength: 1
+                              maxLength: 60
+                              pattern: '^[^,\p{Z}\p{Cc}]([^,\p{Cc}]*[^,\p{Z}\p{Cc}])?$'
                 vipSubnet:
                   type: object
                   x-kubernetes-validations:

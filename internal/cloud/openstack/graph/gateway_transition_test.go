@@ -93,7 +93,7 @@ func TestEnsureGatewayDoesNotEnableLoadBalancerWithForeignFloatingIP(t *testing.
 		requests.record(request)
 		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
 			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{map[string]any{
-				"id": "foreign-floating-ip", "project_id": "project-a", "port_id": "vip-port",
+				"id": "foreign-floating-ip", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 				"description": "owned by another controller",
 			}}})
 			return

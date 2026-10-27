@@ -18,7 +18,14 @@ limitations under the License.
 // service. Cross-service ownership decisions remain in the graph package.
 package neutron
 
-import "github.com/gophercloud/gophercloud/v2"
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	"github.com/gophercloud/gophercloud/v2"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions"
+)
 
 // Service performs Neutron resource operations with a shared authenticated
 // client. Project scoping and ownership validation remain in the callers.
@@ -29,4 +36,16 @@ type Service struct {
 // NewService creates a Neutron service around the shared authenticated client.
 func NewService(client *gophercloud.ServiceClient) *Service {
 	return &Service{client: client}
+}
+
+// HasExtension checks whether Neutron exposes the requested extension.
+func (s *Service) HasExtension(ctx context.Context, alias string) (bool, error) {
+	extension, err := extensions.Get(ctx, s.client, alias).Extract()
+	if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get Neutron extension %s: %w", alias, err)
+	}
+	return extension.Alias == alias, nil
 }

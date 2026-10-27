@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -127,7 +128,7 @@ func TestResolveTopologyUsesVisibleSharedExternalNetwork(t *testing.T) {
 		VIPSubnetID: "vip-subnet", MemberSubnetID: "member-subnet", ExternalNetworkID: "public-net",
 		FlavorID: "flavor-1", AvailabilityZone: "zone-1",
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("topology = %#v, want %#v", got, want)
 	}
 	if f.calls("/v2.0/networks/private-net") != 1 {
@@ -197,7 +198,7 @@ func TestResolveTopologySelectorPagination(t *testing.T) {
 			}
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
 			if duplicate {
-				if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+				if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 					t.Fatalf("topology = %#v, error = %v, want rejection without partial topology", got, err)
 				}
 			} else if err != nil || got.MemberSubnetID != "member-subnet" || got.ExternalNetworkID != "public-net" {
@@ -235,7 +236,7 @@ func TestResolveTopologyRejectsInvalidInfrastructure(t *testing.T) {
 			request := topologyRequest()
 			request.ExternalNetwork = &cloud.ResourceReference{ID: "public-net"}
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
-			if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+			if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want terminal validation", got, err)
 			}
 		})
@@ -257,7 +258,7 @@ func TestResolveTopologyClassifiesReadFailures(t *testing.T) {
 			f := newTopologyFixture(t)
 			f.responses["/v2.0/subnets/member-subnet"] = fixtureResponse{status: tt.status, body: `{"message":"sensitive cloud response"}`}
 			got, err := f.resolver.ResolveTopology(context.Background(), topologyRequest())
-			if !errors.Is(err, tt.want) || got != (cloud.Topology{}) {
+			if !errors.Is(err, tt.want) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want %v", got, err, tt.want)
 			}
 		})
@@ -272,7 +273,7 @@ func TestResolveTopologyBoundsReads(t *testing.T) {
 		return true
 	}
 	got, err := f.resolver.ResolveTopology(context.Background(), topologyRequest())
-	if !errors.Is(err, cloud.ErrTimeout) || got != (cloud.Topology{}) {
+	if !errors.Is(err, cloud.ErrTimeout) || !reflect.DeepEqual(got, cloud.Topology{}) {
 		t.Fatalf("topology = %#v, error = %v, want timeout", got, err)
 	}
 }

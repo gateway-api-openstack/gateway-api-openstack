@@ -5,6 +5,7 @@ It is a cluster-scoped `v1alpha1` API in the group `gateway-api-openstack.github
 GatewayClass must reference it through `spec.parametersRef`, with no namespace.
 The API group and default controller identity use the organization's domain under [ADR 0003](../design/adr/0003-project-organization.md).
 [ADR 0002](../design/adr/0002-class-configuration.md) defines class behavior and compatibility limits.
+[ADR 0004](../design/adr/0004-network-access-and-recovery.md) adds referenced security and address recovery.
 
 ## Configure a class
 
@@ -54,6 +55,10 @@ Gateway `spec.infrastructure.parametersRef` is not supported.
 | `memberSubnet` | Required | Selects the existing subnet supplied to Octavia members. |
 | `floatingIP.mode` | `None` | `None` publishes the VIP. `Allocate` creates a Floating IP owned by the Gateway. |
 | `floatingIP.externalNetwork` | Unset | Required for `Allocate` and forbidden for `None`. Selects an existing external network. |
+| `frontendSecurity.mode` | `OctaviaManaged` | `Referenced` uses existing VIP security groups after capability and rule checks. |
+| `frontendSecurity.groups` | Unset | Required for `Referenced`. Supply 1 through 16 distinct group references. |
+| `backendSecurity.mode` | `Unmanaged` | `Referenced` validates groups already attached to the selected worker ports. |
+| `backendSecurity.groups` | Unset | Required for `Referenced`. Supply 1 through 16 distinct group references. |
 | `nodeAddressType` | `InternalIP` | Selects `InternalIP` or `ExternalIP` from eligible Nodes. |
 | `flavorID` | Unset | Selects an enabled Amphora flavor by UUID. |
 | `availabilityZone` | Unset | Selects an enabled Amphora availability zone by exact name. |
@@ -67,7 +72,7 @@ Health monitors use HTTP `GET` and accept status codes `200-399`.
 Those settings are fixed.
 There is no option to disable the health monitor or supply an existing Floating IP.
 
-Each subnet or external network reference must contain exactly one selector:
+Each subnet, external network, or security group reference must contain exactly one selector:
 
 | Selector | Matching rule |
 | --- | --- |
@@ -86,6 +91,50 @@ It may belong to the cloud operator's project, as shared public networks often d
 Floating IP allocation currently requires an IPv4 VIP subnet.
 Reading these resources does not give the controller ownership of them.
 
+## Security groups
+
+The default frontend mode leaves listener access to Octavia.
+To supply existing groups, add these fields to the class configuration:
+
+```yaml
+frontendSecurity:
+  mode: Referenced
+  groups:
+    - id: 33333333-3333-4333-8333-333333333333
+backendSecurity:
+  mode: Referenced
+  groups:
+    - id: 44444444-4444-4444-8444-444444444444
+```
+
+These synthetic IDs identify groups in the authenticated project.
+Names and tags use the same selector rules as subnets.
+The controller rejects references that resolve to the same group more than once.
+Groups are forbidden with `OctaviaManaged` or `Unmanaged`.
+There is no `Managed` backend mode.
+
+Referenced frontend groups require configured and advertised Octavia microversion `2.29` or later.
+Octavia applies `vip_sg_ids` to VIP and Amphora VRRP ports while retaining internal VRRP and HAProxy peer rules.
+The operator supplies listener ingress rules.
+Custom groups cannot be combined with listener `allowed_cidrs` or an SR-IOV flavor.
+When a flavor is selected, its readable profile must establish that SR-IOV is disabled.
+These restrictions follow the [Octavia custom VIP security group contract](https://docs.openstack.org/octavia/latest/contributor/specs/version15.0/custom-security-groups-for-VIP-ports.html).
+
+Referenced backend groups must already be attached to each selected worker port with port security enabled.
+The controller maps the Node's OpenStack provider ID and configured region to a Nova server UUID, then verifies exactly one compute port in the authenticated project with the selected address and member subnet.
+Conflicting Node identities for the same address are rejected.
+In `Unmanaged` mode, the controller does not impose these port security checks.
+
+Ingress validation checks the IP family, TCP protocol, and listener or NodePort range.
+It does not prove that a remote group or source CIDR includes Amphora or the client.
+The controller never derives backend source CIDRs from the VIP subnet.
+Health checks and actual traffic must establish reachability.
+
+Resolved group IDs are fixed in the Gateway binding.
+The controller reads their current rules and worker associations before provisioning and during drift observation.
+A failed external prerequisite produces a redacted condition and a slow retry, allowing an operator's repair to restore progress.
+Deletion does not require referenced groups or workers to remain available.
+
 ## Validation and permissions
 
 GatewayClass validation uses read-only Octavia and Neutron calls.
@@ -97,7 +146,9 @@ Unknown or unverifiable capabilities are not accepted.
 | Base HTTP and NodePort profile | `2.5` | API version discovery, provider list, selected subnets, and their networks. |
 | `flavorID` | `2.6` | Flavor and flavor profile, including proof that the profile uses Amphora. |
 | `availabilityZone` | `2.14` | Availability zone and its profile, including proof that the profile uses Amphora. |
-| `floatingIP.mode: Allocate` | `2.5` | Selected external network. |
+| `floatingIP.mode: Allocate` | `2.5` | Selected external network. Recovery also reads Neutron revision extensions. |
+| `frontendSecurity.mode: Referenced` | `2.29` | Selected groups and VIP subnet, plus flavor security properties when configured. |
+| `backendSecurity.mode: Referenced` | `2.5` | Selected groups and exact worker ports, including existing associations and port security. |
 
 The configured microversion must also be advertised by the cloud.
 The base Deployment uses `--octavia-microversion=2.5`.
@@ -122,7 +173,7 @@ It persists that binding with its finalizers and returns before provisioning.
 The resulting configuration remains fixed for that Gateway UID.
 
 Editing the parameter object or changing its selectors affects Gateways that have not yet acquired a binding.
-It does not move an existing Gateway to another subnet, flavor, availability zone, or Floating IP policy.
+It does not move an existing Gateway to another subnet, flavor, availability zone, Floating IP policy, or set of referenced groups.
 Deleting the parameter object makes the referencing GatewayClass invalid for new bindings, but an already bound Gateway continues to use its stored configuration.
 Its cleanup does not require the parameter object to exist.
 
@@ -162,7 +213,7 @@ Node and EndpointSlice changes recalculate membership, preserving members whose 
 
 Operators must ensure that the selected Node addresses belong to the configured member network and that Amphora can reach their NodePorts.
 This also applies when selecting `ExternalIP` instead of the default `InternalIP`.
-The topology checks do not verify that path, and the controller does not create backend security groups or attach groups to worker ports.
+The structural checks do not verify that path, and the controller does not create backend security groups or attach groups to worker ports.
 
 ## Development compatibility
 

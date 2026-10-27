@@ -18,6 +18,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -187,8 +188,8 @@ func TestGatewayDeletionDoesNotTreatIncompleteFloatingIPInventoryAsAbsent(t *tes
 	}
 }
 
-func TestGatewayGraphDetectsDetachedFloatingIPWithExistingLoadBalancer(t *testing.T) {
-	for _, disposition := range []cloud.GraphDisposition{cloud.GraphEnsure, cloud.GraphPreserve, cloud.GraphDelete} {
+func TestGatewayGraphPreservesOrDeletesDetachedFloatingIPWithExistingLoadBalancer(t *testing.T) {
+	for _, disposition := range []cloud.GraphDisposition{cloud.GraphPreserve, cloud.GraphDelete} {
 		t.Run(string(disposition), func(t *testing.T) {
 			identity := safetyTestIdentity(t)
 			requests := &gatewayTransitionRequests{}
@@ -226,11 +227,7 @@ func TestGatewayGraphDetectsDetachedFloatingIPWithExistingLoadBalancer(t *testin
 			spec := absentGatewaySpec(identity, disposition)
 			spec.Gateway.Spec.ExternalNetworkID = "external-network"
 			result, err := provider.ReconcileGatewayGraph(context.Background(), spec)
-			if disposition == cloud.GraphEnsure {
-				if !errors.Is(err, cloud.ErrOwnershipConflict) {
-					t.Fatalf("detached Floating IP error = %v, want ownership conflict", err)
-				}
-			} else if err != nil {
+			if err != nil {
 				t.Fatal(err)
 			}
 			if result.Gateway.State.FloatingIPAddress != "" {
@@ -250,6 +247,250 @@ func TestGatewayGraphDetectsDetachedFloatingIPWithExistingLoadBalancer(t *testin
 	}
 }
 
+func TestGatewayGraphRecoversDetachedFloatingIP(t *testing.T) {
+	for _, lostResponse := range []bool{false, true} {
+		name := "confirmed association"
+		if lostResponse {
+			name = "lost response"
+		}
+		t.Run(name, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			item := recoverableGatewayFloatingIP(identity)
+			network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.record(request)
+				if serveFloatingIPRevisionExtension(t, w, request) {
+					return
+				}
+				switch {
+				case request.Method == http.MethodGet && request.URL.Path == "/floatingips":
+					assertGatewayFloatingIPDiscoveryQuery(t, request)
+					if request.URL.Query().Get("marker") == "" {
+						safetyWriteJSON(t, w, map[string]any{
+							"floatingips":       []any{map[string]string{"id": "foreign-fip", "project_id": "project-a", "description": "another controller", "port_id": "foreign-port"}},
+							"floatingips_links": []map[string]string{{"rel": "next", "href": "http://openstack.test/floatingips?project_id=project-a&marker=foreign-fip"}},
+						})
+						return
+					}
+					safetyWriteJSON(t, w, map[string]any{"floatingips": []any{item}})
+				case request.Method == http.MethodPut && request.URL.Path == "/floatingips/owned-fip":
+					if requests.count(http.MethodGet, "/lbaas/l7policies/policy-1/rules") != 1 {
+						t.Fatal("restored Floating IP before observing the complete route graph")
+					}
+					var body map[string]map[string]any
+					if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					want := map[string]map[string]any{"floatingip": {"port_id": "vip-port", "fixed_ip_address": "192.0.2.10"}}
+					if !reflect.DeepEqual(body, want) || request.Header.Get("If-Match") != "revision_number=7" {
+						t.Fatalf("association request = %#v, revision %q", body, request.Header.Get("If-Match"))
+					}
+					item["port_id"], item["fixed_ip_address"], item["router_id"] = "vip-port", "192.0.2.10", "router-1"
+					item["revision_number"] = 8
+					if lostResponse {
+						http.Error(w, "response lost after update", http.StatusServiceUnavailable)
+						return
+					}
+					safetyWriteJSON(t, w, map[string]any{"floatingip": item})
+				default:
+					t.Fatalf("unexpected Neutron request: %s %s", request.Method, request.URL)
+				}
+			})
+			clients := ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}
+			spec := floatingIPGraphSpec(identity)
+			result, err := newTestProvider(t, clients, ProviderConfig{}).ReconcileGatewayGraph(context.Background(), spec)
+			if (err != nil) != lostResponse || result.Gateway.Outcome.State != cloud.OutcomeProgressing || result.Gateway.State.FloatingIPAddress != "" {
+				t.Fatalf("association result = %#v, %v", result, err)
+			}
+			// The update response is not readiness evidence. A restarted provider
+			// discovers the same address and performs no further mutation.
+			result, err = newTestProvider(t, clients, ProviderConfig{}).ReconcileGatewayGraph(context.Background(), spec)
+			if err != nil || result.Outcome.State != cloud.OutcomeReady || result.Gateway.State.FloatingIPID != "owned-fip" || result.Gateway.State.FloatingIPAddress != "203.0.113.10" {
+				t.Fatalf("confirmed association = %#v, %v", result, err)
+			}
+			if got := requests.mutationPaths(); !reflect.DeepEqual(got, []string{"/floatingips/owned-fip"}) {
+				t.Fatalf("mutations = %v, want one association without allocation or child changes", got)
+			}
+		})
+	}
+}
+
+func TestGatewayGraphDoesNotRestoreFloatingIPBeforeSafeGraph(t *testing.T) {
+	tests := []struct {
+		name     string
+		conflict bool
+	}{
+		{name: "preserved route"},
+		{name: "deleted address with preserved route"},
+		{name: "pending load balancer"},
+		{name: "foreign pool", conflict: true},
+		{name: "missing VIP port", conflict: true},
+		{name: "different external network", conflict: true},
+		{name: "foreign address on VIP", conflict: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			spec := floatingIPGraphSpec(identity)
+			if test.name == "preserved route" || test.name == "deleted address with preserved route" {
+				spec.Routes[0].Disposition = cloud.GraphPreserve
+			}
+			base := convergedRouteGraphHandler(t, requests, identity, true, true)
+			octavia := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodGet && request.URL.Path == "/lbaas/loadbalancers/load-balancer-1" && (test.name == "pending load balancer" || test.name == "missing VIP port") {
+					requests.record(request)
+					lb := gatewayTransitionLoadBalancer(safetyGatewayTags(t, identity, roleLoadBalancer), "ACTIVE")
+					if test.name == "pending load balancer" {
+						lb["provisioning_status"] = "PENDING_UPDATE"
+					} else {
+						delete(lb, "vip_port_id")
+					}
+					safetyWriteJSON(t, w, map[string]any{"loadbalancer": lb})
+					return
+				}
+				if test.name == "foreign pool" && request.URL.Path == "/lbaas/pools" {
+					requests.record(request)
+					safetyWriteJSON(t, w, map[string]any{"pools": []any{map[string]any{"id": "foreign-pool", "tags": []string{}}}})
+					return
+				}
+				base.ServeHTTP(w, request)
+			})
+			network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.record(request)
+				if request.Method != http.MethodGet || request.URL.Path != "/floatingips" {
+					t.Fatalf("unexpected Neutron request before graph validation: %s %s", request.Method, request.URL)
+				}
+				item := recoverableGatewayFloatingIP(identity)
+				if test.name == "different external network" {
+					item["floating_network_id"] = "other-network"
+				}
+				items := []any{item}
+				if test.name == "deleted address with preserved route" {
+					items = nil
+				}
+				if test.name == "foreign address on VIP" {
+					items = append(items, map[string]any{"id": "foreign-fip", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10", "description": "another controller"})
+				}
+				safetyWriteJSON(t, w, map[string]any{"floatingips": items})
+			})
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(octavia), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
+			result, err := provider.ReconcileGatewayGraph(context.Background(), spec)
+			if errors.Is(err, cloud.ErrOwnershipConflict) != test.conflict || !test.conflict && err != nil {
+				t.Fatalf("reconcile error = %v, want conflict %t", err, test.conflict)
+			}
+			if !test.conflict && result.Gateway.Outcome.State != cloud.OutcomeProgressing {
+				t.Fatalf("detached Gateway outcome = %#v, want Progressing", result.Gateway.Outcome)
+			}
+			if len(requests.mutationPaths()) != 0 || result.Gateway.State.FloatingIPAddress != "" {
+				t.Fatalf("unsafe restoration: mutations %v, state %#v", requests.mutationPaths(), result.Gateway.State)
+			}
+		})
+	}
+}
+
+func TestGatewayFloatingIPRecoveryRequiresConditionalUpdates(t *testing.T) {
+	for _, alias := range []string{"standard-attr-revisions", "revision-if-match"} {
+		t.Run(alias, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.record(request)
+				if request.Method == http.MethodGet && request.URL.Path == "/extensions/"+alias {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if serveFloatingIPRevisionExtension(t, w, request) {
+					return
+				}
+				if request.Method != http.MethodGet || request.URL.Path != "/floatingips" {
+					t.Fatalf("recovery without revision support: %s %s", request.Method, request.URL)
+				}
+				safetyWriteJSON(t, w, map[string]any{"floatingips": []any{recoverableGatewayFloatingIP(identity)}})
+			})
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
+			_, err := provider.ReconcileGatewayGraph(context.Background(), floatingIPGraphSpec(identity))
+			if category, _ := cloud.ErrorCategoryOf(err); category != cloud.ErrorCategoryDependencyNotReady || len(requests.mutationPaths()) != 0 {
+				t.Fatalf("missing extension error = %v, mutations = %v", err, requests.mutationPaths())
+			}
+		})
+	}
+}
+
+func TestGatewayFloatingIPRecoveryReobservesAfterRevisionConflict(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	requests := &gatewayTransitionRequests{}
+	item := recoverableGatewayFloatingIP(identity)
+	network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		if serveFloatingIPRevisionExtension(t, w, request) {
+			return
+		}
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/floatingips":
+			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{item}})
+		case request.Method == http.MethodPut && request.URL.Path == "/floatingips/owned-fip":
+			item["port_id"], item["revision_number"] = "another-port", 8
+			w.WriteHeader(http.StatusPreconditionFailed)
+		default:
+			t.Fatalf("unexpected Neutron request: %s %s", request.Method, request.URL)
+		}
+	})
+	provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
+	_, err := provider.ReconcileGatewayGraph(context.Background(), floatingIPGraphSpec(identity))
+	if category, _ := cloud.ErrorCategoryOf(err); category != cloud.ErrorCategoryRetryableService {
+		t.Fatalf("revision conflict category = %q, error %v", category, err)
+	}
+	_, err = provider.ReconcileGatewayGraph(context.Background(), floatingIPGraphSpec(identity))
+	if !errors.Is(err, cloud.ErrOwnershipConflict) || len(requests.mutationPaths()) != 1 {
+		t.Fatalf("reconcile after concurrent reassociation = %v, mutations %v", err, requests.mutationPaths())
+	}
+}
+
+func TestGetGatewayReportsDetachedFloatingIPAsPending(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	requests := &gatewayTransitionRequests{}
+	network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/floatingips" {
+			t.Fatalf("read-only Gateway lookup attempted %s %s", request.Method, request.URL)
+		}
+		safetyWriteJSON(t, w, map[string]any{"floatingips": []any{recoverableGatewayFloatingIP(identity)}})
+	})
+	provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
+	result, found, err := provider.GetGateway(context.Background(), gatewayIdentity(identity.Value()))
+	if err != nil || !found || result.Outcome.State != cloud.OutcomeProgressing || result.State.FloatingIPID != "owned-fip" || result.State.FloatingIPAddress != "" {
+		t.Fatalf("detached Gateway lookup = %#v, %t, %v", result, found, err)
+	}
+}
+
+func floatingIPGraphSpec(identity Identity) cloud.GatewayGraphSpec {
+	spec := completeGraphSpec(identity)
+	spec.Gateway.Spec.ExternalNetworkID = "external-network"
+	spec.Routes[0].Spec.GatewayRequirements.ExternalNetworkID = "external-network"
+	return spec
+}
+
+func recoverableGatewayFloatingIP(identity Identity) map[string]any {
+	item := make(map[string]any)
+	for key, value := range detachedGatewayFloatingIP(identity) {
+		item[key] = value
+	}
+	item["description"] = identity.GatewayDescription(roleFloatingIP) + "; controller-version=previous-release"
+	item["floating_network_id"], item["revision_number"] = "external-network", 7
+	return item
+}
+
+func serveFloatingIPRevisionExtension(t *testing.T, w http.ResponseWriter, request *http.Request) bool {
+	t.Helper()
+	for _, alias := range []string{"standard-attr-revisions", "revision-if-match"} {
+		if request.Method == http.MethodGet && request.URL.Path == "/extensions/"+alias {
+			safetyWriteJSON(t, w, map[string]any{"extension": map[string]string{"alias": alias}})
+			return true
+		}
+	}
+	return false
+}
+
 func TestGatewayGraphRejectsAttachedAndDetachedFloatingIPDuplicates(t *testing.T) {
 	for _, disposition := range []cloud.GraphDisposition{cloud.GraphEnsure, cloud.GraphDelete} {
 		t.Run(string(disposition), func(t *testing.T) {
@@ -263,7 +504,7 @@ func TestGatewayGraphRejectsAttachedAndDetachedFloatingIPDuplicates(t *testing.T
 				assertGatewayFloatingIPDiscoveryQuery(t, request)
 				item := detachedGatewayFloatingIP(identity)
 				if request.URL.Query().Get("marker") == "" {
-					item["id"], item["port_id"] = "attached-fip", "vip-port"
+					item["id"], item["port_id"], item["fixed_ip_address"] = "attached-fip", "vip-port", "192.0.2.10"
 					safetyWriteJSON(t, w, map[string]any{
 						"floatingips":       []any{item},
 						"floatingips_links": []map[string]string{{"rel": "next", "href": "http://openstack.test/floatingips?project_id=project-a&marker=attached-fip"}},
@@ -343,5 +584,183 @@ func assertGatewayFloatingIPDiscoveryQuery(t *testing.T, request *http.Request) 
 	t.Helper()
 	if request.URL.Query().Get("project_id") != "project-a" || request.URL.Query().Get("port_id") != "" || request.URL.Query().Get("description") != "" {
 		t.Fatalf("Gateway Floating IP discovery filters = %s", request.URL.RawQuery)
+	}
+}
+
+func TestGatewayFloatingIPRejectsWrongFixedAddress(t *testing.T) {
+	for _, address := range []string{"", "192.0.2.20"} {
+		t.Run("fixed address="+address, func(t *testing.T) {
+			identity := safetyTestIdentity(t)
+			requests := &gatewayTransitionRequests{}
+			network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				requests.record(request)
+				if request.Method != http.MethodGet || request.URL.Path != "/floatingips" {
+					t.Fatalf("mutation with incorrect Floating IP association: %s %s", request.Method, request.URL)
+				}
+				item := recoverableGatewayFloatingIP(identity)
+				item["port_id"], item["fixed_ip_address"] = "vip-port", address
+				safetyWriteJSON(t, w, map[string]any{"floatingips": []any{item}})
+			})
+			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
+			if _, _, err := provider.GetGateway(t.Context(), gatewayIdentity(identity.Value())); !errors.Is(err, cloud.ErrOwnershipConflict) {
+				t.Fatalf("GetGateway error=%v", err)
+			}
+			for _, disposition := range []cloud.GraphDisposition{cloud.GraphEnsure, cloud.GraphDelete} {
+				spec := floatingIPGraphSpec(identity)
+				spec.Gateway.Disposition = disposition
+				if disposition == cloud.GraphDelete {
+					spec.Routes[0].Disposition = cloud.GraphDelete
+				}
+				if _, err := provider.ReconcileGatewayGraph(t.Context(), spec); !errors.Is(err, cloud.ErrOwnershipConflict) {
+					t.Fatalf("%s error=%v", disposition, err)
+				}
+			}
+			if len(requests.mutationPaths()) != 0 {
+				t.Fatalf("incorrect association allowed mutations: %v", requests.mutationPaths())
+			}
+		})
+	}
+}
+
+func TestGatewayBootstrapAllocatesFloatingIPAfterListener(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	requests := &gatewayTransitionRequests{}
+	listenerExists := false
+	base := gatewayWithoutChildrenHandler(t, identity, requests)
+	octavia := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/lbaas/listeners":
+			requests.record(request)
+			listenerExists = true
+			w.WriteHeader(http.StatusCreated)
+			safetyWriteJSON(t, w, map[string]any{"listener": map[string]any{"id": "listener-1", "project_id": "project-a"}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners" && listenerExists:
+			requests.record(request)
+			safetyWriteJSON(t, w, map[string]any{"listeners": []any{map[string]any{
+				"id": "listener-1", "project_id": "project-a", "protocol": "HTTP", "protocol_port": 80,
+				"admin_state_up": true, "tags": safetyGatewayTags(t, identity, roleListener),
+			}}})
+		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
+			requests.record(request)
+			safetyWriteJSON(t, w, map[string]any{"l7policies": []any{}})
+		default:
+			base.ServeHTTP(w, request)
+		}
+	})
+	var allocated map[string]any
+	network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/floatingips":
+			items := []any{}
+			if allocated != nil {
+				items = append(items, allocated)
+			}
+			safetyWriteJSON(t, w, map[string]any{"floatingips": items})
+		case request.Method == http.MethodPost && request.URL.Path == "/floatingips":
+			var body map[string]map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if !listenerExists || body["floatingip"]["port_id"] != "vip-port" || body["floatingip"]["fixed_ip_address"] != "192.0.2.10" {
+				t.Fatalf("allocation preceded listener validation or used another VIP: %#v", body)
+			}
+			allocated = body["floatingip"]
+			allocated["id"], allocated["project_id"], allocated["floating_ip_address"] = "owned-fip", "project-a", "203.0.113.10"
+			w.WriteHeader(http.StatusCreated)
+			safetyWriteJSON(t, w, map[string]any{"floatingip": allocated})
+		default:
+			t.Fatalf("unexpected allocation request: %s %s", request.Method, request.URL)
+		}
+	})
+	clients := ServiceClients{LoadBalancer: safetyServiceClient(octavia), Network: safetyServiceClient(network), ProjectID: "project-a"}
+	spec := absentGatewaySpec(identity, cloud.GraphEnsure)
+	spec.Gateway.Spec.ExternalNetworkID = "external-network"
+	for attempt := range 3 {
+		result, err := newTestProvider(t, clients, ProviderConfig{}).ReconcileGatewayGraph(t.Context(), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt < 2 {
+			if result.Outcome.State != cloud.OutcomeProgressing || len(requests.mutationPaths()) != attempt+1 || result.Gateway.State.FloatingIPAddress != "" {
+				t.Fatalf("allocation step %d result=%#v, mutations=%v", attempt, result, requests.mutationPaths())
+			}
+		} else if result.Outcome.State != cloud.OutcomeReady || result.Gateway.State.FloatingIPAddress != "203.0.113.10" {
+			t.Fatalf("observed allocated address=%#v", result)
+		}
+	}
+	if !reflect.DeepEqual(requests.mutationPaths(), []string{"/lbaas/listeners", "/floatingips"}) {
+		t.Fatalf("bootstrap mutations=%v", requests.mutationPaths())
+	}
+}
+
+func TestFloatingIPQuotaRecoveryObservesBeforeAllocatingAgain(t *testing.T) {
+	identity := safetyTestIdentity(t)
+	requests := &gatewayTransitionRequests{}
+	quotaBlocked := true
+	var allocated map[string]any
+	attempts := 0
+	network := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/floatingips":
+			assertGatewayFloatingIPDiscoveryQuery(t, request)
+			items := []any{}
+			if allocated != nil {
+				items = append(items, allocated)
+			}
+			safetyWriteJSON(t, w, map[string]any{"floatingips": items})
+		case request.Method == http.MethodPost && request.URL.Path == "/floatingips":
+			attempts++
+			if allocated != nil {
+				t.Fatal("allocated another Floating IP without discovering the previous result")
+			}
+			if quotaBlocked {
+				w.WriteHeader(http.StatusConflict)
+				safetyWriteJSON(t, w, map[string]any{"NeutronError": map[string]any{"type": "OverQuota", "message": "private quota details"}})
+				return
+			}
+			var body struct {
+				FloatingIP map[string]any `json:"floatingip"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			allocated = body.FloatingIP
+			if allocated["port_id"] != "vip-port" || allocated["floating_network_id"] != "external-network" || allocated["description"] != identity.GatewayDescription(roleFloatingIP) {
+				t.Fatalf("recovery lost the frozen address identity: %#v", allocated)
+			}
+			allocated["id"], allocated["project_id"] = "replacement-fip", "project-a"
+			allocated["fixed_ip_address"], allocated["floating_ip_address"] = "192.0.2.10", "203.0.113.20"
+			w.WriteHeader(http.StatusCreated)
+			safetyWriteJSON(t, w, map[string]any{"floatingip": allocated})
+		default:
+			t.Fatalf("unexpected network mutation during quota recovery: %s %s", request.Method, request.URL)
+		}
+	})
+	clients := ServiceClients{LoadBalancer: safetyServiceClient(convergedRouteGraphHandler(t, requests, identity, true, true)), Network: safetyServiceClient(network), ProjectID: "project-a"}
+	provider := newTestProvider(t, clients, ProviderConfig{})
+	spec := floatingIPGraphSpec(identity)
+	for retry := range 2 {
+		_, err := provider.ReconcileGatewayGraph(t.Context(), spec)
+		if !errors.Is(err, cloud.ErrQuotaExceeded) || attempts != retry+1 || allocated != nil {
+			t.Fatalf("quota failure = %v, attempts=%d allocated=%v", err, attempts, allocated != nil)
+		}
+	}
+	// Changing only the API response models quota repair. It does not consume
+	// real quota or require a Kubernetes edit to resume the same desired graph.
+	quotaBlocked = false
+	result, err := provider.ReconcileGatewayGraph(t.Context(), spec)
+	if err != nil || result.Outcome.State != cloud.OutcomeProgressing || attempts != 3 {
+		t.Fatalf("quota recovery = %+v, %v, attempts=%d", result, err, attempts)
+	}
+	// A fresh adapter must rediscover the successful allocation. It cannot rely
+	// on a process-local checkpoint to avoid allocating a duplicate.
+	result, err = newTestProvider(t, clients, ProviderConfig{}).ReconcileGatewayGraph(t.Context(), spec)
+	if err != nil || result.Outcome.State != cloud.OutcomeReady || attempts != 3 || result.Gateway.State.FloatingIPID != "replacement-fip" {
+		t.Fatalf("converged recovery = %+v, %v, attempts=%d", result, err, attempts)
+	}
+	if got := requests.mutationPaths(); !reflect.DeepEqual(got, []string{"/floatingips", "/floatingips", "/floatingips"}) {
+		t.Fatalf("quota recovery changed another resource: %v", got)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
@@ -45,7 +46,9 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 	if err != nil {
 		return nil, result, err
 	}
-	gatewayReady := actual.loadBalancer != nil && actual.listener != nil && actual.loadBalancer.AdminStateUp && actual.listener.AdminStateUp && len(plan) == 0
+	externalAddressReady := actual.floatingIP == nil && desired.spec.Gateway.Spec.ExternalNetworkID == "" ||
+		actual.floatingIP != nil && actual.floatingIP.PortID != ""
+	gatewayReady := actual.loadBalancer != nil && actual.listener != nil && actual.loadBalancer.AdminStateUp && actual.listener.AdminStateUp && externalAddressReady && len(plan) == 0
 	if !gatewayReady {
 		result.Gateway.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
 	}
@@ -70,17 +73,8 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 				canRestoreTraffic = false
 			}
 		case cloud.GraphEnsure:
-			if actual.loadBalancer != nil {
-				if err := validateGraphLoadBalancer(actual.loadBalancer, route.spec.GatewayRequirements); err != nil {
-					return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: err}
-				}
-				if actual.listener != nil && actual.listener.ProtocolPort != route.spec.GatewayRequirements.ListenerPort {
-					return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: fmt.Errorf("%w: route listener port differs from its binding", cloud.ErrOwnershipConflict)}
-				}
-				if actual.floatingIP != nil && route.spec.GatewayRequirements.ExternalNetworkID != "" && actual.floatingIP.FloatingNetworkID != route.spec.GatewayRequirements.ExternalNetworkID {
-					return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: fmt.Errorf("%w: route Floating IP network differs from its binding", cloud.ErrOwnershipConflict)}
-				}
-			}
+			// Desired routes share the validated Gateway requirements. Their
+			// recorded IDs must still match this observation before planning.
 			if route.spec.Gateway.LoadBalancerID != "" && actual.state.LoadBalancerID != "" && route.spec.Gateway.LoadBalancerID != actual.state.LoadBalancerID ||
 				route.spec.Gateway.ListenerID != "" && actual.state.ListenerID != "" && route.spec.Gateway.ListenerID != actual.state.ListenerID {
 				return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: fmt.Errorf("%w: route Gateway IDs differ from the observed graph", cloud.ErrOwnershipConflict)}
@@ -117,13 +111,12 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 	}
 	plan = append(plan, deletions...)
 	plan = append(plan, ensures...)
-	if desired.spec.Gateway.Disposition == cloud.GraphEnsure && actual.loadBalancer != nil && actual.listener != nil && canRestoreTraffic {
-		if !actual.listener.AdminStateUp {
-			plan = append(plan, graphMutation{kind: graphEnableListener, message: "Enabled Octavia listener after validating the Gateway graph"})
+	if canRestoreTraffic {
+		restore, err := buildGatewayTrafficRestorationPlan(desired, actual)
+		if err != nil {
+			return nil, result, err
 		}
-		if !actual.loadBalancer.AdminStateUp {
-			plan = append(plan, graphMutation{kind: graphEnableLoadBalancer, message: "Enabled Octavia load balancer after validating the Gateway graph"})
-		}
+		plan = append(plan, restore...)
 	}
 	if len(plan) != 0 {
 		result.Outcome = p.progressingOutcome(plan[0].message)
@@ -145,14 +138,37 @@ func buildGatewayPrerequisitePlan(desired desiredGatewayGraph, actual observedGa
 	if actual.floatingIP != nil && networkID != "" && actual.floatingIP.FloatingNetworkID != networkID {
 		return nil, fmt.Errorf("%w: Gateway Floating IP network differs from its binding", cloud.ErrOwnershipConflict)
 	}
-	if networkID != "" && actual.floatingIP == nil {
-		plan = append(plan, graphMutation{kind: graphCreateFloatingIP, message: "Allocated Floating IP"})
-	}
 	if networkID == "" && actual.floatingIP != nil {
 		plan = append(plan, graphMutation{kind: graphDeleteFloatingIP, message: "Removed a no-longer-configured Floating IP"})
 	}
 	if actual.listener == nil {
 		plan = append(plan, graphMutation{kind: graphCreateListener, message: "Created Octavia listener"})
+	}
+	return plan, nil
+}
+
+func buildGatewayTrafficRestorationPlan(desired desiredGatewayGraph, actual observedGatewayGraph) ([]graphMutation, error) {
+	if desired.spec.Gateway.Disposition != cloud.GraphEnsure || actual.loadBalancer == nil || actual.listener == nil {
+		return nil, nil
+	}
+	var plan []graphMutation
+	// Restoring an external address also restores traffic. Keep the same
+	// complete-fragment validation boundary as administrative repair.
+	if desired.spec.Gateway.Spec.ExternalNetworkID != "" && (actual.floatingIP == nil || actual.floatingIP.PortID == "") {
+		if actual.state.VIPPortID == "" || actual.state.VIPAddress == "" {
+			return nil, fmt.Errorf("%w: Gateway load balancer has no complete VIP association", cloud.ErrOwnershipConflict)
+		}
+		mutation := graphMutation{kind: graphCreateFloatingIP, message: "Allocated Floating IP"}
+		if actual.floatingIP != nil {
+			mutation = graphMutation{kind: graphAssociateFloatingIP, message: "Restored Floating IP association"}
+		}
+		plan = append(plan, mutation)
+	}
+	if !actual.listener.AdminStateUp {
+		plan = append(plan, graphMutation{kind: graphEnableListener, message: "Enabled Octavia listener after validating the Gateway graph"})
+	}
+	if !actual.loadBalancer.AdminStateUp {
+		plan = append(plan, graphMutation{kind: graphEnableLoadBalancer, message: "Enabled Octavia load balancer after validating the Gateway graph"})
 	}
 	return plan, nil
 }
@@ -200,11 +216,11 @@ func (p *Provider) executeGraphMutation(ctx context.Context, desired desiredGate
 		if tagErr != nil {
 			return tagErr
 		}
-		created, createErr := p.octavia.CreateLoadBalancer(ctx, loadbalancers.CreateOpts{
+		created, createErr := p.octavia.CreateLoadBalancer(ctx, octavia.CreateLoadBalancerOpts{CreateOpts: loadbalancers.CreateOpts{
 			Name: resourceName(desired.spec.Identity, roleLoadBalancer), Description: desired.identity.Description(roleLoadBalancer),
 			VipSubnetID: spec.VIPSubnetID, Provider: spec.Provider, FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone,
 			AdminStateUp: boolPointer(true), Tags: tags,
-		})
+		}, VIPSecurityGroupIDs: spec.VIPSecurityGroupIDs})
 		err = createErr
 		if err == nil {
 			err = p.validateLoadBalancerProject(created.ID, created.ProjectID)
@@ -212,11 +228,14 @@ func (p *Provider) executeGraphMutation(ctx context.Context, desired desiredGate
 	case graphCreateFloatingIP:
 		created, createErr := p.neutron.CreateFloatingIP(ctx, floatingips.CreateOpts{
 			Description: desired.identity.GatewayDescription(roleFloatingIP), FloatingNetworkID: spec.ExternalNetworkID, PortID: actual.state.VIPPortID,
+			FixedIP: actual.state.VIPAddress,
 		})
 		if createErr != nil {
 			return fmt.Errorf("create Floating IP: %w", createErr)
 		}
 		return p.validateFloatingIPProject(created.ID, created.ProjectID, created.TenantID)
+	case graphAssociateFloatingIP:
+		return p.associateGatewayFloatingIP(ctx, actual)
 	case graphDeleteFloatingIP:
 		err = p.neutron.DeleteFloatingIP(ctx, actual.floatingIP.ID)
 		if err != nil && !isNotFound(err) {

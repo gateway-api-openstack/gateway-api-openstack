@@ -18,6 +18,7 @@ package topology
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -29,7 +30,10 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/providers"
 )
 
-const amphoraProvider = "amphora"
+const (
+	amphoraProvider             = "amphora"
+	customVIPSecurityGroupMinor = 29
+)
 
 func (r *Resolver) checkCapabilities(ctx context.Context, request cloud.TopologyRequest) error {
 	// L7 is part of Octavia v2. Tags needed for ownership require v2.5,
@@ -40,6 +44,9 @@ func (r *Resolver) checkCapabilities(ctx context.Context, request cloud.Topology
 	}
 	if request.AvailabilityZone != "" {
 		requiredMinor = 14
+	}
+	if len(request.VIPSecurityGroups) != 0 {
+		requiredMinor = customVIPSecurityGroupMinor
 	}
 	configuredMinor, valid := versionMinor(r.clients.LoadBalancer.Microversion)
 	if !valid || configuredMinor < requiredMinor {
@@ -82,7 +89,7 @@ func (r *Resolver) checkCapabilities(ctx context.Context, request cloud.Topology
 		return invalid("Octavia must advertise exactly one amphora provider")
 	}
 	if request.FlavorID != "" {
-		if err := r.checkFlavor(ctx, request.FlavorID); err != nil {
+		if err := r.checkFlavor(ctx, request); err != nil {
 			return err
 		}
 	}
@@ -103,7 +110,8 @@ func versionMinor(version string) (int, bool) {
 	return number, err == nil && number >= 0
 }
 
-func (r *Resolver) checkFlavor(ctx context.Context, id string) error {
+func (r *Resolver) checkFlavor(ctx context.Context, request cloud.TopologyRequest) error {
+	id := request.FlavorID
 	flavor, err := flavors.Get(ctx, r.clients.LoadBalancer, id).Extract()
 	if err != nil {
 		return readError("get Octavia flavor", err)
@@ -117,6 +125,7 @@ func (r *Resolver) checkFlavor(ctx context.Context, id string) error {
 		Profile struct {
 			ID       string `json:"id"`
 			Provider string `json:"provider_name"`
+			Data     string `json:"flavor_data"`
 		} `json:"flavorprofile"`
 	}
 	_, err = r.clients.LoadBalancer.Get(ctx, r.clients.LoadBalancer.ServiceURL("lbaas", "flavorprofiles", url.PathEscape(flavor.FlavorProfileId)), &response, nil)
@@ -125,6 +134,18 @@ func (r *Resolver) checkFlavor(ctx context.Context, id string) error {
 	}
 	if response.Profile.ID != flavor.FlavorProfileId || response.Profile.Provider != amphoraProvider {
 		return invalid("Octavia flavor profile does not select amphora")
+	}
+	if len(request.VIPSecurityGroups) != 0 {
+		var options struct {
+			SRIOVVIP bool `json:"sriov_vip"`
+		}
+		data := strings.TrimSpace(response.Profile.Data)
+		if !strings.HasPrefix(data, "{") || json.Unmarshal([]byte(data), &options) != nil {
+			return invalid("Octavia flavor security properties cannot be verified")
+		}
+		if options.SRIOVVIP {
+			return invalid("custom VIP security groups are incompatible with SR-IOV")
+		}
 	}
 	return nil
 }

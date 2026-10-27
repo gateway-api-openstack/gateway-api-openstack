@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 )
 
@@ -51,7 +52,7 @@ func (p *Provider) deleteGatewayResource(ctx context.Context, step gatewayDeleti
 	}
 }
 
-func (p *Provider) findGatewayLoadBalancer(ctx context.Context, identity Identity) (*loadbalancers.LoadBalancer, error) {
+func (p *Provider) findGatewayLoadBalancer(ctx context.Context, identity Identity) (*octavia.LoadBalancer, error) {
 	tags, err := identity.GatewayDiscoveryTags(roleLoadBalancer)
 	if err != nil {
 		return nil, err

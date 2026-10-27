@@ -266,3 +266,15 @@ func firstRouteMutation(plan []routeMutation) routeMutation {
 	}
 	return plan[0]
 }
+
+func TestMemberProviderIdentityDoesNotChangeOctaviaMembership(t *testing.T) {
+	desired, actual := convergedRoutePlanFixture()
+	desired.members[0].ProviderID = "openstack:///11111111-1111-1111-1111-111111111111"
+	plan, _, err := buildRouteEnsurePlan(desired, actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 0 {
+		t.Fatalf("provider identity changed a converged member: %#v", plan)
+	}
+}

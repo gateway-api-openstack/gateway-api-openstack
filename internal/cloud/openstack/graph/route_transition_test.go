@@ -163,7 +163,7 @@ func TestEnsureRouteRestoresTrafficInSeparateTransitions(t *testing.T) {
 		requests.record(request)
 		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
 			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{map[string]any{
-				"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+				"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 				"floating_network_id": "external-network", "floating_ip_address": "198.51.100.10",
 				"description": identity.GatewayDescription(roleFloatingIP),
 			}}})
@@ -212,7 +212,7 @@ func TestEnsureRouteDoesNotRestoreTrafficWithInvalidFloatingIPs(t *testing.T) {
 			name: "foreign ownership",
 			floatingIPs: func(Identity) []any {
 				return []any{map[string]any{
-					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 					"floating_network_id": "external-network", "description": "managed elsewhere",
 				}}
 			},
@@ -223,11 +223,11 @@ func TestEnsureRouteDoesNotRestoreTrafficWithInvalidFloatingIPs(t *testing.T) {
 				description := identity.GatewayDescription(roleFloatingIP)
 				return []any{
 					map[string]any{
-						"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+						"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 						"floating_network_id": "external-network", "description": description,
 					},
 					map[string]any{
-						"id": "floating-ip-2", "project_id": "project-a", "port_id": "vip-port",
+						"id": "floating-ip-2", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 						"floating_network_id": "external-network", "description": description,
 					},
 				}
@@ -237,7 +237,7 @@ func TestEnsureRouteDoesNotRestoreTrafficWithInvalidFloatingIPs(t *testing.T) {
 			name: "wrong external network",
 			floatingIPs: func(identity Identity) []any {
 				return []any{map[string]any{
-					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port",
+					"id": "floating-ip-1", "project_id": "project-a", "port_id": "vip-port", "fixed_ip_address": "192.0.2.10",
 					"floating_network_id": "other-network", "description": identity.GatewayDescription(roleFloatingIP),
 				}}
 			},

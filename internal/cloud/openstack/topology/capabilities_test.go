@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
@@ -50,7 +51,7 @@ func TestResolveTopologyRejectsUnknownCapabilities(t *testing.T) {
 			request := topologyRequest()
 			request.FlavorID, request.AvailabilityZone = "flavor-1", "zone-1"
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
-			if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+			if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want terminal validation", got, err)
 			}
 			if f.calls("/v2.0/subnets/vip-subnet") != 0 {
@@ -84,7 +85,7 @@ func TestResolveTopologyChecksConfiguredVersion(t *testing.T) {
 				if err != nil || got.FlavorID != tt.flavor || got.AvailabilityZone != tt.zone {
 					t.Fatalf("topology = %#v, error = %v", got, err)
 				}
-			} else if !errors.Is(err, cloud.ErrTerminalValidation) || got != (cloud.Topology{}) {
+			} else if !errors.Is(err, cloud.ErrTerminalValidation) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want terminal validation", got, err)
 			}
 		})
@@ -99,7 +100,7 @@ func TestResolveTopologyRequiresOptionalProfileRead(t *testing.T) {
 			request := topologyRequest()
 			request.FlavorID, request.AvailabilityZone = "flavor-1", "zone-1"
 			got, err := f.resolver.ResolveTopology(context.Background(), request)
-			if !errors.Is(err, cloud.ErrAuthorization) || got != (cloud.Topology{}) {
+			if !errors.Is(err, cloud.ErrAuthorization) || !reflect.DeepEqual(got, cloud.Topology{}) {
 				t.Fatalf("topology = %#v, error = %v, want authorization failure", got, err)
 			}
 		})

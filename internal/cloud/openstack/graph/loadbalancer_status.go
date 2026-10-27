@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
-	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 )
 
 type loadBalancerPhase uint8
@@ -34,7 +34,7 @@ const (
 )
 
 type loadBalancerObservation struct {
-	loadBalancer *loadbalancers.LoadBalancer
+	loadBalancer *octavia.LoadBalancer
 	phase        loadBalancerPhase
 	outcome      cloud.Outcome
 }
