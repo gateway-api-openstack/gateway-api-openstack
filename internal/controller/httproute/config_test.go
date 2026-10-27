@@ -47,7 +47,7 @@ func TestStatusForRouteBuildError(t *testing.T) {
 }
 
 func TestSupportedMatchDefaultsToRootPrefix(t *testing.T) {
-	_, pathType, value, err := supportedMatch(nil)
+	pathType, value, err := supportedMatch(nil)
 	if err != nil || pathType != "PathPrefix" || value != "/" {
 		t.Fatalf("supportedMatch(nil) = %q %q, %v", pathType, value, err)
 	}

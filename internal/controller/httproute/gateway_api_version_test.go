@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -847,6 +848,8 @@ func validNodePortBackend(namespace, name string) (*corev1.Service, *discoveryv1
 		},
 	}
 	endpointSlice := &discoveryv1.EndpointSlice{
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Ports:       []discoveryv1.EndpointPort{{Port: ptr.To(int32(80))}},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name + "-1",

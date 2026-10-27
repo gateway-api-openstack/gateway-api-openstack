@@ -306,19 +306,23 @@ func (r *Reconciler) reconcileSelectedRouteGraph(
 		}
 		return r.handleRouteProviderFailure(scope, parent.ref, true, err, "EnsureHTTPRoute")
 	}
-	if graphResult.bindingCheckpoint {
+	switch graphResult.bindingState {
+	case routeBindingPersisted:
 		return ctrl.Result{Requeue: true}, nil
+	case routeBindingGatewayPending:
+		status := pendingRouteStatus("Controller-owned Octavia load balancer or listener is not ready")
+		scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: status}})
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	case routeBindingReady:
+		// The graph writer returned a validated cloud outcome.
+	default:
+		return ctrl.Result{}, fmt.Errorf("invalid HTTPRoute binding state %d", graphResult.bindingState)
 	}
 	if graphResult.outcome.State == cloud.OutcomeProgressing {
 		message := controller.ProviderProgressMessage(graphResult.outcome, "Octavia resources for the HTTPRoute are still progressing")
 		status := pendingRouteStatus(message)
 		scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: status}})
 		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(graphResult.outcome, httpRoute.UID)}, nil
-	}
-	if graphResult.outcome.State != cloud.OutcomeReady {
-		status := pendingRouteStatus("Controller-owned Octavia load balancer or listener is not ready")
-		scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: status}})
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: programmedRouteStatus()}})
 	log.FromContext(ctx).V(1).Info("Programmed HTTPRoute", "gateway", client.ObjectKeyFromObject(parent.gateway))

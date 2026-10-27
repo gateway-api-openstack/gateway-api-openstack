@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package openstack implements the cloud.Provider boundary with Octavia and
+// Package openstack implements the cloud.GraphProvider boundary with Octavia and
 // Neutron. Kubernetes types intentionally do not enter this package.
 package openstack
 
@@ -48,8 +48,8 @@ func NewProvider(clients ServiceClients, cfg ProviderConfig) *Provider {
 }
 
 var (
-	_ cloud.Provider = (*Provider)(nil)
-	_ audit.Scanner  = (*Provider)(nil)
+	_ cloud.GraphProvider = (*Provider)(nil)
+	_ audit.Scanner       = (*Provider)(nil)
 )
 
 // ReconcileGatewayGraph reconciles one complete, validated Gateway graph.

@@ -66,12 +66,8 @@ type recordingProvider struct {
 	gatewaySpecs     []cloud.GatewaySpec
 	gatewayResult    *cloud.GatewayResult
 	gatewayErr       error
-	gatewayGetResult *cloud.GatewayResult
-	gatewayGetFound  *bool
-	gatewayGetErr    error
 	gatewayDeleteOut *cloud.Outcome
 	gatewayDeleteErr error
-	gatewayGets      int
 	routeSpecs       []cloud.RouteSpec
 	routeResult      *cloud.RouteResult
 	routeErr         error
@@ -90,21 +86,6 @@ func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewayS
 		return *p.gatewayResult, nil
 	}
 	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), nil
-}
-
-func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
-	p.gatewayGets++
-	if p.gatewayGetErr != nil {
-		return cloud.GatewayResult{}, false, p.gatewayGetErr
-	}
-	found := true
-	if p.gatewayGetFound != nil {
-		found = *p.gatewayGetFound
-	}
-	if p.gatewayGetResult != nil {
-		return *p.gatewayGetResult, found, nil
-	}
-	return cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"}), found, nil
 }
 
 func (p *recordingProvider) DeleteGateway(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {

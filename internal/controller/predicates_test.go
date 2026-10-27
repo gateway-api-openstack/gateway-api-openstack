@@ -25,6 +25,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -313,6 +314,19 @@ func TestEndpointSlicePredicate(t *testing.T) {
 	serviceChanged.Labels[discoveryv1.LabelServiceName] = "other-backend"
 	testPredicateUpdate(t, pred, base, serviceChanged, true, "Service label")
 
+	portsChanged := base.DeepCopy()
+	portsChanged.Ports = []discoveryv1.EndpointPort{{Port: ptr.To(int32(8080))}}
+	testPredicateUpdate(t, pred, base, portsChanged, true, "endpoint port resolved")
+	portNameChanged := portsChanged.DeepCopy()
+	portNameChanged.Ports[0].Name = ptr.To("http")
+	testPredicateUpdate(t, pred, portsChanged, portNameChanged, true, "endpoint port name")
+	protocolChanged := portsChanged.DeepCopy()
+	protocolChanged.Ports[0].Protocol = ptr.To(corev1.ProtocolUDP)
+	testPredicateUpdate(t, pred, portsChanged, protocolChanged, true, "endpoint protocol")
+	familyChanged := base.DeepCopy()
+	familyChanged.AddressType = discoveryv1.AddressTypeIPv6
+	testPredicateUpdate(t, pred, base, familyChanged, true, "endpoint address family")
+
 	deleting := base.DeepCopy()
 	markDeleting(&deleting.ObjectMeta)
 	testPredicateUpdate(t, pred, base, deleting, true, "EndpointSlice deletion")
@@ -342,6 +356,12 @@ func TestNodePredicate(t *testing.T) {
 	internalAddressChanged := base.DeepCopy()
 	internalAddressChanged.Status.Addresses[0].Address = "10.0.0.11"
 	testPredicateUpdate(t, pred, base, internalAddressChanged, true, "selected address")
+
+	dualStack := base.DeepCopy()
+	dualStack.Status.Addresses = append(dualStack.Status.Addresses, corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "2001:db8::10"})
+	ipv6Changed := dualStack.DeepCopy()
+	ipv6Changed.Status.Addresses[2].Address = "2001:db8::11"
+	testPredicateUpdate(t, pred, dualStack, ipv6Changed, true, "second family address")
 
 	providerChanged := base.DeepCopy()
 	providerChanged.Spec.ProviderID = "openstack:///11111111-1111-1111-1111-111111111111"

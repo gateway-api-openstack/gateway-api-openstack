@@ -47,7 +47,7 @@ func nodePortForBackend(service *corev1.Service, port int32) (*corev1.ServicePor
 	return nil, newRouteBuildError(routeErrorPending, "backend Service %s does not expose port %d", service.Name, port)
 }
 
-func nodePortMembersFromReader(ctx context.Context, reader client.Reader, service *corev1.Service, nodePort int32, addressType corev1.NodeAddressType) ([]cloud.Member, error) {
+func nodePortMembersFromReader(ctx context.Context, reader client.Reader, service *corev1.Service, servicePort *corev1.ServicePort, addressType corev1.NodeAddressType) ([]cloud.Member, error) {
 	var slices discoveryv1.EndpointSliceList
 	if err := reader.List(
 		ctx,
@@ -57,7 +57,7 @@ func nodePortMembersFromReader(ctx context.Context, reader client.Reader, servic
 	); err != nil {
 		return nil, fmt.Errorf("list backend EndpointSlices: %w", err)
 	}
-	localNodes, err := readyBackendNodes(service, slices.Items)
+	localNodes, err := readyBackendNodes(service, servicePort, slices.Items)
 	if err != nil {
 		return nil, err
 	}
@@ -65,5 +65,5 @@ func nodePortMembersFromReader(ctx context.Context, reader client.Reader, servic
 	if err := reader.List(ctx, &nodes); err != nil {
 		return nil, fmt.Errorf("list backend Nodes: %w", err)
 	}
-	return nodePortMembersForNodes(service, nodePort, addressType, localNodes, nodes.Items)
+	return nodePortMembersForNodes(service, servicePort.NodePort, addressType, localNodes, nodes.Items)
 }

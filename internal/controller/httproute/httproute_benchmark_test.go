@@ -41,7 +41,7 @@ func BenchmarkNodePortModel(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					localNodes, err := readyBackendNodes(service, endpoints)
+					localNodes, err := readyBackendNodes(service, &corev1.ServicePort{}, endpoints)
 					if err != nil {
 						b.Fatal(err)
 					}
@@ -69,7 +69,7 @@ func memberModelFixture(count int) ([]corev1.Node, []discoveryv1.EndpointSlice) 
 		})
 		endpoints = append(endpoints, discoveryv1.Endpoint{NodeName: ptr.To(name), Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)}})
 	}
-	return nodes, []discoveryv1.EndpointSlice{{Endpoints: endpoints}}
+	return nodes, []discoveryv1.EndpointSlice{{AddressType: discoveryv1.AddressTypeIPv4, Ports: []discoveryv1.EndpointPort{{Port: ptr.To(int32(80))}}, Endpoints: endpoints}}
 }
 
 type fanoutCountingClient struct {
@@ -205,7 +205,7 @@ func TestMemberModelPreservesInputOrderAndDeduplicatesAddresses(t *testing.T) {
 	nodes[1].Status.Addresses[0].Address = "10.0.0.0"
 	nodes = append(nodes, *nodes[0].DeepCopy())
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "backend"}}
-	localNodes, err := readyBackendNodes(service, endpoints)
+	localNodes, err := readyBackendNodes(service, &corev1.ServicePort{}, endpoints)
 	if err != nil {
 		t.Fatal(err)
 	}

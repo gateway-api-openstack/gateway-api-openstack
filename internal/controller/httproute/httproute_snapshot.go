@@ -113,7 +113,7 @@ func (r *Reconciler) buildRouteValidationSnapshot(
 	expectedGateway *gatewayv1.Gateway,
 	purpose routeSnapshotPurpose,
 ) (routeValidationSnapshot, error) {
-	snapshot, err := r.observeRouteValidationInputs(ctx, expectedRoute, expectedGateway, purpose)
+	snapshot, err := r.observeRouteValidationInputs(ctx, expectedRoute, expectedGateway)
 	if err != nil {
 		return routeValidationSnapshot{}, err
 	}
@@ -143,7 +143,6 @@ func (r *Reconciler) observeRouteValidationInputs(
 	ctx context.Context,
 	expectedRoute *gatewayv1.HTTPRoute,
 	expectedGateway *gatewayv1.Gateway,
-	purpose routeSnapshotPurpose,
 ) (routeValidationSnapshot, error) {
 	if r.APIReader == nil {
 		return routeValidationSnapshot{}, controller.ErrAPIReaderRequired
@@ -179,8 +178,7 @@ func (r *Reconciler) observeRouteValidationInputs(
 	); err != nil {
 		return routeValidationSnapshot{}, errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
 	}
-	if gatewayClass.Spec.ControllerName != r.Config.ControllerName ||
-		(purpose == routeSnapshotForEnsure && len(route.Spec.ParentRefs) != 1) {
+	if gatewayClass.Spec.ControllerName != r.Config.ControllerName || len(route.Spec.ParentRefs) != 1 {
 		return routeValidationSnapshot{}, errHTTPRouteChanged
 	}
 	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
@@ -188,9 +186,6 @@ func (r *Reconciler) observeRouteValidationInputs(
 	}
 	if !controllerutil.ContainsFinalizer(&gateway, r.Config.GatewayFinalizer()) ||
 		controller.ValidateGatewayBinding(r.Config, &gateway) != nil {
-		return routeValidationSnapshot{}, errHTTPRouteChanged
-	}
-	if len(route.Spec.ParentRefs) != 1 {
 		return routeValidationSnapshot{}, errHTTPRouteChanged
 	}
 	return routeValidationSnapshot{

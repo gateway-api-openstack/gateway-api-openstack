@@ -99,7 +99,7 @@ func NewProvider(clients ServiceClients, cfg ProviderConfig) *Provider {
 	}
 }
 
-var _ cloud.Provider = (*Provider)(nil)
+var _ cloud.GraphProvider = (*Provider)(nil)
 
 func (p *Provider) identity(resourceIdentity cloud.Identity) (Identity, error) {
 	if strings.TrimSpace(p.projectID) == "" {

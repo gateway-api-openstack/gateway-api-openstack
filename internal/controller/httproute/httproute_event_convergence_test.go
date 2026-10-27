@@ -242,6 +242,7 @@ func (f *memberBurstFixture) toggleReadiness(t *testing.T, source string) event.
 // It does not simulate Octavia ownership checks, HTTP requests, or timing.
 type memberSetProvider struct {
 	members        map[string]map[cloud.Member]string
+	lastMembers    []cloud.Member
 	calls, changes int
 }
 
@@ -251,20 +252,26 @@ func (p *memberSetProvider) ReconcileGatewayGraph(_ context.Context, spec cloud.
 		return cloud.GatewayGraphResult{}, fmt.Errorf("expected one complete ensured Gateway and route")
 	}
 	route := spec.Routes[0].Spec
+	p.lastMembers = slices.Clone(route.Members)
+	// Provider identity is read-only validation metadata, not an Octavia member key.
+	desiredMembers := slices.Clone(route.Members)
+	for i := range desiredMembers {
+		desiredMembers[i].ProviderID = ""
+	}
 	members := p.members[route.Identity.RouteUID]
 	if members == nil {
 		return cloud.GatewayGraphResult{}, fmt.Errorf("unexpected route identity")
 	}
 	changed := false
 	for member := range members {
-		if !slices.Contains(route.Members, member) {
+		if !slices.Contains(desiredMembers, member) {
 			delete(members, member)
 			changed = true
 			break
 		}
 	}
 	if !changed {
-		for _, member := range route.Members {
+		for _, member := range desiredMembers {
 			if _, present := members[member]; !present {
 				members[member] = "replacement-member"
 				changed = true
@@ -284,4 +291,33 @@ func (p *memberSetProvider) ReconcileGatewayGraph(_ context.Context, spec cloud.
 			Outcome: outcome, State: cloud.RouteState{PoolID: "pool-" + route.Identity.RouteUID},
 		}}},
 	}, nil
+}
+
+func TestNodeProviderIdentityChangeRechecksGraph(t *testing.T) {
+	fixture := newMemberBurstFixture(t, 1)
+	previous := fixture.node.DeepCopy()
+	fixture.node.Spec.ProviderID = "openstack:///11111111-1111-1111-1111-111111111111"
+	if err := fixture.reader.Update(t.Context(), fixture.node); err != nil {
+		t.Fatal(err)
+	}
+	update := event.UpdateEvent{ObjectOld: previous, ObjectNew: fixture.node.DeepCopy()}
+	if !controller.NodePredicate("").Update(update) {
+		t.Fatal("Node provider identity change did not pass the dependency predicate")
+	}
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer queue.ShutDown()
+	mapper := handler.EnqueueRequestsFromMapFunc(fixture.reconciler.enqueueHTTPRoutesForNode)
+	mapper.Update(t.Context(), update, queue)
+	if queue.Len() != 1 {
+		t.Fatalf("queued %d routes, want one affected route", queue.Len())
+	}
+	request, _ := queue.Get()
+	defer queue.Done(request)
+	if _, err := fixture.reconciler.Reconcile(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	want := cloud.Member{Address: fixture.node.Status.Addresses[0].Address, Port: 30080, ProviderID: fixture.node.Spec.ProviderID}
+	if !slices.Contains(fixture.provider.lastMembers, want) || fixture.provider.changes != 0 {
+		t.Fatalf("updated members=%#v, member mutations=%d", fixture.provider.lastMembers, fixture.provider.changes)
+	}
 }

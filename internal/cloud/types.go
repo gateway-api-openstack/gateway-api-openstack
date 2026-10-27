@@ -19,7 +19,6 @@ limitations under the License.
 package cloud
 
 import (
-	"context"
 	"fmt"
 	"slices"
 )
@@ -134,13 +133,6 @@ type RouteState struct {
 	MonitorID   string
 	L7PolicyIDs []string
 	L7RuleIDs   []string
-}
-
-// Provider is the complete cloud boundary for the Gateway graph writer.
-// Reconciliation validates the complete graph and performs at most one mutation.
-type Provider interface {
-	GraphProvider
-	GetGateway(context.Context, Identity) (GatewayResult, bool, error)
 }
 
 // ValidateGatewayIdentity verifies the common Gateway ownership tuple.

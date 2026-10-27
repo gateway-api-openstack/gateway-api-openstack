@@ -199,10 +199,6 @@ func (p *blockingGraphProvider) EnsureGateway(context.Context, cloud.GatewaySpec
 	return cloud.GatewayReadyResult(cloud.GatewayState{}), nil
 }
 
-func (p *blockingGraphProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
-	return cloud.GatewayReadyResult(cloud.GatewayState{}), true, nil
-}
-
 func (p *blockingGraphProvider) DeleteGateway(context.Context, cloud.Identity) (cloud.Outcome, error) {
 	return cloud.ReadyOutcome(), nil
 }

@@ -53,28 +53,79 @@ func (e *routeBuildError) Error() string { return e.message }
 func newRouteBuildError(kind routeErrorKind, format string, args ...any) error {
 	return &routeBuildError{kind: kind, message: fmt.Sprintf(format, args...)}
 }
+
+// routeStructure contains the supported HTTPRoute fields before resolving backends.
+type routeStructure struct {
+	hostname  string
+	pathType  cloud.PathMatchType
+	pathValue string
+	backend   gatewayv1.BackendObjectReference
+}
+
 func structurallySupportedRoute(route *gatewayv1.HTTPRoute) bool {
-	if len(route.Spec.ParentRefs) != 1 || len(route.Spec.Hostnames) > 1 ||
-		len(route.Spec.Hostnames) == 1 && strings.HasPrefix(string(route.Spec.Hostnames[0]), "*.") ||
-		len(route.Spec.Rules) != 1 {
+	if len(route.Spec.ParentRefs) != 1 {
 		return false
+	}
+	_, err := parseRouteStructure(route)
+	return err == nil
+}
+
+func parseRouteStructure(route *gatewayv1.HTTPRoute) (routeStructure, error) {
+	if len(route.Spec.Hostnames) > 1 {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
+	}
+	hostname := ""
+	if len(route.Spec.Hostnames) == 1 {
+		hostname = string(route.Spec.Hostnames[0])
+		if strings.HasPrefix(hostname, "*.") {
+			return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
+		}
+	}
+	if len(route.Spec.Rules) != 1 {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
 	}
 	rule := route.Spec.Rules[0]
-	if rule.Name != nil || len(rule.Filters) != 0 || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil || len(rule.BackendRefs) != 1 {
-		return false
+	if rule.Name != nil || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "named rules, timeouts, retries, and session persistence are not supported")
 	}
-	if _, _, _, err := supportedMatch(rule.Matches); err != nil {
-		return false
+	if err := compileRouteAction(rule); err != nil {
+		return routeStructure{}, err
+	}
+	pathType, pathValue, err := supportedMatch(rule.Matches)
+	if err != nil {
+		return routeStructure{}, err
+	}
+	if len(rule.BackendRefs) != 1 {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
 	}
 	backend := rule.BackendRefs[0]
+	if len(backend.Filters) != 0 {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
+	}
+	if backend.Weight != nil && *backend.Weight == 0 {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
+	}
+	if backend.Group != nil && *backend.Group != gatewayv1.Group("") {
+		return routeStructure{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
+	}
+	if backend.Kind != nil && *backend.Kind != gatewayv1.Kind("Service") {
+		return routeStructure{}, newRouteBuildError(routeErrorInvalidKind, "backendRef kind %q is unsupported; use Service", *backend.Kind)
+	}
 	backendNamespace := route.Namespace
 	if backend.Namespace != nil {
 		backendNamespace = string(*backend.Namespace)
 	}
-	return len(backend.Filters) == 0 && (backend.Weight == nil || *backend.Weight != 0) &&
-		(backend.Group == nil || *backend.Group == gatewayv1.Group("")) &&
-		(backend.Kind == nil || *backend.Kind == gatewayv1.Kind("Service")) &&
-		backendNamespace == route.Namespace && backend.Port != nil
+	if backendNamespace != route.Namespace {
+		return routeStructure{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
+	}
+	if backend.Port == nil {
+		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
+	}
+
+	return routeStructure{
+		hostname: hostname, pathType: pathType, pathValue: pathValue,
+		backend: backend.BackendObjectReference,
+	}, nil
 }
 
 func (r *Reconciler) buildRouteSpecWithReader(
@@ -83,62 +134,19 @@ func (r *Reconciler) buildRouteSpecWithReader(
 	route *gatewayv1.HTTPRoute,
 	gateway *gatewayv1.Gateway,
 ) (cloud.RouteSpec, error) {
-	if len(route.Spec.Hostnames) > 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
-	}
-	hostname := ""
-	if len(route.Spec.Hostnames) == 1 {
-		hostname = string(route.Spec.Hostnames[0])
-		if strings.HasPrefix(hostname, "*.") {
-			return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
-		}
-	}
-	if len(route.Spec.Rules) != 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
-	}
-	rule := route.Spec.Rules[0]
-	if rule.Name != nil || len(rule.Filters) != 0 || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "named rules, filters, timeouts, retries, and session persistence are not supported")
-	}
-	_, pathType, pathValue, err := supportedMatch(rule.Matches)
+	structure, err := parseRouteStructure(route)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	if len(rule.BackendRefs) != 1 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
-	}
-	backend := rule.BackendRefs[0]
-	if len(backend.Filters) != 0 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
-	}
-	if backend.Weight != nil && *backend.Weight == 0 {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
-	}
-	if backend.Group != nil && *backend.Group != gatewayv1.Group("") {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
-	}
-	if backend.Kind != nil && *backend.Kind != gatewayv1.Kind("Service") {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorInvalidKind, "backendRef kind %q is unsupported; use Service", *backend.Kind)
-	}
-	backendNamespace := route.Namespace
-	if backend.Namespace != nil {
-		backendNamespace = string(*backend.Namespace)
-	}
-	if backendNamespace != route.Namespace {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
-	}
-	if backend.Port == nil {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
-	}
 
 	var service corev1.Service
-	if err := reader.Get(ctx, types.NamespacedName{Namespace: backendNamespace, Name: string(backend.Name)}, &service); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(structure.backend.Name)}, &service); err != nil {
 		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", err)
 	}
 	if service.Spec.Type != corev1.ServiceTypeNodePort {
 		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)
 	}
-	servicePort, err := nodePortForBackend(&service, int32(*backend.Port))
+	servicePort, err := nodePortForBackend(&service, int32(*structure.backend.Port))
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
@@ -146,7 +154,7 @@ func (r *Reconciler) buildRouteSpecWithReader(
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	members, err := nodePortMembersFromReader(ctx, reader, &service, servicePort.NodePort, topology.NodeAddressType)
+	members, err := nodePortMembersFromReader(ctx, reader, &service, servicePort, topology.NodeAddressType)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
@@ -163,23 +171,23 @@ func (r *Reconciler) buildRouteSpecWithReader(
 		MemberSubnetID:          topology.Topology.MemberSubnetID,
 		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
 		HealthMonitor:           topology.HealthMonitor,
-		Hostname:                hostname,
-		PathType:                pathType,
-		PathValue:               pathValue,
+		Hostname:                structure.hostname,
+		PathType:                structure.pathType,
+		PathValue:               structure.pathValue,
 		Members:                 members,
 	}, nil
 }
 
-func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (*gatewayv1.HTTPRouteMatch, cloud.PathMatchType, string, error) {
+func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (cloud.PathMatchType, string, error) {
 	if len(matches) == 0 {
-		return nil, cloud.PathMatchPrefix, "/", nil
+		return cloud.PathMatchPrefix, "/", nil
 	}
 	if len(matches) != 1 {
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "at most one HTTPRoute match is supported")
+		return "", "", newRouteBuildError(routeErrorUnsupported, "at most one HTTPRoute match is supported")
 	}
 	match := &matches[0]
 	if len(match.Headers) != 0 || len(match.QueryParams) != 0 || match.Method != nil {
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported")
+		return "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported")
 	}
 	pathType := gatewayv1.PathMatchPathPrefix
 	pathValue := "/"
@@ -192,15 +200,15 @@ func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (*gatewayv1.HTTPRouteMat
 		}
 	}
 	if !validHTTPPath(pathValue) {
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "path %q is not a valid absolute Gateway API path", pathValue)
+		return "", "", newRouteBuildError(routeErrorUnsupported, "path %q is not a valid absolute Gateway API path", pathValue)
 	}
 	switch pathType {
 	case gatewayv1.PathMatchExact:
-		return match, cloud.PathMatchExact, pathValue, nil
+		return cloud.PathMatchExact, pathValue, nil
 	case gatewayv1.PathMatchPathPrefix:
-		return match, cloud.PathMatchPrefix, pathValue, nil
+		return cloud.PathMatchPrefix, pathValue, nil
 	default:
-		return nil, "", "", newRouteBuildError(routeErrorUnsupported, "path match type %q is not supported", pathType)
+		return "", "", newRouteBuildError(routeErrorUnsupported, "path match type %q is not supported", pathType)
 	}
 }
 
