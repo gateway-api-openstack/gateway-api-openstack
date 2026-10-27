@@ -55,3 +55,4 @@ Clarifications and implementation evidence may be added without changing the ori
 | [0002](0002-class-configuration.md) | Accepted, identity superseded by 0003 | Define class configuration, frozen Gateway topology, and worker NodePort eligibility. |
 | [0003](0003-project-organization.md) | Accepted | Use the project organization for the repository, Go module, API group, and default controller identity. |
 | [0004](0004-network-access-and-recovery.md) | Accepted for development | Define referenced security groups, conditional Floating IP recovery, and redacted read-only diagnostics. |
+| [0005](0005-core-resource-mapping.md) | Proposed | Define Core mapping candidates, verification cases, and unresolved forwarding, backend, and certificate ownership gates. |

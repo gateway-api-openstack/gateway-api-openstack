@@ -30,6 +30,12 @@ Other Route profiles and mesh conformance are also outside the target.
 
 ## Prepare the suite
 
+The [Core inventory](../test/design/core-mapping.json) groups the pinned GATEWAY-HTTP Core tests by requirement.
+CI checks it against upstream source with `make test-core-mapping`.
+The target downloads only the pinned source module and runs a local inventory check, without contacting Kubernetes or OpenStack.
+An inventory match does not execute conformance tests or declare supported features.
+Use [ADR 0005](design/adr/0005-core-resource-mapping.md) for the proposed mappings and their outstanding verification cases.
+
 Use the conformance module and Standard CRDs for the same pinned Gateway API release.
 Before a full run:
 

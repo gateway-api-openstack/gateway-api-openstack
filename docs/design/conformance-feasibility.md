@@ -57,16 +57,16 @@ These exposed fields do not provide the general mapping that retains an arbitrar
 
 API and model checks precede live proofs.
 The first gate is an API that exposes all three blocked behaviors above.
-The following mappings also need verification before implementation.
+The following primitives inform the proposed mappings in [ADR 0005](adr/0005-core-resource-mapping.md), which defines their verification and acceptance gates.
 
-| Requirement | Available primitive | Required proof |
-| --- | --- | --- |
-| ClusterIP, headless, and manually managed EndpointSlice backends | Octavia members can use endpoint addresses and ports when they are reachable from Amphora | Existing forward and return routing, port resolution, endpoint readiness and changes, security, and ownership |
-| Multiple valid weighted Service backends | One policy targets one pool, whose members have individual weights from 0 to 256 | Service ratios of 1:1 and 1:3 with unequal endpoint counts, weight zero, rounding, churn, overlapping endpoints, connection reuse, and unhealthy groups |
-| Redirects to a fixed hostname with 301/302 | Redirect prefix and redirect status fields | Derive scheme and listener port correctly, preserve path and query, and respect precedence when redirects overlap forwarding routes |
-| Exact headers, wildcard hostnames, and route precedence | Host and header ACLs and ordered L7 policies | Gateway API normalization, intersections, case handling, matching priority, and unmatched responses |
-| Multiple logical listeners sharing a port | One physical listener can host L7 rules and SNI certificates | Logical listener grouping, attachment and status, certificate selection, partial validity, updates, and deletion |
-| HTTPS and cross-namespace certificate references | Terminated HTTPS and default/SNI certificate references | ReferenceGrant authorization, Secret validation, Barbican identity, rotation, revocation, and crash recovery |
+| Requirement | Octavia constraint |
+| --- | --- |
+| ClusterIP, headless, and manually managed EndpointSlice backends | Members accept endpoint addresses and ports, but routing and security must already permit Amphora to reach them. |
+| Weighted Service backends | A policy selects one pool, whose members have weights from 0 to 256. Service-level distribution needs a separate mapping. |
+| Fixed-host redirects | Redirect prefix and status fields exist, but cross-action precedence must be verified. |
+| Header and hostname matching | Host and header ACLs and ordered L7 policies exist, subject to API key and value limits. |
+| Logical listeners sharing a port | A physical listener can host L7 rules and SNI certificates, but duplicate protocol and port pairs are rejected. |
+| HTTPS | Terminated HTTPS accepts certificate references, but safe Barbican ownership is unresolved. |
 
 The [member API](https://docs.openstack.org/api-ref/load-balancer/v2/#create-member) permits addresses outside the supplied subnet when existing routing makes them reachable.
 Resolving a ClusterIP or headless Service to EndpointSlices is therefore a candidate, not an established portable mode.
@@ -95,6 +95,15 @@ It does not establish safe ownership by itself.
 The certificate ADR must cover project-scoped discovery, duplicate detection, creation before identity metadata is durable, rotation, revocation, and deletion after listener references are removed.
 Kubernetes ReferenceGrant authorization and Barbican access control are separate checks.
 
-Changes to member mode, resource mapping, capability requirements, or certificate ownership need accepted ADRs before implementation.
-Map the proof cases to the pinned tests and keep source findings, model results, and live traffic evidence separate.
-Live verification requires an approved resource scope and cleanup evidence.
+### Implementation boundary
+
+The current compiler exposes unsupported action entry points in `internal/controller/httproute/httproute_actions.go` for request header modification, redirects, and required HTTP responses.
+They return typed validation errors before binding or cloud mutation.
+A fixed-host redirect is an unimplemented representable candidate, while arbitrary request-host preservation needs an upstream primitive.
+These negative tests preserve the rejection boundary and do not prove the corresponding Core behavior.
+
+The connectivity implementation under [ADR 0004](adr/0004-network-access-and-recovery.md) does not select a future Service forwarding or TLS ownership model.
+[ADR 0005](adr/0005-core-resource-mapping.md) records those proposed mappings and the verification needed before acceptance.
+The local weight proofs search the bounded member-weight model and show how endpoint health changes its distribution.
+They do not establish a general Service-weight mapping or replace traffic measurements.
+The [Core inventory](../../test/design/core-mapping.json) tracks the pinned upstream tests separately from implementation evidence.
