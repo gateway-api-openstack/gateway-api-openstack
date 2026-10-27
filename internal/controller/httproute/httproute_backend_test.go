@@ -81,7 +81,7 @@ func TestNodePortMembersWorkerEligibility(t *testing.T) {
 					}
 					kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(endpoints, node, other).Build()
 
-					members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, 30080, corev1.NodeInternalIP)
+					members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -106,7 +106,7 @@ func TestNodePortMembersNoEligibleWorker(t *testing.T) {
 			node.Labels = map[string]string{"node-role.kubernetes.io/control-plane": ""}
 			kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(endpoints, node).Build()
 
-			members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, 30080, corev1.NodeInternalIP)
+			members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
 			var buildErr *routeBuildError
 			if !errors.As(err, &buildErr) || buildErr.kind != routeErrorPending || len(members) != 0 {
 				t.Fatalf("members = %#v, error = %v, want pending without members", members, err)
@@ -133,7 +133,7 @@ func TestNodePortMembersRejectConflictingProviderIDs(t *testing.T) {
 			second.Spec.ProviderID = test.providerID
 			nodes := []corev1.Node{*first, *second}
 			for range 2 {
-				members, err := nodePortMembersForNodes(service, 30080, corev1.NodeInternalIP, map[string]struct{}{"": {}}, nodes)
+				members, err := nodePortMembersForNodes(service, 30080, corev1.NodeInternalIP, backendNodes{discoveryv1.AddressTypeIPv4: {"": {}}}, nodes)
 				if test.conflict {
 					var buildError *routeBuildError
 					if !errors.As(err, &buildError) || buildError.kind != routeErrorPending || len(members) != 0 {
@@ -175,7 +175,7 @@ func TestNodePortMembersFollowWorkerLabelChanges(t *testing.T) {
 				if err := kubeClient.Update(context.Background(), node); err != nil {
 					t.Fatal(err)
 				}
-				members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, 30080, corev1.NodeInternalIP)
+				members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
 				if err != nil {
 					t.Fatal(err)
 				}

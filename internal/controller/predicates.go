@@ -198,7 +198,9 @@ func EndpointSlicePredicate() predicate.Predicate {
 		if !oldOK || !newOK {
 			return true
 		}
-		return endpointSliceBackendState(oldSlice) != endpointSliceBackendState(newSlice)
+		return oldSlice.AddressType != newSlice.AddressType ||
+			!equality.Semantic.DeepEqual(oldSlice.Ports, newSlice.Ports) ||
+			endpointSliceBackendState(oldSlice) != endpointSliceBackendState(newSlice)
 	})
 }
 
@@ -395,7 +397,7 @@ type nodeBackendState struct {
 
 func nodeBackendStateFor(node *corev1.Node, addressType corev1.NodeAddressType) nodeBackendState {
 	state := nodeBackendState{
-		address:       nodeAddress(node, addressType),
+		address:       nodeAddresses(node, addressType),
 		providerID:    node.Spec.ProviderID,
 		excluded:      NodePortNodeExcluded(node),
 		unschedulable: node.Spec.Unschedulable,
@@ -418,11 +420,14 @@ func endpointReady(conditions discoveryv1.EndpointConditions) bool {
 	return conditions.Ready == nil || *conditions.Ready
 }
 
-func nodeAddress(node *corev1.Node, addressType corev1.NodeAddressType) string {
+func nodeAddresses(node *corev1.Node, addressType corev1.NodeAddressType) string {
+	// A backend may select a later address when the first address has no ready
+	// endpoints of the same family. Preserve order because selection uses it.
+	var addresses []string
 	for _, address := range node.Status.Addresses {
 		if address.Type == addressType && net.ParseIP(address.Address) != nil {
-			return address.Address
+			addresses = append(addresses, address.Address)
 		}
 	}
-	return ""
+	return strings.Join(addresses, "\x00")
 }

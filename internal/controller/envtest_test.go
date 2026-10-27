@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -754,7 +755,7 @@ func testGraphWriterTriggerEquivalence(t *testing.T, apiClient, cacheClient clie
 		t.Fatal(err)
 	}
 	ready := true
-	endpointSlice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: gateway.Namespace, Name: "backend-endpoints", Labels: map[string]string{discoveryv1.LabelServiceName: service.Name}}, AddressType: discoveryv1.AddressTypeIPv4, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.1.0.10"}, NodeName: &node.Name, Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
+	endpointSlice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: gateway.Namespace, Name: "backend-endpoints", Labels: map[string]string{discoveryv1.LabelServiceName: service.Name}}, AddressType: discoveryv1.AddressTypeIPv4, Ports: []discoveryv1.EndpointPort{{Name: ptr.To("http"), Port: ptr.To(int32(80))}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.1.0.10"}, NodeName: &node.Name, Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
 	if err := apiClient.Create(t.Context(), endpointSlice); err != nil {
 		t.Fatal(err)
 	}

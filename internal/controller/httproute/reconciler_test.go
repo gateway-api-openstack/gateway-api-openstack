@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -170,7 +171,7 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	}
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: []corev1.ServicePort{{Port: 8080, NodePort: 30080}}}}
 	ready := true
-	slice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}}, Endpoints: []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
+	slice := &discoveryv1.EndpointSlice{AddressType: discoveryv1.AddressTypeIPv4, Ports: []discoveryv1.EndpointPort{{Port: ptr.To(int32(8080))}}, ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}}, Endpoints: []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.11"}}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
 	node.Spec.ProviderID = "openstack:///55555555-5555-5555-5555-555555555555"
 	client := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(route).WithObjects(class, gateway, route, service, slice, node).Build()
@@ -181,8 +182,8 @@ func TestHTTPRouteReconcileBuildsNodePortMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if result != (ctrl.Result{Requeue: true}) || provider.gatewayGets != 0 || len(provider.routeSpecs) != 0 {
-		t.Fatalf("binding checkpoint result = %#v, GetGateway calls = %d, EnsureRoute calls = %d", result, provider.gatewayGets, len(provider.routeSpecs))
+	if result != (ctrl.Result{Requeue: true}) || len(provider.gatewaySpecs)+len(provider.routeSpecs) != 0 {
+		t.Fatalf("binding checkpoint result = %#v, Gateway calls = %d, route calls = %d", result, len(provider.gatewaySpecs), len(provider.routeSpecs))
 	}
 	secondResult, err := reconciler.Reconcile(context.Background(), request)
 	if err != nil {
@@ -465,6 +466,54 @@ func TestRouteSelectionIgnoresOlderRejectedClusterIPProfile(t *testing.T) {
 	}
 }
 
+func TestUnsupportedRouteCannotReserveGatewaySlot(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*gatewayv1.HTTPRoute)
+		kind   routeErrorKind
+	}{
+		{name: "wildcard hostname", change: func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Hostnames = []gatewayv1.Hostname{"*.example.test"}
+		}, kind: routeErrorUnsupported},
+		{name: "backend kind", change: func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules[0].BackendRefs[0].Kind = ptr.To(gatewayv1.Kind("Pod"))
+		}, kind: routeErrorInvalidKind},
+		{name: "cross-namespace backend", change: func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules[0].BackendRefs[0].Namespace = ptr.To(gatewayv1.Namespace("other"))
+		}, kind: routeErrorRefNotPermitted},
+		{name: "zero backend weight", change: func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules[0].BackendRefs[0].Weight = ptr.To(int32(0))
+		}, kind: routeErrorUnsupported},
+		{name: "missing backend port", change: func(route *gatewayv1.HTTPRoute) {
+			route.Spec.Rules[0].BackendRefs[0].Port = nil
+		}, kind: routeErrorUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig()
+			parent := gatewayv1.ParentReference{Name: "edge"}
+			older := mapperTestHTTPRoute("default", "old", parent, "backend")
+			older.CreationTimestamp = metav1.NewTime(time.Unix(1, 0))
+			test.change(older)
+			current := mapperTestHTTPRoute("default", "current", parent, "backend")
+			current.CreationTimestamp = metav1.NewTime(time.Unix(2, 0))
+			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(older, current).Build()
+			gateway := programmedTestGateway(cfg)
+			reconciler := newTestReconciler(Reconciler{Client: kubeClient, Config: cfg}, nil)
+			selected, err := reconciler.isSelectedRoute(t.Context(), current, managedRouteParent{
+				ref: parent, gateway: gateway, listener: &gateway.Spec.Listeners[0],
+			})
+			if err != nil || !selected {
+				t.Fatalf("valid route lost selection to an unsupported route: selected=%t, error=%v", selected, err)
+			}
+			_, err = reconciler.buildRouteSpecWithReader(t.Context(), kubeClient, older, gateway)
+			var buildError *routeBuildError
+			if !errors.As(err, &buildError) || buildError.kind != test.kind {
+				t.Fatalf("unsupported route error = %v, want %s before backend lookup", err, test.kind)
+			}
+		})
+	}
+}
+
 func TestRouteCanReserveSlotRejectsTerminalServiceProfiles(t *testing.T) {
 	port := gatewayv1.PortNumber(80)
 	route := &gatewayv1.HTTPRoute{
@@ -539,8 +588,10 @@ func TestTerminalServiceProfileDoesNotSelfWinOrInflateAttachedRoutes(t *testing.
 	}
 	ready := true
 	slice := &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "tcp-backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "tcp-backend"}},
-		Endpoints:  []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Ports:       []discoveryv1.EndpointPort{{Port: ptr.To(int32(80))}},
+		ObjectMeta:  metav1.ObjectMeta{Namespace: "default", Name: "tcp-backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "tcp-backend"}},
+		Endpoints:   []discoveryv1.Endpoint{{Conditions: discoveryv1.EndpointConditions{Ready: &ready}}},
 	}
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
@@ -718,40 +769,57 @@ func TestBindRouteChecksGatewayProgrammedBeforeBackendModel(t *testing.T) {
 	}
 }
 
-func TestEnsureRouteGraphReusesValidationSnapshotForBinding(t *testing.T) {
-	scheme := testScheme(t)
-	cfg := testConfig()
-	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
-	route.UID = "route-uid"
-	route.Generation = 1
-	gateway := programmedTestGateway(cfg)
-	gatewayClass := &gatewayv1.GatewayClass{
-		ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
-		Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
-	}
-	service, endpointSlice, node := validNodePortBackend("default", "backend")
-	kubeClient := indexedFakeClientBuilder(scheme, cfg).
-		WithObjects(route, gateway, gatewayClass, service, endpointSlice, node).
-		Build()
-	liveReader := &endpointSliceCountingReader{Reader: kubeClient}
-	provider := &recordingProvider{}
-	reconciler := *newTestReconciler(Reconciler{
-		Client: kubeClient, APIReader: liveReader,
-		Coordinator: &graph.Coordinator{}, Config: cfg,
-	}, provider)
+func TestEnsureRouteGraphCheckpointsBeforeProviderCall(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		programmed bool
+		wantState  routeBindingState
+	}{
+		{name: "Gateway pending", wantState: routeBindingGatewayPending},
+		{name: "binding persisted", programmed: true, wantState: routeBindingPersisted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig()
+			route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
+			route.UID, route.Generation = "route-uid", 1
+			gateway := programmedTestGateway(cfg)
+			if !test.programmed {
+				gateway.Status.Conditions = nil
+			}
+			gatewayClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: string(gateway.Spec.GatewayClassName), Generation: 1},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName},
+			}
+			service, endpointSlice, node := validNodePortBackend("default", "backend")
+			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
+				WithObjects(route, gateway, gatewayClass, service, endpointSlice, node).
+				Build()
+			liveReader := &endpointSliceCountingReader{Reader: kubeClient}
+			provider := &recordingProvider{}
+			reconciler := newTestReconciler(Reconciler{
+				Client: kubeClient, APIReader: liveReader,
+				Coordinator: &graph.Coordinator{}, Config: cfg,
+			}, provider)
 
-	result, err := reconciler.ensureRouteGraph(context.Background(), route, gateway)
-	if err != nil {
-		t.Fatalf("ensureRouteGraph() error = %v", err)
-	}
-	if !result.bindingCheckpoint {
-		t.Fatalf("ensureRouteGraph() result = %#v, want binding checkpoint", result)
-	}
-	if liveReader.endpointSliceLists != 1 {
-		t.Fatalf("EndpointSlice lists = %d, want one model build", liveReader.endpointSliceLists)
-	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls = %d, want none before the binding checkpoint", len(provider.routeSpecs))
+			result, err := reconciler.ensureRouteGraph(t.Context(), route, gateway)
+			if err != nil || result.bindingState != test.wantState {
+				t.Fatalf("ensureRouteGraph() = %#v, %v; want binding state %d", result, err, test.wantState)
+			}
+			if liveReader.endpointSliceLists != 1 {
+				t.Fatalf("EndpointSlice lists = %d, want one model build", liveReader.endpointSliceLists)
+			}
+			if len(provider.gatewaySpecs)+len(provider.routeSpecs) != 0 {
+				t.Fatal("called the provider before the binding checkpoint")
+			}
+			var current gatewayv1.HTTPRoute
+			if err := kubeClient.Get(t.Context(), client.ObjectKeyFromObject(route), &current); err != nil {
+				t.Fatal(err)
+			}
+			_, bound, err := reconciler.storedRouteIdentity(&current)
+			if err != nil || bound != test.programmed || controllerutil.ContainsFinalizer(&current, cfg.RouteFinalizer()) != test.programmed {
+				t.Fatalf("binding persisted before Gateway readiness: bound=%t, finalizers=%v, error=%v", bound, current.Finalizers, err)
+			}
+		})
 	}
 }
 
@@ -1034,7 +1102,9 @@ func TestNodePortMembersHonorsExternalTrafficPolicyLocal(t *testing.T) {
 	ready, notReady := true, false
 	workerOne, workerTwo := "worker-1", "worker-2"
 	slice := &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Ports:       []discoveryv1.EndpointPort{{Port: ptr.To(int32(80))}},
+		ObjectMeta:  metav1.ObjectMeta{Namespace: "default", Name: "backend-1", Labels: map[string]string{discoveryv1.LabelServiceName: "backend"}},
 		Endpoints: []discoveryv1.Endpoint{
 			{NodeName: &workerOne, Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
 			{NodeName: &workerTwo, Conditions: discoveryv1.EndpointConditions{Ready: &notReady}},
@@ -1046,8 +1116,8 @@ func TestNodePortMembersHonorsExternalTrafficPolicyLocal(t *testing.T) {
 	}
 	objects := append([]client.Object{slice}, nodes...)
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithObjects(objects...).Build()
-	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: corev1.ServiceSpec{ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal}}
-	members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, 30080, corev1.NodeInternalIP)
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: corev1.ServiceSpec{ExternalTrafficPolicy: corev1.ServiceExternalTrafficPolicyLocal, Ports: []corev1.ServicePort{{Port: 80, NodePort: 30080}}}}
+	members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
 	if err != nil {
 		t.Fatalf("nodePortMembers() error = %v", err)
 	}

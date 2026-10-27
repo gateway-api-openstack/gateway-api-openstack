@@ -54,14 +54,6 @@ func (p *recordingProvider) EnsureGateway(_ context.Context, spec cloud.GatewayS
 	}), nil
 }
 
-func (p *recordingProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
-	return cloud.GatewayReadyResult(cloud.GatewayState{
-		LoadBalancerID: "lb-1",
-		VIPAddress:     "192.0.2.10",
-		ListenerID:     "listener-1",
-	}), true, nil
-}
-
 func (p *recordingProvider) DeleteGateway(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
 	p.deletedGateways = append(p.deletedGateways, identity)
 	if p.gatewayDeleteOut != nil {

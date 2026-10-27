@@ -205,9 +205,11 @@ The `node.kubernetes.io/exclude-from-external-load-balancers` label applies to t
 Boolean parsing accepts Go's standard spellings, including `false`, `False`, `FALSE`, `f`, `F`, and `0` as false.
 Use `"false"` when an explicit value is needed.
 
-Both supported traffic policies require at least one ready, nonterminating backend endpoint.
-With `externalTrafficPolicy: Cluster`, all eligible workers can become members.
-With `externalTrafficPolicy: Local`, a worker must also have a ready endpoint identified by `EndpointSlice.endpoints[].nodeName`.
+Both supported traffic policies require a ready, nonterminating backend endpoint for the selected Service port.
+The EndpointSlice port must match the Service port name and protocol and provide a resolved port number.
+Its address family must be one of the Service's configured families and match the selected Node address.
+With `externalTrafficPolicy: Cluster`, eligible workers can use a ready endpoint in that family anywhere in the cluster.
+With `externalTrafficPolicy: Local`, that endpoint must also identify the worker through `endpoints[].nodeName`.
 The route remains pending when no worker is eligible.
 Node and EndpointSlice changes recalculate membership, preserving members whose address and NodePort have not changed.
 

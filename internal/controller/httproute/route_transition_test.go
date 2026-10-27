@@ -148,10 +148,6 @@ func (p *routeTransitionProvider) EnsureGateway(context.Context, cloud.GatewaySp
 	return cloud.GatewayReadyResult(cloud.GatewayState{}), nil
 }
 
-func (p *routeTransitionProvider) GetGateway(context.Context, cloud.Identity) (cloud.GatewayResult, bool, error) {
-	return cloud.GatewayReadyResult(cloud.GatewayState{}), true, nil
-}
-
 func (p *routeTransitionProvider) DeleteGateway(context.Context, cloud.Identity) (cloud.Outcome, error) {
 	return cloud.ReadyOutcome(), nil
 }

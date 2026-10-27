@@ -36,7 +36,7 @@ This decision does not add multiple routes, change route precedence, or introduc
 ### One shared writer
 
 The manager constructs one `graph.Writer` and passes it to both reconcilers.
-The writer acquires the Gateway UID coordinator, collects current Kubernetes inputs through the resource packages, validates the resulting snapshot, and calls `cloud.Provider.ReconcileGatewayGraph`.
+The writer acquires the Gateway UID coordinator, collects current Kubernetes inputs through the resource packages, validates the resulting snapshot, and calls `cloud.GraphProvider.ReconcileGatewayGraph`.
 It is the only Kubernetes-facing cloud mutation boundary.
 The provider also exposes the read-only `GetGateway` operation.
 
