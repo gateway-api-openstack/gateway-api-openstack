@@ -12,7 +12,7 @@ GoReleaser v2.17.1 builds release bundles for these Linux architectures:
 - `linux/amd64`
 - `linux/arm64`
 
-Each bundle contains `openstack-gateway-controller`, `openstack-gateway-audit`, `octavia-capability-probe`, `LICENSE`, `README.md`, and `SECURITY.md`.
+Each bundle contains `openstack-gateway-controller`, `openstack-gateway-audit`, `openstack-gateway-diagnostics`, `octavia-capability-probe`, `LICENSE`, `README.md`, and `SECURITY.md`.
 It also includes the YAML files under `config/` and `examples/`, with their directory structure preserved.
 These files include the OpenStackGatewayClassConfig CRD, controller installation manifests, and synthetic examples.
 A release also contains a source archive and `checksums.txt` with SHA-256 checksums.
@@ -62,7 +62,7 @@ release_dir="$(mktemp -d)"
 for archive in dist/gateway-api-openstack_v*_linux_*.tar.gz; do
   tar -xzf "$archive" -C "$release_dir"
   bundle_dir="$release_dir/$(basename "$archive" .tar.gz)"
-  for binary in openstack-gateway-controller openstack-gateway-audit octavia-capability-probe; do
+  for binary in openstack-gateway-controller openstack-gateway-audit openstack-gateway-diagnostics octavia-capability-probe; do
     test -x "$bundle_dir/$binary"
   done
   kubectl kustomize "$bundle_dir/config/crd" >/dev/null

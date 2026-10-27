@@ -7,6 +7,7 @@ BINARY_DIR ?= bin
 PROBE_BINARY ?= $(BINARY_DIR)/octavia-capability-probe
 CONTROLLER_BINARY ?= $(BINARY_DIR)/openstack-gateway-controller
 AUDIT_BINARY ?= $(BINARY_DIR)/openstack-gateway-audit
+DIAGNOSTICS_BINARY ?= $(BINARY_DIR)/openstack-gateway-diagnostics
 SETUP_ENVTEST ?= $(abspath $(BINARY_DIR)/setup-envtest)
 SETUP_ENVTEST_VERSION ?= v0.24.1
 ENVTEST_ASSETS_DIR ?= $(abspath $(BINARY_DIR)/envtest)
@@ -23,7 +24,7 @@ help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: build-controller build-audit build-probe ## Build all release binaries.
+build: build-controller build-audit build-diagnostics build-probe ## Build all release binaries.
 
 .PHONY: build-controller
 build-controller: ## Build the controller.
@@ -34,6 +35,11 @@ build-controller: ## Build the controller.
 build-audit: ## Build the OpenStack ownership audit tool.
 	@mkdir -p $(BINARY_DIR)
 	$(GO) build -buildvcs=false -trimpath -ldflags "-X main.version=$(VERSION)" -o $(AUDIT_BINARY) ./cmd/openstack-gateway-audit
+
+.PHONY: build-diagnostics
+build-diagnostics: ## Build the read-only OpenStack environment diagnostics tool.
+	@mkdir -p $(BINARY_DIR)
+	$(GO) build -buildvcs=false -trimpath -ldflags "-X main.version=$(VERSION)" -o $(DIAGNOSTICS_BINARY) ./cmd/openstack-gateway-diagnostics
 
 .PHONY: build-probe
 build-probe: ## Build the Phase 0 capability probe.

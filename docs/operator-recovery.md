@@ -1,6 +1,6 @@
-# Recover from blocked finalization
+# Recover from provisioning and cleanup failures
 
-This guide covers a Gateway or HTTPRoute that cannot finish cleanup.
+This guide covers network prerequisites and a Gateway or HTTPRoute that cannot finish cleanup.
 The controller stops finalization when an OpenStack request fails or ownership cannot be proved.
 That behavior protects resources owned by another controller or cluster.
 
@@ -34,6 +34,16 @@ Confirm these settings before changing anything:
 Authentication, authorization, quota, rate limiting, and service failures are different conditions.
 Restore the original access or service health and let the controller try again.
 A new credential is suitable only when it is scoped to the same project and has the required permissions.
+
+## Network prerequisites
+
+For provisioning blocked by referenced security or cloud capabilities, use the [read-only diagnostic workflow](getting-started.md#inspect-network-prerequisites).
+Compare its current class template with the Gateway's frozen configuration before changing operator-managed groups or worker associations.
+The controller retries failed external prerequisites slowly and does not repair referenced rules.
+
+Detached owned Floating IPs recover automatically only when the full graph is valid, the exact VIP association is known, and Neutron supports revision-conditional updates.
+A foreign association, inconsistent fixed IP, or missing load balancer stops repair.
+Keep the original binding and investigate with the ownership audit.
 
 ## Run the ownership audit
 
