@@ -1,0 +1,78 @@
+{
+  "gatewayAPIVersion": "v1.6.1",
+  "profile": "GATEWAY-HTTP",
+  "requirements": [
+    {
+      "name": "gateway-status",
+      "tests": [
+        "GatewayClassObservedGenerationBump",
+        "GatewayInvalidParametersRef",
+        "GatewayInvalidRouteKind",
+        "GatewayListenerUnsupportedProtocol",
+        "GatewayObservedGenerationBump",
+        "HTTPRouteObservedGenerationBump"
+      ]
+    },
+    {
+      "name": "listeners-and-routing",
+      "tests": [
+        "GatewayModifyListeners",
+        "GatewayWithAttachedRoutes",
+        "HTTPRouteCrossNamespace",
+        "HTTPRouteExactPathMatching",
+        "HTTPRouteHeaderMatching",
+        "HTTPRouteHostnameIntersection",
+        "HTTPRouteInvalidCrossNamespaceParentRef",
+        "HTTPRouteInvalidParentRefNotMatchingSectionName",
+        "HTTPRouteListenerHostnameMatching",
+        "HTTPRouteMatching",
+        "HTTPRouteMatchingAcrossRoutes",
+        "HTTPRouteMultipleGateways",
+        "HTTPRoutePathMatchOrder",
+        "HTTPRouteSimpleSameNamespace"
+      ]
+    },
+    {
+      "name": "service-forwarding",
+      "tests": [
+        "HTTPRouteServiceTypes"
+      ]
+    },
+    {
+      "name": "backend-selection-and-errors",
+      "tests": [
+        "HTTPRouteInvalidBackendRefUnknownKind",
+        "HTTPRouteInvalidNonExistentBackendRef",
+        "HTTPRouteNoBackendRefs",
+        "HTTPRouteWeight"
+      ]
+    },
+    {
+      "name": "http-filters",
+      "tests": [
+        "HTTPRouteRedirectHostAndStatus",
+        "HTTPRouteRequestHeaderModifier"
+      ]
+    },
+    {
+      "name": "backend-reference-grants",
+      "tests": [
+        "HTTPRouteInvalidCrossNamespaceBackendRef",
+        "HTTPRouteInvalidReferenceGrant",
+        "HTTPRoutePartiallyInvalidViaInvalidReferenceGrant",
+        "HTTPRouteReferenceGrant"
+      ]
+    },
+    {
+      "name": "certificates",
+      "tests": [
+        "GatewayInvalidTLSConfiguration",
+        "GatewaySecretInvalidReferenceGrant",
+        "GatewaySecretMissingReferenceGrant",
+        "GatewaySecretReferenceGrantAllInNamespace",
+        "GatewaySecretReferenceGrantSpecific",
+        "HTTPRouteHTTPSListener"
+      ]
+    }
+  ]
+}

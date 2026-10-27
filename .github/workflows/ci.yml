@@ -73,6 +73,9 @@ jobs:
       - name: Verify source and tests
         run: make verify
 
+      - name: Verify pinned Gateway API Core mapping
+        run: make test-core-mapping
+
       - name: Build release binaries
         run: make build
 

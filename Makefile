@@ -103,6 +103,14 @@ test-e2e-recurring: build-audit ## Run Cluster and Local profiles sequentially i
 		--audit-binary "$(abspath $(AUDIT_BINARY))" \
 		--recurring
 
+.PHONY: test-core-mapping
+test-core-mapping: ## Compare the Core mapping with the pinned upstream conformance source.
+	@set -eu; \
+	version="$$($(GO) list -mod=readonly -m -f '{{.Version}}' sigs.k8s.io/gateway-api)"; \
+	source="$$($(GO) mod download -json sigs.k8s.io/gateway-api/conformance@$$version | sed -n 's/^[[:space:]]*"Dir": "\([^"]*\)",$$/\1/p')"; \
+	test -n "$$source"; \
+	GATEWAY_API_CONFORMANCE_SOURCE_DIR="$$source" $(GO) test -count=1 ./test/design -run '^TestCoreMapping'
+
 .PHONY: envtest-assets
 envtest-assets: ## Download the pinned envtest control-plane binaries.
 	@mkdir -p "$(BINARY_DIR)" "$(ENVTEST_ASSETS_DIR)"
