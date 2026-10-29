@@ -7,6 +7,7 @@ Phase 5 requires the pinned profile's complete Core suite and every declared Ext
 Partial results document progress but do not satisfy that milestone.
 
 Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
+Phase 5 development can proceed for an accepted design while unrelated Phase 4 work and Octavia reviews remain open.
 The project remains pre-alpha.
 The [compatibility record](docs/providers/compatibility.md) describes the evidence available for the current implementation.
 
@@ -31,7 +32,7 @@ The [architecture](docs/design/architecture.md) defines the ownership and reconc
 | 2: Reconciliation | Development milestone complete | Reliability foundations for the HTTP and NodePort path | Baseline OpenStack E2E passed, with remaining work carried into Phase 3 |
 | 3: Class API | Implemented, with validation remaining | Typed topology configuration, one graph writer, and worker members | Broader live coverage and artifacts for outside testing |
 | 4: Connectivity and Core design | Connectivity implemented, Core blocked | Safe connectivity and validated Core mappings | Accepted designs, resolved Core API blockers, and scoped OpenStack evidence |
-| 5: HTTP/HTTPS conformance | Planned, depends on Phase 4 | Complete GATEWAY-HTTP Core implementation | All Core and declared Extended tests pass, with safe resource lifecycle |
+| 5: HTTP/HTTPS conformance | Planned, can overlap Phase 4 after scoped design acceptance | Complete GATEWAY-HTTP Core implementation | All Core and declared Extended tests pass, with safe resource lifecycle |
 | 6: Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible successful conformance report |
 | 7: Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, upstream Conformant listing, and release evidence |
 
@@ -159,7 +160,8 @@ Reassess the requirements when changing the pinned Gateway API version.
 
 The [feasibility assessment](docs/design/conformance-feasibility.md) records the Octavia API blockers and proof cases.
 The reviewed API lacks arbitrary request header modification, the required HTTP 404 and 500 responses, and redirects that retain an arbitrary request hostname.
-Resolve these gaps through reviewed Octavia API and Amphora changes, then record the released version and capability checks required by the controller.
+Develop and verify the required Octavia API and Amphora changes alongside the corresponding controller behavior.
+Record the released version and capability checks before claiming support or closing Phase 4.
 The HTTPRoute compiler has explicit unsupported functions and upstream TODOs for those missing primitives.
 Tests verify that these paths create neither bindings nor cloud resources.
 They do not count as Core implementations, and Phase 4 cannot close while the blockers remain.
@@ -178,6 +180,39 @@ Validate the [proof cases](docs/design/conformance-feasibility.md#phase-4-proof-
 Member mode, resource mapping, capability requirements, and certificate ownership changes require accepted ADRs.
 A proxy, synthetic error backend, or direct Amphora configuration change would require a separate product decision.
 Live proofs require an approved resource scope and cleanup evidence.
+
+### Develop and verify one feature at a time
+
+Phase completion gates do not require all development to run sequentially.
+Start independent compiler, reference, and status work after accepting its scoped design, without waiting for every Octavia extension or every Phase 4 live test.
+ADR 0005 remains proposed.
+Record independently settled decisions in focused ADRs and leave unresolved mappings in ADR 0005.
+
+Begin with listener and route attachment, deterministic forwarding rules, and backend reference authorization using existing Octavia primitives.
+Prove the Service forwarding path before implementing a new member mode, and settle Barbican ownership before implementing certificate creation.
+Secret validation and reference authorization can be developed independently of certificate publication.
+Treat Service weighting, cross-action ordering, and API input limits as design questions until their proof cases establish the required behavior.
+Do not assume that each gap needs a separate Octavia API extension.
+
+For each feature:
+
+1. Define the Gateway API behavior, resource identity, dependencies, and verification cases in the scoped design.
+2. Implement the controller model, adapter calls, status, and lifecycle together, with focused unit, adapter, and API server tests where needed.
+3. Verify actual requests through the Gateway on the selected Octavia build, including input changes, affected traffic, and cleanup.
+4. Run applicable upstream tests when their setup dependencies are available, then add combination tests as related features become available.
+5. Record remaining API, environment, and conformance gaps before starting work that depends on the result.
+
+Use existing released Octavia APIs whenever they can express the behavior.
+For an unreleased extension, keep the dependent integration work in a development branch until the API contract and required checks are settled.
+The scoped design must specify how the development build verifies that API and rejects unavailable capabilities before mutation.
+Use the normal controller and OpenStack adapter boundaries rather than a second controller or direct Amphora configuration changes.
+Validate revisions that depend on unreleased extensions against an isolated OpenStack deployment with pinned Octavia, octavia-lib, and Amphora builds.
+A project in a shared cloud does not isolate its Octavia service.
+Do not replace that service or its Amphora images for a controller test.
+
+The [incremental E2E plan](docs/testing-openstack-e2e.md#validate-changes-incrementally) defines the initial live baseline and the checks to repeat for a change.
+Keep exact build inputs and raw evidence under the existing publication policy, and identify unreleased dependencies in the public result summary.
+Development traffic tests can guide upstream reviews but do not establish released compatibility or close the phase gates.
 
 ### Connectivity implementation and validation
 
@@ -217,11 +252,13 @@ Activating scheduled validation still requires an approved dedicated environment
 
 ## Phase 5 - Complete GATEWAY-HTTP conformance
 
-**Status:** Planned, dependent on the Phase 4 designs and resolution of Core API blockers.
+**Status:** Planned, with implementation allowed after each corresponding Phase 4 design is accepted.
+Unreleased Octavia dependencies can be used for development integration under the sequence above, while phase completion remains blocked on the required releases and evidence.
 
 **Milestone:** `v0.5.0`
 
 Phase 5 implements every Core requirement of the pinned GATEWAY-HTTP profile after the corresponding Phase 4 design is validated.
+It does not wait for unrelated Phase 4 work to finish.
 The profile includes Gateway, HTTPRoute, ReferenceGrant, and HTTPS termination.
 Completion requires all Core tests and all tests for declared Extended features to pass.
 Known Core failures, skipped required tests, and setup blockers prevent completion.
@@ -325,6 +362,8 @@ Any additional member mode needs its own compatibility evidence.
 - Certificate creation, rotation, restart recovery, and deletion leave no orphaned Barbican resources.
 - Every reported `supportedFeatures` entry has a matching pinned conformance result.
 - The suite produces an unmodified successful profile report with reproducible instructions and an immutable implementation version.
+- The final run uses the named released Octavia dependencies required by Phase 4.
+  Results from development patches remain integration evidence and must be revalidated on those releases.
 - Any unresolved Core API limitation keeps this phase incomplete.
   Publish the blocker and diagnostic evidence without weakening the completion condition.
 - Experimental backend policies or additional member modes, if shipped, have a separate contract and evidence.

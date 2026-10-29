@@ -36,6 +36,11 @@ The target downloads only the pinned source module and runs a local inventory ch
 An inventory match does not execute conformance tests or declare supported features.
 Use [ADR 0005](design/adr/0005-core-resource-mapping.md) for the proposed mappings and their outstanding verification cases.
 
+During development, follow the [incremental E2E plan](testing-openstack-e2e.md#validate-changes-incrementally) from a working traffic baseline to each implemented feature.
+Select applicable upstream tests once their setup dependencies are met, then test interactions such as route precedence with redirects, invalid shares with weighted backends, and ReferenceGrant revocation with TLS rotation.
+These checks can run before every Phase 4 task is complete.
+Extend the test harness as behavior becomes available rather than assuming the current runner implements these scenarios.
+
 Use the conformance module and Standard CRDs for the same pinned Gateway API release.
 Before a full run:
 
@@ -57,6 +62,10 @@ Record the gaps below to distinguish setup blockers, failures, and tests that ha
 Keep exploratory records local under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication).
 Identify whether the run used an upstream profile or an adapted diagnostic, then record the controller revision, Gateway API version, environment, command, selected profile or tests, feature flags, and original result artifact.
 List fixture changes and setup blockers.
+For tests against unreleased Octavia extensions, retain the exact controller, Octavia, octavia-lib, and Amphora build inputs privately with the run.
+Identify the upstream changes and the dependency on unreleased code in any public summary.
+Do not report that result as compatibility with an unmodified released cloud.
+Rerun affected tests when those dependencies change, and run the complete required profile on the named released dependencies before closing Phase 5.
 
 Summarize passed, failed, skipped, and setup-blocked tests within the selected scope.
 Unselected tests have not run and do not count as skipped or passed.

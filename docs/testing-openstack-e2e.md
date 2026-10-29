@@ -64,6 +64,44 @@ Check these paths separately:
 Kubernetes API access does not imply access to worker NodePorts or a private VIP.
 Run any NodePort diagnostic from the relevant network, then verify the complete path through the VIP.
 
+## Validate changes incrementally
+
+Use a small Phase 4 baseline before extending the live controller graph, then verify each Phase 5 feature as it becomes available.
+Waiting for every Phase 4 exit check would delay independent development.
+Waiting until all Phase 5 code is written would make network failures and controller regressions harder to distinguish.
+Local implementation and tests for an accepted design can proceed while the live environment is being prepared.
+See the [development sequence](../ROADMAP.md#develop-and-verify-one-feature-at-a-time) for design and upstream API prerequisites.
+
+Start with the current revision on an approved existing Octavia environment and one Gateway load balancer.
+Run the [foundation checks](#foundation-checks), including actual HTTP traffic, active ownership, controller restarts, no-op observation, finalization, and the empty cleanup audit.
+Select existing referenced security groups when they are part of the intended configuration.
+In a shared project, use Local traffic policy and a selector for the approved workers, with Floating IP fault scenarios disabled.
+Earlier results establish the baseline only for their recorded revision and environment.
+
+Select subsequent coverage by the boundary being changed:
+
+| Change | Live verification |
+| --- | --- |
+| NodePort member selection or endpoint handling | Add `scenarios.memberTransitions` with two workers to verify traffic and preservation of surviving member and parent resource identities. Local permits an approved shared project run. Cluster requires a dedicated project. |
+| Referenced security or address handling | Add the relevant existing group settings or dedicated-project Floating IP scenarios. Rule repair and quota faults still need a separate reviewed test mechanism. |
+| Service forwarding or certificate ownership | Prove endpoint connectivity or safe Barbican creation and discovery before committing to the new design. These are design experiments, not scenarios supported by the current runner. |
+| A new listener, route, reference, HTTP action, or TLS behavior | Add a reusable E2E scenario with the implementation. Verify requests, status, input changes, affected existing traffic, and cleanup, then run the applicable upstream tests. |
+
+The current runner always executes its foundation checks and selected optional scenarios.
+It cannot run an arbitrary individual check or resume a previous graph.
+Use `memberTransitions` without `localLifecycle` when only the member transition is needed, avoiding the additional class lifecycle.
+Do not repeat unrelated optional profiles after each change, but repeat affected tests when controller code, API dependencies, Amphora builds, or network assumptions change.
+Keep reusable scenarios in the existing E2E suite and temporary API experiments local under the publication policy.
+
+Finish each run and verify cleanup before starting the next.
+Keep at most one test load balancer active unless a case, such as simultaneous topology isolation, has an explicitly approved larger scope.
+Retain failed runs for the documented recovery procedure rather than starting overlapping tests.
+The shared-project restrictions below also apply during Phase 5 development.
+
+Floating IP faults, broader failure injection, topology isolation, and the recurring Cluster and Local profiles remain Phase 4 completion work.
+Their absence does not block independent local work, but remains an explicit evidence gap for the affected behavior.
+After individual features pass, verify their combinations and follow the [conformance guide](testing-conformance.md#prepare-the-suite) for the full profile.
+
 ## Prepare one configuration file
 
 Copy the synthetic example to a private path:
