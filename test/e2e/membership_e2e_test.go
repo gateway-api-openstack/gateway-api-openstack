@@ -38,6 +38,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/auditexec"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 type membershipInventory struct {
@@ -101,6 +102,9 @@ func (s *openStackSuite) verifyWorkerMembershipTransitions(ctx context.Context) 
 }
 
 func (s *openStackSuite) validateMembershipWorkers(ctx context.Context) error {
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
+	}
 	const replicas int32 = 2
 	if s.config.BackendReplicas != replicas || len(s.config.BackendNodeSelector) == 0 {
 		return fmt.Errorf("backend transition requires two replicas and an explicit worker selector")
@@ -119,8 +123,8 @@ func (s *openStackSuite) validateMembershipWorkers(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if s.config.Project.Mode != projectModeDedicated || !maps.Equal(nodes, all) {
-			return fmt.Errorf("Cluster membership transition requires a dedicated project with exactly the two selected eligible workers")
+		if (s.config.Project.Mode != projectModeDedicated && !s.config.Project.AllowSharedNetworkTests) || !maps.Equal(nodes, all) {
+			return fmt.Errorf("Cluster membership transition requires an approved project scope with exactly the two selected eligible workers")
 		}
 	}
 	return nil
@@ -205,6 +209,9 @@ func (s *openStackSuite) scaleBackendAndWait(ctx context.Context, replicas int32
 }
 
 func (s *openStackSuite) scaleBackend(ctx context.Context, replicas int32) error {
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
+	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment, _, err := s.transitionBackendObjects(ctx)
 		if err != nil {

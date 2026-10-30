@@ -138,7 +138,12 @@ func requireOpenStackSuite(t *testing.T, config e2eConfig, report *e2eReport) *o
 func runOpenStackWithCleanup(ctx context.Context, suite *openStackSuite, report *e2eReport) error {
 	runErr := suite.run(ctx)
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), emergencyCleanupLimit)
-	cleanupErr := suite.ensureCleanup(cleanupCtx)
+	var cleanupErr error
+	if runErr != nil {
+		cleanupErr = suite.observeNetworkStage(networkEmergencyCleanup, func() error { return suite.ensureCleanup(cleanupCtx) })
+	} else {
+		cleanupErr = suite.ensureCleanup(cleanupCtx)
+	}
 	cleanupCancel()
 	if cleanupErr == nil {
 		return runErr

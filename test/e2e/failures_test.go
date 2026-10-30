@@ -117,3 +117,45 @@ func TestOwnershipInventoryTimeoutRetainsLastObservation(t *testing.T) {
 		t.Fatalf("timeout summary = %q", got)
 	}
 }
+
+func TestFloatingIPDeletionFailureReportsOnlySafeStageAndCategory(t *testing.T) {
+	cause := fmt.Errorf("secret-token project-id https://private-api.example.test: %w", context.DeadlineExceeded)
+	for _, test := range []struct {
+		stage  floatingIPDeletionStage
+		prefix string
+	}{
+		{stage: floatingIPCloudObservation, prefix: floatingIPCloudFailurePrefix},
+		{stage: floatingIPWorkloadRecovery, prefix: floatingIPWorkloadFailurePrefix},
+	} {
+		config := reportTestConfig(projectModeDedicated)
+		config.FloatingIPDeletion = true
+		report := newE2EReport(time.Now(), config)
+		failure := &floatingIPDeletionFailure{stage: test.stage, cause: cause}
+		err := report.failCheck(checkFloatingIPDeletion, fmt.Errorf("private-operation: %w", failure))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal("stage error lost the original timeout")
+		}
+		encoded, marshalErr := json.Marshal(report)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		for _, output := range []string{err.Error(), string(encoded), string(renderMarkdownReport(report))} {
+			if !strings.Contains(output, test.prefix+checkSummaryTimeout) {
+				t.Fatalf("missing safe failure stage: %s", output)
+			}
+			for _, forbidden := range []string{"secret-token", "project-id", "private-api", "private-operation"} {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("staged failure exposed %q", forbidden)
+				}
+			}
+		}
+		if err := report.setCheck(checkGateway, statusFailed, test.prefix+checkSummaryTimeout); err == nil {
+			t.Fatal("Floating IP deletion stage was accepted for an unrelated check")
+		}
+		for _, summary := range []string{test.prefix + cause.Error(), test.prefix + test.prefix + checkSummaryTimeout} {
+			if err := report.setCheck(checkFloatingIPDeletion, statusFailed, summary); err == nil {
+				t.Fatal("unsafe staged summary was accepted")
+			}
+		}
+	}
+}
