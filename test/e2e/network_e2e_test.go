@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -33,16 +34,36 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/clients"
 	cloudidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/neutron"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/topology"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/cloudauth"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 )
+
+// Cloud graph observations span several API requests. Give them a separate
+// bounded budget instead of the timeout for one HTTP traffic probe.
+const cloudObservationTimeout = time.Minute
+
+func networkObservationProvider(clients openstack.ServiceClients) *openstack.Provider {
+	return openstack.NewProvider(clients, openstack.ProviderConfig{OperationTimeout: cloudObservationTimeout})
+}
+
+func (s *openStackSuite) observeNetworkStage(stage networkStage, check func() error) error {
+	if s.report == nil || s.report.Network == nil {
+		return check()
+	}
+	index := s.report.Network.begin(stage)
+	err := check()
+	s.report.Network.complete(index, err)
+	return err
+}
 
 func (s *openStackSuite) networkClients(ctx context.Context) (*openstack.ServiceClients, error) {
 	if s.cloudClients != nil {
@@ -52,11 +73,16 @@ func (s *openStackSuite) networkClients(ctx context.Context) (*openstack.Service
 	if err != nil {
 		return nil, fmt.Errorf("read controller credential for network checks: %w", err)
 	}
+	var observer clients.RequestObserver
+	if s.report != nil && s.report.Network != nil {
+		observer = s.report.Network
+	}
 	options := cloudauth.Options{CloudName: s.config.Audit.Cloud, Region: s.config.Audit.Region, Microversion: s.config.Audit.Microversion}
 	err = cloudauth.VerifyProjectWithExactCopy(ctx, contents, s.config.Project.ExpectedProjectID, options, func(path string) error {
 		clients, err := openstack.NewServiceClients(ctx, openstack.ClientConfig{
 			CloudsYAMLPath: path, CloudName: options.CloudName, Region: options.Region, Microversion: options.Microversion,
 			APIQPS: openstack.DefaultAPIQPS, APIBurst: openstack.DefaultAPIBurst,
+			RequestObserver: observer,
 		})
 		if err != nil {
 			return err
@@ -89,9 +115,12 @@ func (s *openStackSuite) testGatewayNetwork(ctx context.Context, clients *openst
 	if err != nil {
 		return cloudidentity.Identity{}, cloud.GatewayState{}, cloud.Topology{}, err
 	}
-	provider := openstack.NewProvider(*clients, openstack.ProviderConfig{OperationTimeout: s.config.HTTPTimeout})
+	provider := networkObservationProvider(*clients)
 	result, found, err := provider.GetGateway(ctx, identity.Value())
-	if err != nil || !found || result.Outcome.State != cloud.OutcomeReady {
+	if err != nil {
+		return identity, cloud.GatewayState{}, cloud.Topology{}, fmt.Errorf("observe test Gateway cloud graph: %w", err)
+	}
+	if !found || result.Outcome.State != cloud.OutcomeReady {
 		return identity, cloud.GatewayState{}, cloud.Topology{}, fmt.Errorf("test Gateway cloud graph is not ready for a network check")
 	}
 	return identity, result.State, resolved.Topology, nil
@@ -100,8 +129,11 @@ func (s *openStackSuite) testGatewayNetwork(ctx context.Context, clients *openst
 func (s *openStackSuite) verifyFloatingIPRecovery(ctx context.Context) error {
 	// This flag authorizes one fault against the existing test-owned address.
 	// The suite never allocates another address or changes a shared network.
-	if !s.config.FloatingIPRecovery || s.config.Project.Mode != projectModeDedicated || s.config.Project.ExpectedExternalNetworkID == "" {
+	if !s.config.FloatingIPRecovery || (s.config.Project.Mode != projectModeDedicated && !s.config.Project.AllowSharedNetworkTests) || s.config.Project.ExpectedExternalNetworkID == "" {
 		return fmt.Errorf("owned Floating IP detachment was not selected for this run")
+	}
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
 	}
 	clients, err := s.networkClients(ctx)
 	if err != nil {
@@ -193,8 +225,11 @@ func readTestFloatingIPForFault(ctx context.Context, client *gophercloud.Service
 // verifyFloatingIPDeletion releases the test address before permitting its
 // controller to allocate a replacement. It never retains two addresses at once.
 func (s *openStackSuite) verifyFloatingIPDeletion(ctx context.Context) error {
-	if !s.config.FloatingIPDeletion || s.config.Project.Mode != projectModeDedicated || s.config.Project.ExpectedExternalNetworkID == "" {
+	if !s.config.FloatingIPDeletion || (s.config.Project.Mode != projectModeDedicated && !s.config.Project.AllowSharedNetworkTests) || s.config.Project.ExpectedExternalNetworkID == "" {
 		return fmt.Errorf("owned Floating IP deletion was not selected for this run")
+	}
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
 	}
 	clients, err := s.networkClients(ctx)
 	if err != nil {
@@ -202,7 +237,7 @@ func (s *openStackSuite) verifyFloatingIPDeletion(ctx context.Context) error {
 	}
 	identity, state, resolved, err := s.testGatewayNetwork(ctx, clients)
 	if err != nil {
-		return err
+		return &floatingIPDeletionFailure{stage: floatingIPCloudObservation, cause: err}
 	}
 	if state.FloatingIPID == "" || resolved.ExternalNetworkID != s.config.Project.ExpectedExternalNetworkID {
 		return fmt.Errorf("test Gateway does not have the approved Floating IP network")
@@ -211,37 +246,44 @@ func (s *openStackSuite) verifyFloatingIPDeletion(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := deleteTestFloatingIP(ctx, clients.Network, identity, state, resolved.ExternalNetworkID); err != nil {
-		return err
-	}
-	if _, err := floatingips.Get(ctx, clients.Network, state.FloatingIPID).Extract(); !gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
-		return fmt.Errorf("deleted test Floating IP is not confirmed absent")
-	}
-	provider := openstack.NewProvider(*clients, openstack.ProviderConfig{OperationTimeout: s.config.HTTPTimeout})
-	var replacement cloud.GatewayState
-	if err := wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
-		observed, found, err := provider.GetGateway(ctx, identity.Value())
-		if err != nil {
-			return false, err
+	if err := s.observeNetworkStage(networkDeleteFloatingIP, func() error {
+		if err := deleteTestFloatingIP(ctx, clients.Network, identity, state, resolved.ExternalNetworkID); err != nil {
+			return err
 		}
-		if !found || observed.Outcome.State != cloud.OutcomeReady || observed.State.FloatingIPID == "" {
-			return false, nil
+		if _, err := floatingips.Get(ctx, clients.Network, state.FloatingIPID).Extract(); !gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
+			return fmt.Errorf("deleted test Floating IP is not confirmed absent")
 		}
-		replacement = observed.State
-		if replacement.FloatingIPID == state.FloatingIPID || replacement.LoadBalancerID != state.LoadBalancerID || replacement.ListenerID != state.ListenerID ||
-			replacement.VIPPortID != state.VIPPortID || replacement.VIPAddress != state.VIPAddress {
-			return false, fmt.Errorf("floating IP replacement changed the parent graph or reused the deleted identity")
-		}
-		address, err := floatingips.Get(ctx, clients.Network, replacement.FloatingIPID).Extract()
-		if err != nil {
-			return false, err
-		}
-		return true, validateTestFloatingIP(address, identity, replacement, resolved.ExternalNetworkID)
+		return nil
 	}); err != nil {
-		return fmt.Errorf("wait for Floating IP replacement through periodic observation: %w", err)
-	}
-	if err := s.verifyWorkloadAfterRecovery(ctx); err != nil {
 		return err
+	}
+	provider := networkObservationProvider(*clients)
+	var replacement cloud.GatewayState
+	if err := s.observeNetworkStage(networkObserveReplacement, func() error {
+		return wait.PollUntilContextCancel(ctx, s.config.PollInterval, true, func(ctx context.Context) (bool, error) {
+			observed, found, err := provider.GetGateway(ctx, identity.Value())
+			if err != nil {
+				return false, err
+			}
+			if !found || observed.Outcome.State != cloud.OutcomeReady || observed.State.FloatingIPID == "" {
+				return false, nil
+			}
+			replacement = observed.State
+			if replacement.FloatingIPID == state.FloatingIPID || replacement.LoadBalancerID != state.LoadBalancerID || replacement.ListenerID != state.ListenerID ||
+				replacement.VIPPortID != state.VIPPortID || replacement.VIPAddress != state.VIPAddress {
+				return false, fmt.Errorf("floating IP replacement changed the parent graph or reused the deleted identity")
+			}
+			address, err := floatingips.Get(ctx, clients.Network, replacement.FloatingIPID).Extract()
+			if err != nil {
+				return false, err
+			}
+			return true, validateTestFloatingIP(address, identity, replacement, resolved.ExternalNetworkID)
+		})
+	}); err != nil {
+		return &floatingIPDeletionFailure{stage: floatingIPCloudObservation, cause: err}
+	}
+	if err := s.observeNetworkStage(networkRecoverWorkload, func() error { return s.verifyWorkloadAfterRecovery(ctx) }); err != nil {
+		return &floatingIPDeletionFailure{stage: floatingIPWorkloadRecovery, cause: err}
 	}
 	after, err := s.readOwnershipAudit(ctx, false)
 	if err != nil {
@@ -314,7 +356,7 @@ func (s *openStackSuite) verifyReferencedSecurity(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return topology.NewResolver(*clients, s.config.HTTPTimeout).ValidateGatewaySecurity(ctx, cloud.GatewaySpec{
+	return topology.NewResolver(*clients, cloudObservationTimeout).ValidateGatewaySecurity(ctx, cloud.GatewaySpec{
 		VIPSubnetID: resolved.VIPSubnetID, VIPSecurityGroupIDs: resolved.VIPSecurityGroupIDs, ListenerPort: listenerPort,
 	}, routes)
 }

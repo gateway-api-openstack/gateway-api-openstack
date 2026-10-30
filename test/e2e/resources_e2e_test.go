@@ -40,6 +40,7 @@ import (
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func (s *openStackSuite) createBackend(ctx context.Context) error {
@@ -271,6 +272,9 @@ func (s *openStackSuite) createGateway(ctx context.Context) error {
 }
 
 func (s *openStackSuite) createGatewayForClass(ctx context.Context, className string) error {
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
+	}
 	same := gatewayv1.NamespacesFromSame
 	gateway := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -299,6 +303,9 @@ func (s *openStackSuite) createGatewayForClass(ctx context.Context, className st
 }
 
 func (s *openStackSuite) createHTTPRoute(ctx context.Context) error {
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, s.client, s.config); err != nil {
+		return err
+	}
 	sectionName := gatewayv1.SectionName(listenerName)
 	pathType := gatewayv1.PathMatchPathPrefix
 	path := "/"
