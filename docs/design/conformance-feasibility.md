@@ -40,6 +40,8 @@ With no matching backend or default backend, [HAProxy returns 503](https://docs.
 Neither result satisfies the required 404 or 500.
 
 Resolution requires APIs for the required responses and their ordering relative to route selection and weighted backend selection.
+Configurable REJECT response codes provide only one primitive.
+They do not by themselves establish an unmatched-route fallback, preserve invalid backend shares, or order rejection against forwarding and redirects.
 Do not substitute an empty pool, an arbitrary user backend, or a synthetic error server.
 Adding such a server or editing Amphora directly would change the project's architecture and ownership contract.
 
@@ -56,7 +58,9 @@ These exposed fields do not provide the general mapping that retains an arbitrar
 ## Phase 4 proof cases
 
 API and model checks precede live proofs.
-The first gate is an API that exposes all three blocked behaviors above.
+Each proof depends on the APIs needed for that behavior, not on resolving every blocker above.
+Existing Octavia APIs can support independent proofs while other extensions are under review.
+The [development sequence](../../ROADMAP.md#develop-and-verify-one-feature-at-a-time) separates integration against pinned development builds from phase completion on released dependencies.
 The following primitives inform the proposed mappings in [ADR 0005](adr/0005-core-resource-mapping.md), which defines their verification and acceptance gates.
 
 | Requirement | Octavia constraint |

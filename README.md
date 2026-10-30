@@ -56,7 +56,8 @@ See the [compatibility record](docs/providers/compatibility.md) for completed ch
 Development results do not establish general OpenStack support or Gateway API conformance.
 
 The [roadmap](ROADMAP.md) targets complete GATEWAY-HTTP Core support and all declared Extended features.
-The [feasibility assessment](docs/design/conformance-feasibility.md) records the Octavia API blockers that must be resolved first.
+It allows feature implementation and traffic validation to proceed alongside Octavia development after the corresponding design is accepted.
+The [feasibility assessment](docs/design/conformance-feasibility.md) records the API blockers for individual features.
 The [conformance guide](docs/testing-conformance.md) describes the required suite and reporting workflow.
 
 ## Getting started

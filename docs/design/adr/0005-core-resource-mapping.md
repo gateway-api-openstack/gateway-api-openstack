@@ -6,9 +6,10 @@ Date: 2026-10-23
 
 ## Context
 
-Phase 4 prepares the designs for the pinned GATEWAY-HTTP profile before Phase 5 implements them.
+Phase 4 prepares each design for the pinned GATEWAY-HTTP profile before its corresponding Phase 5 implementation.
 This proposal records the candidate mappings, their verification cases, and the decisions that still depend on cloud evidence or upstream APIs.
 It does not authorize a new member mode, resource identity, certificate writer, or public capability claim.
+Independently settled parts can be accepted in focused ADRs without accepting every candidate in this proposal.
 
 The [feasibility assessment](../conformance-feasibility.md) is the source record for Octavia limitations.
 The [Core inventory](../../../test/design/core-mapping.json) assigns every pinned upstream Core test to a requirement group.
@@ -109,7 +110,10 @@ Before enabling a certificate writer, select and verify a mechanism that survive
 
 Keep API availability, environmental connectivity, and conformance evidence separate.
 The current Octavia and Neutron capability checks continue to govern the implemented network modes under ADR 0004.
-Future Core actions need a named released Octavia version and explicit checks for the required APIs.
+Future Core actions need explicit checks for the required APIs.
+Support claims and phase completion additionally require named released Octavia versions.
+Development integration may use pinned upstream patches under the [roadmap sequence](../../../ROADMAP.md#develop-and-verify-one-feature-at-a-time) once the corresponding scoped design is accepted.
+That design must identify the provisional API contract, capability checks, and tests to revisit when the upstream API changes.
 Do not assign speculative microversions or enable features from a provider name alone.
 Certificate support additionally requires the accepted Barbican ownership mechanism and the corresponding project permissions.
 Unknown capability blocks new programming but does not authorize deleting an existing graph or prevent validated cleanup.
@@ -122,8 +126,8 @@ Acceptance of this proposal requires the following evidence:
 | Gateway status | Reviewed mapping of accepted, rejected, pending, partial, and cleanup outcomes to the pinned conditions and observed generations. |
 | Service forwarding | Port and family resolution tests, plus the approved endpoint reachability experiments above. |
 | Listeners and routing | Deterministic compiler cases and API proofs for grouping, attachment, ordering, partial validity, and cleanup. |
-| Backend selection and errors | A selected mapping that covers endpoint counts, health changes, invalid shares, and the released HTTP response actions. |
-| HTTP filters | Released request-header and redirect APIs with the required scope and ordering. |
+| Backend selection and errors | A selected mapping with API and traffic proofs for endpoint counts, health changes, invalid shares, and the required HTTP response actions. |
+| HTTP filters | API and traffic proofs for request-header and redirect operations with the required scope and ordering. |
 | Backend ReferenceGrants | Authorization and revocation tests that preserve unrelated routes and reject stale permissions before mutation. |
 | Certificates | Secret validation, SNI, revocation, and rotation cases, plus an ownership mechanism verified across lost responses and process restarts. |
 
@@ -131,5 +135,7 @@ Acceptance of this proposal requires the following evidence:
 
 Phase 4 local tests can expose incorrect candidates and protect current behavior without adding an unused parallel controller.
 The proposed mappings remain separate from the implemented NodePort contract.
-Live design experiments and the named upstream releases are still needed before this ADR can be accepted and Phase 4 can close.
-Phase 5 then implements the accepted mappings and runs all Core tests and every declared Extended test.
+Scoped acceptance requires the applicable design proofs above and records any unreleased dependencies.
+It does not accept unrelated mappings or close Phase 4, which still requires the named upstream releases and outstanding live evidence.
+Phase 5 implements accepted mappings incrementally and verifies actual traffic for each feature and its combinations.
+Its completion still requires all Core tests and every declared Extended test on the released dependencies.
