@@ -13,6 +13,8 @@ openstack:
   dedicatedForE2E: true
   # For a shared project, set projectMode to shared, remove dedicatedForE2E,
   # and add acceptProjectWideCredentialRisk: true.
+  # Shared Cluster and Floating IP faults also require allowSharedNetworkTests: true
+  # and backend.expectedWorkers, as described in docs/testing-openstack-e2e.md.
   expectedProjectID: "00000000000000000000000000000000"
   cloud: openstack-e2e
   region: RegionOne
@@ -46,11 +48,13 @@ backend:
 # scenarios:
 #   localLifecycle: true
 # Member transitions alone require two replicas, a Node selector, and both identity fields.
-# Cluster additionally requires a dedicated project with exactly two eligible workers.
+# Cluster requires exactly two eligible workers and either a dedicated project
+# or the shared network test opt-in with pinned worker identities.
 # scenarios:
 #   memberTransitions: true
 # To approve one detachment of this run's own Floating IP, select the scenario below.
-# It requires a dedicated project, an externalNetworkID, both Kubernetes identity fields, and Neutron revision extensions.
+# It requires an externalNetworkID, both cluster identity fields, Neutron revision
+# extensions, and either a dedicated project or the shared network test opt-in.
 # It reuses the initial Gateway graph and cannot be combined with localLifecycle.
 # scenarios:
 #   floatingIPRecovery: true

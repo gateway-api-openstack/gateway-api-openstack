@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
+	"github.com/gateway-api-openstack/gateway-api-openstack/test/e2e/internal/runconfig"
 )
 
 func TestMembershipWorkersRejectUnselectedClusterMembers(t *testing.T) {
@@ -404,4 +406,70 @@ func membershipPodAndEndpoints(suite *openStackSuite, service *corev1.Service) (
 		}},
 	}
 	return pod, endpoints
+}
+
+// A changed Node must stop fixture and fault mutations before the test reads
+// credentials or calls an OpenStack client.
+func TestSharedNetworkMutationsRecheckApprovedWorkers(t *testing.T) {
+	for _, operation := range []string{"Gateway", "HTTPRoute", "backend scale", "FIP detach", "FIP delete"} {
+		t.Run(operation, func(t *testing.T) {
+			suite := sharedNetworkTestSuite(t)
+			var worker corev1.Node
+			if err := suite.client.Get(t.Context(), client.ObjectKey{Name: "worker-a"}, &worker); err != nil {
+				t.Fatal(err)
+			}
+			worker.Spec.ProviderID = "openstack:///replacement"
+			if err := suite.client.Update(t.Context(), &worker); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch operation {
+			case "Gateway":
+				err = suite.createGateway(t.Context())
+			case "HTTPRoute":
+				err = suite.createHTTPRoute(t.Context())
+			case "backend scale":
+				err = suite.scaleBackend(t.Context(), 1)
+			case "FIP detach":
+				err = suite.verifyFloatingIPRecovery(t.Context())
+			case "FIP delete":
+				err = suite.verifyFloatingIPDeletion(t.Context())
+			}
+			if err == nil || !strings.Contains(err.Error(), "worker identity") {
+				t.Fatalf("mutation did not stop at the worker identity fence: %v", err)
+			}
+			if suite.cloudClients != nil || suite.createdGateway || suite.createdRoute {
+				t.Fatal("changed worker profile reached cloud authentication or fixture creation")
+			}
+		})
+	}
+}
+
+func TestSharedClusterMembershipAcceptsApprovedWorkers(t *testing.T) {
+	suite := sharedNetworkTestSuite(t)
+	if err := suite.validateMembershipWorkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sharedNetworkTestSuite(t *testing.T) *openStackSuite {
+	t.Helper()
+	workers := []runconfig.WorkerIdentity{
+		{Name: "worker-a", UID: "worker-a-uid", ProviderID: "openstack:///server-a"},
+		{Name: "worker-b", UID: "worker-b-uid", ProviderID: "openstack:///server-b"},
+	}
+	objects := []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}}}
+	for _, identity := range workers {
+		node := selectedBackendTestNode(identity.Name)
+		node.UID, node.Spec.ProviderID = types.UID(identity.UID), identity.ProviderID
+		objects = append(objects, node)
+	}
+	suite := selectedBackendTestSuite(t, objects...)
+	suite.config.ExpectedAPIServer, suite.config.ExpectedClusterUID = "https://api.example.test:6443", "cluster-uid"
+	suite.config.Project.Mode, suite.config.Project.AllowSharedNetworkTests = projectModeShared, true
+	suite.config.Project.ExpectedExternalNetworkID = "external-network"
+	suite.config.ExpectedWorkers = workers
+	suite.config.BackendExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
+	suite.config.MemberTransitions, suite.config.FloatingIPRecovery, suite.config.FloatingIPDeletion = true, true, true
+	return suite
 }
