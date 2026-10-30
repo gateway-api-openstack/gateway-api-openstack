@@ -156,6 +156,7 @@ type e2eReport struct {
 	ControllerRevision    string              `json:"controllerRevision"`
 	ControllerImageDigest string              `json:"controllerImageDigest"`
 	ProjectMode           projectMode         `json:"projectMode"`
+	SharedNetworkTests    bool                `json:"sharedNetworkTests"`
 	RestartMode           string              `json:"restartMode"`
 	Backend               backendEvidence     `json:"backend"`
 	LocalLifecycle        bool                `json:"localLifecycle"`
@@ -167,6 +168,7 @@ type e2eReport struct {
 	Checks                []checkResult       `json:"checks"`
 	Audit                 *auditEvidence      `json:"audit,omitempty"`
 	Metrics               *metricsEvidence    `json:"metrics,omitempty"`
+	Network               *networkEvidence    `json:"network,omitempty"`
 }
 
 func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
@@ -179,6 +181,7 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 		ControllerRevision:    config.ControllerRevision,
 		ControllerImageDigest: config.ControllerImageDigest,
 		ProjectMode:           config.Project.Mode,
+		SharedNetworkTests:    config.Project.AllowSharedNetworkTests,
 		RestartMode:           config.RestartMode,
 		LocalLifecycle:        config.LocalLifecycle,
 		FloatingIPRecovery:    config.FloatingIPRecovery,
@@ -191,6 +194,9 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 			NodeSelectorConfigured: len(config.BackendNodeSelector) != 0,
 		},
 		requiredChecks: configuredChecks(config),
+	}
+	if config.FloatingIPRecovery || config.FloatingIPDeletion {
+		report.Network = &networkEvidence{Stages: []networkStageEvidence{}, Requests: []networkRequestEvidence{}}
 	}
 	for _, name := range report.requiredChecks {
 		report.Checks = append(report.Checks, checkResult{Name: name, Status: statusNotRun, Summary: "The check was not executed"})
@@ -214,7 +220,7 @@ func (r *e2eReport) setCheck(name string, status checkStatus, summary string) er
 	if !validCheckStatus(status) {
 		return fmt.Errorf("unsupported check status %q", status)
 	}
-	if !validCheckSummary(summary) {
+	if !validCheckSummary(name, summary) {
 		return fmt.Errorf("check summary must use a fixed redacted value")
 	}
 	for index := range r.Checks {
@@ -227,7 +233,15 @@ func (r *e2eReport) setCheck(name string, status checkStatus, summary string) er
 	return fmt.Errorf("unknown report check %q", name)
 }
 
-func validCheckSummary(summary string) bool {
+func validCheckSummary(name, summary string) bool {
+	if name == checkFloatingIPDeletion {
+		for _, prefix := range []string{floatingIPCloudFailurePrefix, floatingIPWorkloadFailurePrefix} {
+			if remaining, found := strings.CutPrefix(summary, prefix); found {
+				summary = remaining
+				break
+			}
+		}
+	}
 	switch summary {
 	case checkSummaryPassed, checkSummaryFailed, checkSummaryFaultNotConfigured,
 		checkSummaryAuthentication, checkSummaryAuthorization, checkSummaryRateLimit,
