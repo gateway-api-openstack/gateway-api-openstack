@@ -60,6 +60,7 @@ type Runtime struct {
 	BackendReplicas              int32                               `json:"backendReplicas"`
 	BackendExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"backendExternalTrafficPolicy"`
 	BackendNodeSelector          map[string]string                   `json:"backendNodeSelector,omitempty"`
+	ExpectedWorkers              []WorkerIdentity                    `json:"expectedWorkers,omitempty"`
 	ArtifactDirectory            string                              `json:"artifactDirectory"`
 	RestartMode                  string                              `json:"restartMode"`
 	Timeout                      time.Duration                       `json:"timeout"`
@@ -76,6 +77,7 @@ type Runtime struct {
 // Project is the resolved OpenStack project and network contract.
 type Project struct {
 	Mode                      ProjectMode `json:"mode"`
+	AllowSharedNetworkTests   bool        `json:"allowSharedNetworkTests,omitempty"`
 	ExpectedProjectID         string      `json:"expectedProjectID"`
 	ExpectedVIPSubnetID       string      `json:"expectedVIPSubnetID"`
 	ExpectedMemberSubnetID    string      `json:"expectedMemberSubnetID"`
@@ -109,6 +111,7 @@ func (c Runtime) Validate() error {
 		c.validateLocalLifecycle,
 		c.validateMemberTransitions,
 		c.validateNetworkScenarios,
+		c.validateSharedNetworkTests,
 	} {
 		if err := validate(); err != nil {
 			return err
@@ -141,8 +144,8 @@ func (c Runtime) validateNetworkScenarios() error {
 	if (c.FloatingIPRecovery || c.FloatingIPDeletion) && (c.Project.ExpectedExternalNetworkID == "" || c.ExpectedAPIServer == "" || c.ExpectedClusterUID == "") {
 		return fmt.Errorf("floating IP fault scenarios require Floating IP allocation and exact Kubernetes cluster identity")
 	}
-	if (c.FloatingIPRecovery || c.FloatingIPDeletion) && c.Project.Mode != ProjectModeDedicated {
-		return fmt.Errorf("floating IP fault scenarios require a dedicated OpenStack project")
+	if (c.FloatingIPRecovery || c.FloatingIPDeletion) && c.Project.Mode != ProjectModeDedicated && !c.Project.AllowSharedNetworkTests {
+		return fmt.Errorf("floating IP fault scenarios require a dedicated project or explicit shared network test approval")
 	}
 	return nil
 }
@@ -215,7 +218,7 @@ func (c Runtime) validateArtifacts() error {
 	if c.BackendReplicas != 1 && c.BackendReplicas != 2 {
 		return fmt.Errorf("backend.replicas must be 1 or 2")
 	}
-	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector, c.Project.Mode)
+	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector, c.Project.Mode, c.Project.AllowSharedNetworkTests)
 }
 
 func (c Runtime) validateLocalLifecycle() error {

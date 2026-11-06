@@ -111,6 +111,7 @@ type OpenStack struct {
 	ProjectMode                     ProjectMode `json:"projectMode"`
 	DedicatedForE2E                 bool        `json:"dedicatedForE2E,omitempty"`
 	AcceptProjectWideCredentialRisk bool        `json:"acceptProjectWideCredentialRisk,omitempty"`
+	AllowSharedNetworkTests         bool        `json:"allowSharedNetworkTests,omitempty"`
 	ExpectedProjectID               string      `json:"expectedProjectID"`
 	Cloud                           string      `json:"cloud"`
 	Region                          string      `json:"region"`
@@ -137,6 +138,14 @@ type Backend struct {
 	Replicas              int32                               `json:"replicas,omitempty"`
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
 	NodeSelector          map[string]string                   `json:"nodeSelector,omitempty"`
+	ExpectedWorkers       []WorkerIdentity                    `json:"expectedWorkers,omitempty"`
+}
+
+// WorkerIdentity pins an existing Node and its OpenStack server for a shared run.
+type WorkerIdentity struct {
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	ProviderID string `json:"providerID"`
 }
 
 // Artifacts selects the parent directory for run evidence.
@@ -254,6 +263,7 @@ func newRuntime(
 		BackendReplicas:              backendReplicas(config.Backend.Replicas),
 		BackendExternalTrafficPolicy: backendTrafficPolicy(config.Backend.ExternalTrafficPolicy),
 		BackendNodeSelector:          maps.Clone(config.Backend.NodeSelector),
+		ExpectedWorkers:              slices.Clone(config.Backend.ExpectedWorkers),
 		ArtifactDirectory:            filepath.Join(filepath.Clean(artifacts.artifactsRoot), identity.runID),
 		RestartMode:                  defaultRestartMode,
 		Timeout:                      defaultTimeout,
@@ -265,6 +275,7 @@ func newRuntime(
 		ClusterRoleBindingName:       identity.identity + "-controller",
 		Project: Project{
 			Mode:                      config.OpenStack.ProjectMode,
+			AllowSharedNetworkTests:   config.OpenStack.AllowSharedNetworkTests,
 			ExpectedProjectID:         strings.TrimSpace(config.OpenStack.ExpectedProjectID),
 			ExpectedVIPSubnetID:       strings.TrimSpace(config.OpenStack.VIPSubnetID),
 			ExpectedMemberSubnetID:    strings.TrimSpace(config.OpenStack.MemberSubnetID),
@@ -320,7 +331,7 @@ func validateFilePolicy(config File) error {
 	if err := validateProjectAcknowledgement(config.OpenStack); err != nil {
 		return err
 	}
-	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector, config.OpenStack.ProjectMode); err != nil {
+	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector, config.OpenStack.ProjectMode, config.OpenStack.AllowSharedNetworkTests); err != nil {
 		return err
 	}
 	for _, item := range []struct {
@@ -355,11 +366,11 @@ func backendReplicas(replicas int32) int32 {
 	return replicas
 }
 
-func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string, mode ProjectMode) error {
+func validateBackendProfile(policy corev1.ServiceExternalTrafficPolicy, selector map[string]string, mode ProjectMode, allowSharedNetworkTests bool) error {
 	if policy != corev1.ServiceExternalTrafficPolicyCluster && policy != corev1.ServiceExternalTrafficPolicyLocal {
 		return fmt.Errorf("backend.externalTrafficPolicy must be Cluster or Local")
 	}
-	if len(selector) != 0 && policy != corev1.ServiceExternalTrafficPolicyLocal && mode != ProjectModeDedicated {
+	if len(selector) != 0 && policy != corev1.ServiceExternalTrafficPolicyLocal && mode != ProjectModeDedicated && !allowSharedNetworkTests {
 		return fmt.Errorf("backend.nodeSelector requires Local traffic policy in a shared project to restrict member selection")
 	}
 	for key, value := range selector {

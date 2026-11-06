@@ -26,10 +26,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 	cloudidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
@@ -127,7 +129,7 @@ func (transport networkTestTransport) RoundTrip(request *http.Request) (*http.Re
 	return result, nil
 }
 
-func TestFloatingIPRecoveryRequiresDedicatedFaultSelection(t *testing.T) {
+func TestFloatingIPRecoveryRequiresApprovedFaultSelection(t *testing.T) {
 	shared := reportTestConfig(projectModeShared)
 	shared.FloatingIPRecovery = true
 	shared.Project.ExpectedExternalNetworkID = "external-network"
@@ -143,7 +145,7 @@ func TestFloatingIPRecoveryRequiresDedicatedFaultSelection(t *testing.T) {
 	}
 }
 
-func TestFloatingIPDeletionRequiresDedicatedFaultSelection(t *testing.T) {
+func TestFloatingIPDeletionRequiresApprovedFaultSelection(t *testing.T) {
 	shared := reportTestConfig(projectModeShared)
 	shared.FloatingIPDeletion = true
 	shared.Project.ExpectedExternalNetworkID = "external-network"
@@ -219,5 +221,46 @@ func TestFloatingIPReplacementPreservesEveryOtherResource(t *testing.T) {
 				t.Fatalf("inventory validation = %v", err)
 			}
 		})
+	}
+}
+
+func TestCloudObservationBudgetPreservesEarlierCancellationDeadline(t *testing.T) {
+	identity := cloud.Identity{OpenStackProjectID: "project-a", ClusterID: "cluster-a", Controller: "example.test/e2e", GatewayNamespace: "e2e", GatewayName: "edge", GatewayUID: "gateway-uid"}
+	for _, parentBudget := range []time.Duration{0, 5 * time.Second} {
+		ctx := t.Context()
+		var parentDeadline time.Time
+		if parentBudget > 0 {
+			limited, cancel := context.WithTimeout(ctx, parentBudget)
+			defer cancel()
+			ctx = limited
+			parentDeadline, _ = ctx.Deadline()
+		}
+		requests := 0
+		handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			requests++
+			if request.Method != http.MethodGet || request.URL.Path != "/lbaas/loadbalancers" {
+				t.Errorf("unexpected observation request: %s %s", request.Method, request.URL.Path)
+			}
+			deadline, present := request.Context().Deadline()
+			if !present {
+				t.Error("cloud observation has no deadline")
+			}
+			if parentBudget == 0 {
+				remaining := time.Until(deadline)
+				if remaining <= 10*time.Second || remaining > cloudObservationTimeout {
+					t.Errorf("cloud observation reused the single-request HTTP budget: %s", remaining)
+				}
+			} else if !deadline.Equal(parentDeadline) {
+				t.Error("cloud observation extended its parent's earlier deadline")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"loadbalancers":[]}`))
+		})
+		service := &gophercloud.ServiceClient{ProviderClient: &gophercloud.ProviderClient{HTTPClient: http.Client{Transport: networkTestTransport{handler}}}, Endpoint: "http://octavia.test/"}
+		provider := networkObservationProvider(openstack.ServiceClients{LoadBalancer: service, Network: service, ProjectID: identity.OpenStackProjectID})
+		_, found, err := provider.GetGateway(ctx, identity)
+		if err != nil || found || requests != 1 {
+			t.Fatalf("read-only observation = found %t, err %v, requests %d", found, err, requests)
+		}
 	}
 }

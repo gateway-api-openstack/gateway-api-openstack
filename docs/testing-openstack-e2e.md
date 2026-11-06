@@ -75,15 +75,16 @@ See the [development sequence](../ROADMAP.md#develop-and-verify-one-feature-at-a
 Start with the current revision on an approved existing Octavia environment and one Gateway load balancer.
 Run the [foundation checks](#foundation-checks), including actual HTTP traffic, active ownership, controller restarts, no-op observation, finalization, and the empty cleanup audit.
 Select existing referenced security groups when they are part of the intended configuration.
-In a shared project, use Local traffic policy and a selector for the approved workers, with Floating IP fault scenarios disabled.
+The default shared project profile uses Local traffic policy and a selector for the approved workers.
+Use the [shared network test opt-in](#allow-network-checks-in-a-shared-project) for Cluster member transitions or owned Floating IP faults.
 Earlier results establish the baseline only for their recorded revision and environment.
 
 Select subsequent coverage by the boundary being changed:
 
 | Change | Live verification |
 | --- | --- |
-| NodePort member selection or endpoint handling | Add `scenarios.memberTransitions` with two workers to verify traffic and preservation of surviving member and parent resource identities. Local permits an approved shared project run. Cluster requires a dedicated project. |
-| Referenced security or address handling | Add the relevant existing group settings or dedicated-project Floating IP scenarios. Rule repair and quota faults still need a separate reviewed test mechanism. |
+| NodePort member selection or endpoint handling | Add `scenarios.memberTransitions` with two workers to verify traffic and preservation of surviving member and parent resource identities. Local permits an approved shared project run. Shared Cluster runs require the network test opt-in and two pinned workers. |
+| Referenced security or address handling | Add the relevant existing group settings or explicitly approved Floating IP scenarios. Rule repair and quota faults still need a separate reviewed test mechanism. |
 | Service forwarding or certificate ownership | Prove endpoint connectivity or safe Barbican creation and discovery before committing to the new design. These are design experiments, not scenarios supported by the current runner. |
 | A new listener, route, reference, HTTP action, or TLS behavior | Add a reusable E2E scenario with the implementation. Verify requests, status, input changes, affected existing traffic, and cleanup, then run the applicable upstream tests. |
 
@@ -143,8 +144,43 @@ They state what the operator has checked and do not change Keystone permissions.
 Both modes still require the dedicated Kubernetes cluster acknowledgement.
 
 Shared mode narrows the controller and audit to a unique logical identity, but the credential can still consume project quota, use Octavia and Neutron API capacity, allocate a Floating IP, and reach anything its roles permit.
-Do not run load tests, quota exhaustion, OpenStack fault injection, security group changes, or destructive cloud recovery cases in a shared project.
+Do not run load tests, quota exhaustion, security group changes, or faults against unrelated cloud resources in a shared project.
+Owned Floating IP faults require the additional opt-in below.
 Keep the run within the approved Gateway graph and use existing network and worker access rules.
+
+### Allow network checks in a shared project
+
+Set `openstack.allowSharedNetworkTests: true` only after approving one Gateway graph and any selected Floating IP faults.
+This opt-in requires Cluster traffic policy, `scenarios.memberTransitions: true`, two backend replicas, an explicit Node selector, both cluster identity fields, and `scenarios.localLifecycle: false`.
+Record the two approved Nodes in `backend.expectedWorkers`:
+
+```yaml
+backend:
+  externalTrafficPolicy: Cluster
+  replicas: 2
+  nodeSelector:
+    e2e.example.test/backend: "true"
+  expectedWorkers:
+    - name: worker-a
+      uid: 11111111-1111-4111-8111-111111111111
+      providerID: openstack:///33333333-3333-4333-8333-333333333333
+    - name: worker-b
+      uid: 22222222-2222-4222-8222-222222222222
+      providerID: openstack:///44444444-4444-4444-8444-444444444444
+```
+
+Use current Node values in the private configuration.
+The runner verifies these identities before installation and before provisioning or fault injection.
+An additional worker that is not excluded from load balancers rejects the run, even if it is unready or unschedulable.
+These checks observe the cluster but do not lock it or change controller member selection.
+Keep autoscaling and other worker changes inactive throughout the run.
+
+The suite uses one load balancer and at most one Floating IP at a time.
+Selecting address deletion allocates two addresses in total because the original address is deleted before its replacement.
+Both faults validate the address's immutable ownership and VIP association immediately before a revision-conditional Neutron mutation.
+Existing networks, routers, worker security groups, and unrelated addresses remain outside the test's mutation scope.
+Check quota headroom and connectivity before execution, and keep the inventory and cleanup audit private.
+Recurring Cluster and Local validation still requires a dedicated project.
 
 ### Set the project and network inputs
 
@@ -171,12 +207,11 @@ It never changes group rules or worker associations, including in shared project
 See the [security configuration requirements](reference/class-configuration.md#security-groups) before selecting these checks.
 
 `scenarios.floatingIPRecovery: true` opts into one conditional detachment of the suite's existing Floating IP.
-It requires `openstack.projectMode: dedicated`, an external network, and the exact cluster identity checks.
+It requires an external network, exact cluster identity checks, and either a dedicated project or the shared network test opt-in.
 The scenario verifies the same Floating IP ID, address, and VIP association after recovery, then requires successful HTTP traffic and unchanged ownership inventory.
 It does not create an additional address or load balancer.
-Shared project mode rejects this scenario.
 
-`scenarios.floatingIPDeletion: true` uses the same dedicated-project and cluster identity requirements.
+`scenarios.floatingIPDeletion: true` uses the same project and cluster identity requirements.
 It conditionally deletes only the run's owned, attached address and confirms its absence before observing a replacement.
 The controller must recover through periodic observation without a Kubernetes spec edit, restore HTTP traffic, and preserve every other cloud resource ID.
 The scenario replaces one address on the existing load balancer and does not retain two addresses at once.
@@ -228,7 +263,7 @@ backend:
 
 Replace the example label with one applied only to the intended worker Nodes, and keep those labels stable throughout the run.
 The runner reads Node labels but does not change them.
-Shared project mode requires Local traffic policy when a selector is set.
+Shared project mode requires Local traffic policy unless the network test opt-in is enabled.
 Dedicated mode also allows Cluster, but Pod placement alone does not restrict its cloud members.
 
 The suite requires at least as many matching Ready, schedulable worker Nodes as `backend.replicas` before it creates the backend.
@@ -281,7 +316,7 @@ It does not test simultaneous Gateways on different topologies.
 Set `scenarios.memberTransitions: true` to run the two-worker transition without the additional class lifecycles.
 Use two backend replicas, a Node selector matching exactly two eligible workers, and both cluster identity fields.
 Local supports either project mode.
-Cluster requires a dedicated project, and the selected workers must be exactly the cluster's two eligible workers.
+Cluster requires a dedicated project or the shared network test opt-in, and the selected workers must be exactly the cluster's two eligible workers.
 The runner checks this before creating a Gateway graph.
 
 The scenario scales backend replicas from two to one and back.

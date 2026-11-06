@@ -248,6 +248,9 @@ func newKubernetesClient(config resolvedConfig) (client.Client, error) {
 }
 
 func preflightKubernetes(ctx context.Context, kubeClient client.Client, config resolvedConfig) error {
+	if err := runconfig.RequireSharedNetworkWorkers(ctx, kubeClient, config); err != nil {
+		return err
+	}
 	if err := runconfig.RequireClusterIdentity(ctx, kubeClient, config); err != nil {
 		return err
 	}

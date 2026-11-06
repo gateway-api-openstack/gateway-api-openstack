@@ -59,6 +59,36 @@ type checkFailure struct {
 func (e *checkFailure) Error() string { return fmt.Sprintf("%s: %s", e.name, failureSummary(e.cause)) }
 func (e *checkFailure) Unwrap() error { return e.cause }
 
+type floatingIPDeletionStage uint8
+
+const (
+	floatingIPCloudObservation floatingIPDeletionStage = iota
+	floatingIPWorkloadRecovery
+
+	floatingIPCloudFailurePrefix    = "Floating IP cloud observation: "
+	floatingIPWorkloadFailurePrefix = "Gateway and HTTP recovery after Floating IP replacement: "
+)
+
+// floatingIPDeletionFailure preserves the failing stage without exposing a
+// cloud request, resource identifier, or raw error in the public report.
+type floatingIPDeletionFailure struct {
+	stage floatingIPDeletionStage
+	cause error
+}
+
+func (e *floatingIPDeletionFailure) Error() string {
+	prefix := ""
+	switch e.stage {
+	case floatingIPCloudObservation:
+		prefix = floatingIPCloudFailurePrefix
+	case floatingIPWorkloadRecovery:
+		prefix = floatingIPWorkloadFailurePrefix
+	}
+	return prefix + failureSummary(e.cause)
+}
+
+func (e *floatingIPDeletionFailure) Unwrap() error { return e.cause }
+
 func (r *e2eReport) failCheck(name string, err error) error {
 	if setErr := r.setCheck(name, statusFailed, failureSummary(err)); setErr != nil {
 		panic(setErr)
@@ -67,6 +97,10 @@ func (r *e2eReport) failCheck(name string, err error) error {
 }
 
 func failureSummary(err error) string {
+	var deletion *floatingIPDeletionFailure
+	if errors.As(err, &deletion) {
+		return deletion.Error()
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) && inventoryPending(err):
 		return checkSummaryInventoryTimeout
