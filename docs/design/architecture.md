@@ -136,6 +136,18 @@ Deletion checks ownership and follows reverse dependency order.
 Already absent owned resources count as deleted.
 The controller never uses an unvalidated cascade.
 
+### Logical HTTP model
+
+`internal/controller/model` compiles supplied Kubernetes observations without API calls or cloud mutations.
+It retains logical listeners, parent attachments, ordered HTTP matches, source object revisions, and Service backend groups with their weights and endpoint observations.
+Invalid references and unsupported rules remain explicit diagnostics, so a consumer cannot discard their traffic shares or silently forward their requests to a broader route.
+Endpoint conditions describe Kubernetes observations, not Amphora health or network reachability.
+
+The current NodePort path uses the model's normalized match and selected Service port, reusing the same EndpointSlice observation for worker selection.
+The compiler can evaluate multiple HTTP listeners, routes, parents, and backend groups in local tests, while the deployed path retains the current profile's restrictions.
+Enabling those configurations still requires the physical mappings, complete live inventory, and durable parent bindings described in [ADR 0005](adr/0005-core-resource-mapping.md).
+The compiler does not assign cloud resource identities, choose a pool layout, or authorize cleanup.
+
 ### One writer for each Gateway
 
 [ADR 0001](adr/0001-gateway-graph-writer.md) defines the implemented shared writer.

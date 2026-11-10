@@ -48,6 +48,14 @@ func nodePortForBackend(service *corev1.Service, port int32) (*corev1.ServicePor
 }
 
 func nodePortMembersFromReader(ctx context.Context, reader client.Reader, service *corev1.Service, servicePort *corev1.ServicePort, addressType corev1.NodeAddressType) ([]cloud.Member, error) {
+	slices, err := backendEndpointSlices(ctx, reader, service)
+	if err != nil {
+		return nil, err
+	}
+	return nodePortMembersFromSlices(ctx, reader, service, servicePort, addressType, slices)
+}
+
+func backendEndpointSlices(ctx context.Context, reader client.Reader, service *corev1.Service) ([]discoveryv1.EndpointSlice, error) {
 	var slices discoveryv1.EndpointSliceList
 	if err := reader.List(
 		ctx,
@@ -57,7 +65,13 @@ func nodePortMembersFromReader(ctx context.Context, reader client.Reader, servic
 	); err != nil {
 		return nil, fmt.Errorf("list backend EndpointSlices: %w", err)
 	}
-	localNodes, err := readyBackendNodes(service, servicePort, slices.Items)
+	return slices.Items, nil
+}
+
+// nodePortMembersFromSlices uses the same endpoint observation as the logical
+// model while retaining the existing NodePort transport and worker selection.
+func nodePortMembersFromSlices(ctx context.Context, reader client.Reader, service *corev1.Service, servicePort *corev1.ServicePort, addressType corev1.NodeAddressType, slices []discoveryv1.EndpointSlice) ([]cloud.Member, error) {
+	localNodes, err := readyBackendNodes(service, servicePort, slices)
 	if err != nil {
 		return nil, err
 	}

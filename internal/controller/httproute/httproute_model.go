@@ -29,6 +29,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 type routeErrorKind string
@@ -54,78 +55,65 @@ func newRouteBuildError(kind routeErrorKind, format string, args ...any) error {
 	return &routeBuildError{kind: kind, message: fmt.Sprintf(format, args...)}
 }
 
-// routeStructure contains the supported HTTPRoute fields before resolving backends.
-type routeStructure struct {
-	hostname  string
-	pathType  cloud.PathMatchType
-	pathValue string
-	backend   gatewayv1.BackendObjectReference
-}
-
 func structurallySupportedRoute(route *gatewayv1.HTTPRoute) bool {
 	if len(route.Spec.ParentRefs) != 1 {
 		return false
 	}
-	_, err := parseRouteStructure(route)
+	_, err := validateNodePortRoute(route)
 	return err == nil
 }
 
-func parseRouteStructure(route *gatewayv1.HTTPRoute) (routeStructure, error) {
+// validateNodePortRoute limits programming to the existing Octavia mapping.
+// The logical compiler can represent a wider configuration without enabling it.
+func validateNodePortRoute(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObjectReference, error) {
 	if len(route.Spec.Hostnames) > 1 {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
 	}
-	hostname := ""
-	if len(route.Spec.Hostnames) == 1 {
-		hostname = string(route.Spec.Hostnames[0])
-		if strings.HasPrefix(hostname, "*.") {
-			return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
-		}
+	if len(route.Spec.Hostnames) == 1 && strings.HasPrefix(string(route.Spec.Hostnames[0]), "*.") {
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
 	}
 	if len(route.Spec.Rules) != 1 {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
 	}
 	rule := route.Spec.Rules[0]
 	if rule.Name != nil || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "named rules, timeouts, retries, and session persistence are not supported")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "named rules, timeouts, retries, and session persistence are not supported")
 	}
 	if err := compileRouteAction(rule); err != nil {
-		return routeStructure{}, err
+		return gatewayv1.BackendObjectReference{}, err
 	}
-	pathType, pathValue, err := supportedMatch(rule.Matches)
+	_, _, err := supportedMatch(rule.Matches)
 	if err != nil {
-		return routeStructure{}, err
+		return gatewayv1.BackendObjectReference{}, err
 	}
 	if len(rule.BackendRefs) != 1 {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
 	}
 	backend := rule.BackendRefs[0]
 	if len(backend.Filters) != 0 {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
 	}
 	if backend.Weight != nil && *backend.Weight == 0 {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
 	}
 	if backend.Group != nil && *backend.Group != gatewayv1.Group("") {
-		return routeStructure{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
 	}
 	if backend.Kind != nil && *backend.Kind != gatewayv1.Kind("Service") {
-		return routeStructure{}, newRouteBuildError(routeErrorInvalidKind, "backendRef kind %q is unsupported; use Service", *backend.Kind)
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorInvalidKind, "backendRef kind %q is unsupported; use Service", *backend.Kind)
 	}
 	backendNamespace := route.Namespace
 	if backend.Namespace != nil {
 		backendNamespace = string(*backend.Namespace)
 	}
 	if backendNamespace != route.Namespace {
-		return routeStructure{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
 	}
 	if backend.Port == nil {
-		return routeStructure{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
+		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
 	}
 
-	return routeStructure{
-		hostname: hostname, pathType: pathType, pathValue: pathValue,
-		backend: backend.BackendObjectReference,
-	}, nil
+	return backend.BackendObjectReference, nil
 }
 
 func (r *Reconciler) buildRouteSpecWithReader(
@@ -134,27 +122,43 @@ func (r *Reconciler) buildRouteSpecWithReader(
 	route *gatewayv1.HTTPRoute,
 	gateway *gatewayv1.Gateway,
 ) (cloud.RouteSpec, error) {
-	structure, err := parseRouteStructure(route)
+	reference, err := validateNodePortRoute(route)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
 
 	var service corev1.Service
-	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(structure.backend.Name)}, &service); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)}, &service); err != nil {
 		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", err)
 	}
 	if service.Spec.Type != corev1.ServiceTypeNodePort {
 		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)
 	}
-	servicePort, err := nodePortForBackend(&service, int32(*structure.backend.Port))
-	if err != nil {
+	if _, err := nodePortForBackend(&service, int32(*reference.Port)); err != nil {
 		return cloud.RouteSpec{}, err
 	}
 	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	members, err := nodePortMembersFromReader(ctx, reader, &service, servicePort, topology.NodeAddressType)
+	endpoints, err := backendEndpointSlices(ctx, reader, &service)
+	if err != nil {
+		return cloud.RouteSpec{}, err
+	}
+	logical, err := model.Compile(model.Input{
+		Gateway: gateway, Routes: []gatewayv1.HTTPRoute{*route},
+		Services: []corev1.Service{service}, EndpointSlices: endpoints,
+	})
+	if err != nil {
+		return cloud.RouteSpec{}, fmt.Errorf("compile Gateway route model: %w", err)
+	}
+	match, backend, err := nodePortRouteModel(logical)
+	if err != nil {
+		return cloud.RouteSpec{}, err
+	}
+	// The logical backend supplies the selected Service port. Endpoint addresses
+	// remain observations here; only the existing NodePort mapping emits members.
+	members, err := nodePortMembersFromSlices(ctx, reader, &service, backend.Port, topology.NodeAddressType, endpoints)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
@@ -164,57 +168,65 @@ func (r *Reconciler) buildRouteSpecWithReader(
 			Provider:          "amphora",
 			VIPSubnetID:       topology.Topology.VIPSubnetID,
 			ExternalNetworkID: topology.Topology.ExternalNetworkID,
-			ListenerPort:      int(gateway.Spec.Listeners[0].Port),
+			ListenerPort:      int(logical.Listeners[0].Port),
 			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
 			VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 		},
 		MemberSubnetID:          topology.Topology.MemberSubnetID,
 		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
 		HealthMonitor:           topology.HealthMonitor,
-		Hostname:                structure.hostname,
-		PathType:                structure.pathType,
-		PathValue:               structure.pathValue,
+		Hostname:                match.Hostname,
+		PathType:                cloud.PathMatchType(match.Match.PathType),
+		PathValue:               match.Match.PathValue,
 		Members:                 members,
 	}, nil
 }
 
-func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (cloud.PathMatchType, string, error) {
-	if len(matches) == 0 {
-		return cloud.PathMatchPrefix, "/", nil
+// nodePortRouteModel lowers only the currently implemented graph shape. Model
+// diagnostics never grant authority to drop a fragment or choose a fallback.
+func nodePortRouteModel(logical model.Gateway) (model.RouteMatch, model.BackendGroup, error) {
+	unsupported := func() (model.RouteMatch, model.BackendGroup, error) {
+		return model.RouteMatch{}, model.BackendGroup{}, newRouteBuildError(routeErrorUnsupported, "logical Gateway configuration is outside the supported NodePort profile")
 	}
-	if len(matches) != 1 {
+	if len(logical.Diagnostics) != 0 || len(logical.Listeners) != 1 || len(logical.Routes) != 1 {
+		return unsupported()
+	}
+	listener, route := logical.Listeners[0], logical.Routes[0]
+	if len(listener.Diagnostics) != 0 || len(route.Diagnostics) != 0 || len(listener.Rules) != 1 || len(route.Rules) != 1 || len(route.Parents) != 1 {
+		return unsupported()
+	}
+	match := listener.Rules[0]
+	if listener.Hostname != "" || route.Source.Namespace != logical.Source.Namespace || len(match.Match.Headers) != 0 || strings.HasPrefix(match.Hostname, "*.") {
+		return unsupported()
+	}
+	rule, parent := route.Rules[0], route.Parents[0]
+	if len(rule.Diagnostics) != 0 || len(rule.Backends) != 1 || len(rule.Matches) != 1 || parent.State != model.AttachmentAccepted {
+		return unsupported()
+	}
+	backend := rule.Backends[0]
+	if backend.Diagnostic != nil || backend.Port == nil || backend.Weight == 0 || backend.Service.Namespace != route.Source.Namespace {
+		return unsupported()
+	}
+	if backend.Port.NodePort == 0 {
+		return unsupported()
+	}
+	return match, backend, nil
+}
+
+func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (cloud.PathMatchType, string, error) {
+	if len(matches) > 1 {
 		return "", "", newRouteBuildError(routeErrorUnsupported, "at most one HTTPRoute match is supported")
 	}
-	match := &matches[0]
+	var match gatewayv1.HTTPRouteMatch
+	if len(matches) == 1 {
+		match = matches[0]
+	}
 	if len(match.Headers) != 0 || len(match.QueryParams) != 0 || match.Method != nil {
 		return "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported")
 	}
-	pathType := gatewayv1.PathMatchPathPrefix
-	pathValue := "/"
-	if match.Path != nil {
-		if match.Path.Type != nil {
-			pathType = *match.Path.Type
-		}
-		if match.Path.Value != nil {
-			pathValue = *match.Path.Value
-		}
+	normalized, err := model.NormalizeMatch(match)
+	if err != nil {
+		return "", "", newRouteBuildError(routeErrorUnsupported, "%s", err)
 	}
-	if !validHTTPPath(pathValue) {
-		return "", "", newRouteBuildError(routeErrorUnsupported, "path %q is not a valid absolute Gateway API path", pathValue)
-	}
-	switch pathType {
-	case gatewayv1.PathMatchExact:
-		return cloud.PathMatchExact, pathValue, nil
-	case gatewayv1.PathMatchPathPrefix:
-		return cloud.PathMatchPrefix, pathValue, nil
-	default:
-		return "", "", newRouteBuildError(routeErrorUnsupported, "path match type %q is not supported", pathType)
-	}
-}
-
-func validHTTPPath(value string) bool {
-	if !strings.HasPrefix(value, "/") || strings.Contains(value, "//") || strings.Contains(value, "/./") || strings.Contains(value, "/../") {
-		return false
-	}
-	return value != "/." && value != "/.." && !strings.HasSuffix(value, "/.") && !strings.HasSuffix(value, "/..")
+	return cloud.PathMatchType(normalized.PathType), normalized.PathValue, nil
 }
