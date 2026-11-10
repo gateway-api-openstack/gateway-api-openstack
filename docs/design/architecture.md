@@ -95,7 +95,7 @@ Ownership of a security group alone is insufficient authority to change a port.
 | HTTPRoute rule and match | Pool, ordered L7 policies, and conjunctive rules | One selected route, rule, and backend with exact hostname and path matching. |
 | NodePort backend | Members on eligible worker Node addresses | Pod IP and ClusterIP backends are unsupported. |
 | Class health settings | HTTP health monitor for the route pool | Backend-specific policy is deferred. |
-| TLS Secret | Future Barbican secret or container | Requires certificate identity, rotation, and deletion design. |
+| TLS Secret | Planned PKCS12 certificate through the cloud key manager | Default certificate source for future HTTPS. Publication ownership and recovery remain unresolved. |
 | Frontend security | Octavia-managed or referenced VIP security groups | Referenced groups require API 2.29 and validated ingress prerequisites. Their rules remain operator-owned. |
 | Backend security | Unmanaged or referenced existing groups | Referenced mode validates worker ports and rule prerequisites without modifying them. |
 
@@ -165,6 +165,8 @@ It cannot recreate or delete Gateway infrastructure.
 
 The writer has no persistent fragment registry or mutation plan.
 Its coordinator is process-local, and multiple mutating replicas require leader election.
+The lock is per Gateway UID, so different Gateway graphs can progress concurrently.
+[ADR 0006](adr/0006-core-model-boundaries.md) defines the bounded worker direction and the separate design required for active controller sharding.
 A restart reconstructs state from Kubernetes bindings and OpenStack identity.
 
 ### Component outcomes and administrative repair
@@ -252,9 +254,12 @@ PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so th
 
 The [conformance guide](../testing-conformance.md) records current Core gaps.
 The [feasibility assessment](conformance-feasibility.md) identifies Octavia API blockers and designs needed for the broader compiler.
-The proposed [Core mapping ADR](adr/0005-core-resource-mapping.md) keeps those decisions separate from the implemented graph.
+The accepted [Core model boundaries](adr/0006-core-model-boundaries.md) guide the next implementation, while the proposed [Core mapping ADR](adr/0005-core-resource-mapping.md) retains the unresolved physical mappings.
 
-Terminated HTTPS requires a Barbican identity and certificate lifecycle design, including rotation, rollback, SNI, and safe deletion.
+Kubernetes TLS Secrets are the planned default certificate source, but stock Amphora still requires cloud key manager references.
+Managed publication requires a certificate identity and lifecycle design, including rotation, rollback, SNI, and safe deletion.
+Optional operator-managed certificate references remain a separate proposal and would not transfer certificate ownership to this controller.
+The [certificate assessment](conformance-feasibility.md#certificate-transport-and-ownership) describes these paths and their limits.
 Cross-namespace Service or Secret references also require ReferenceGrant implementation.
 An HTTP-only deployment does not need Barbican.
 
@@ -348,7 +353,7 @@ The following boundaries remain open:
 - listener grouping, multiple routes, and global precedence
 - weighted and invalid backend behavior
 - Barbican identity, certificate rotation, and rollback
-- Direct Policy Attachment and backend policy conflict rules
+- the backend policy API, whole-Service and port overlap, and conflict status
 - topology and CNI requirements for Pod IP members
 
 Implementation that changes one of these public or safety contracts requires a design decision and appropriate evidence.

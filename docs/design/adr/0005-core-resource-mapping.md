@@ -10,6 +10,8 @@ Phase 4 prepares each design for the pinned GATEWAY-HTTP profile before its corr
 This proposal records the candidate mappings, their verification cases, and the decisions that still depend on cloud evidence or upstream APIs.
 It does not authorize a new member mode, resource identity, certificate writer, or public capability claim.
 Independently settled parts can be accepted in focused ADRs without accepting every candidate in this proposal.
+[ADR 0006](0006-core-model-boundaries.md) accepts the forwarding scope, logical model, per-Gateway concurrency, and direct policy direction.
+The concrete environment, physical mappings, API details, and certificate lifecycle below remain proposed.
 
 The [feasibility assessment](../conformance-feasibility.md) is the source record for Octavia limitations.
 The [Core inventory](../../../test/design/core-mapping.json) assigns every pinned upstream Core test to a requirement group.
@@ -24,7 +26,7 @@ Match EndpointSlice port names to Service port names rather than to named `targe
 Each slice supplies its own resolved port, which can differ between Pods for the same named target port.
 Apply endpoint readiness, termination, and address family independently of NodePort worker eligibility.
 
-The candidate for ordinary ClusterIP and headless Services is forwarding to resolved endpoint addresses through existing routing.
+ADR 0006 selects direct endpoint forwarding as the development direction for an explicitly verified network environment.
 A ClusterIP is not an endpoint address, and registering a Pod address does not establish connectivity.
 The class capability must describe the verified address families and forwarding environment before this member mode can be enabled.
 Do not infer that capability from Octavia's acceptance of a member address.
@@ -34,12 +36,13 @@ A helper Service or an alternative forwarding path requires a separate ownership
 The existing NodePort implementation remains governed by ADR 0002 and the [worker eligibility rules](../../reference/class-configuration.md#worker-nodeport-members).
 Its port and address-family regression tests do not enable direct endpoint members.
 
-Before accepting the forwarding design, demonstrate forward and return traffic for ClusterIP, headless, and manually managed EndpointSlice inputs on the chosen CNI and security configuration.
+Before accepting a concrete member mode and environment profile, demonstrate forward and return traffic for ClusterIP, headless, and manually managed EndpointSlice inputs on the chosen CNI and security configuration.
 Verify endpoint addition, removal, terminating endpoints, named ports, and each claimed address family without modifying foreign network resources.
 
 ## Listener and route mapping
 
 Build the accepted configuration for all logical listeners and attached routes before assigning physical resources or policy positions.
+This complete logical model is accepted under ADR 0006, while the physical mapping below remains open.
 Group compatible listeners by port and data plane protocol, preserving each logical listener's hostname, attachment result, conditions, and `attachedRoutes` count.
 HTTP and terminated HTTPS do not become compatible merely because they use the same port.
 Keep physical listeners within one Gateway's ownership graph.
@@ -62,6 +65,7 @@ This mapping remains open until the full action order and API key/value limits a
 ## Backend selection and HTTP actions
 
 Select a Service according to its backendRef weight before selecting one of that Service's eligible endpoints.
+ADR 0006 accepts preserving this backend grouping in the desired model without selecting an Octavia pool layout.
 Weight zero contributes no traffic.
 Keep invalid backend shares in the routing decision so they receive the required HTTP 500 instead of increasing the valid backend share.
 Distinguish an omitted backend list from an unresolved reference when setting status.
@@ -82,6 +86,10 @@ Do not declare a general mapping from the small arithmetic witnesses alone.
 
 ## References and certificates
 
+Kubernetes TLS Secrets remain the planned default certificate source.
+That source is distinct from the cloud key manager that supplies certificates to Amphora.
+The [certificate transport assessment](../conformance-feasibility.md#certificate-transport-and-ownership) explains why the default Secret path still needs a cloud publication mechanism.
+
 Authorize cross-namespace Service and Secret references against ReferenceGrants in the target namespace.
 Match the source group, kind, and namespace and the target group, kind, and optional name.
 A grant for one target does not authorize another kind or namespace.
@@ -94,17 +102,21 @@ Keep payloads out of conditions, Events, logs, metrics, and durable bindings.
 A logical listener owns its certificate reference and status even when several listeners share a physical TLS listener.
 The physical listener needs the default and SNI references required by all accepted logical listeners.
 
+Prefer a single PKCS12 Secret per owned certificate revision over legacy certificate Containers, subject to the ownership proof below.
+Initially keep certificate resources within one Gateway's graph rather than sharing them across Gateways.
 The proposed rotation order is to validate and authorize the replacement, persist a non-secret revision checkpoint, create and discover owned certificate resources, switch listener references, observe the new configuration, then retire unreferenced old resources.
-Cleanup reverses references before deleting containers and secrets.
+Cleanup removes Listener references before deleting owned certificate Secrets.
 Grant revocation must stop using the revoked reference even when it prevents uninterrupted traffic.
 Never fall back to a previous certificate whose reference is no longer authorized.
 
-Barbican ownership remains an unresolved acceptance gate.
-The [Secret API](https://docs.openstack.org/barbican/latest/api/reference/secrets.html) and [metadata API](https://docs.openstack.org/barbican/latest/api/reference/secret_metadata.html) create the secret and its user metadata in separate transactions.
-A crash or lost response between them can leave a resource that cannot be rediscovered by complete ownership identity.
-The [container API](https://docs.openstack.org/barbican/latest/api/reference/containers.html) has a separate lifecycle and does not inherit an ownership contract from child secret metadata.
+Managed certificate ownership remains an unresolved acceptance gate.
+Before enabling a certificate writer, select and verify a mechanism that survives a lost create response before metadata or a checkpoint is stored, and supports project-scoped discovery, duplicate rejection, and safe deletion.
 Names, creator IDs, ACLs, and cached references alone do not meet this repository's identity requirements.
-Before enabling a certificate writer, select and verify a mechanism that survives each creation boundary and supports project-scoped discovery, duplicate rejection, and safe deletion.
+
+An optional reference to an operator-managed Barbican certificate is a separate proposed input.
+The controller would manage only its owned Listener's reference, never the external certificate's payload, ACL, rotation, or deletion.
+Its API must define explicit selection, authorization, project scope, missing-reference behavior, and removal before use.
+It is not certificate adoption and cannot replace standard Secret support for Core HTTPS.
 
 ## Capability and implementation gates
 
