@@ -261,7 +261,8 @@ Activating scheduled validation still requires an approved dedicated environment
 
 ## Phase 5 - Complete GATEWAY-HTTP conformance
 
-**Status:** Planned, with implementation allowed after each corresponding Phase 4 design is accepted.
+**Status:** In progress, beginning with the [logical HTTP model](docs/design/architecture.md#logical-http-model).
+Each feature requires its corresponding Phase 4 design to be accepted before implementation.
 Unreleased Octavia dependencies can be used for development integration under the sequence above, while phase completion remains blocked on the required releases and evidence.
 
 **Milestone:** `v0.5.0`
