@@ -51,7 +51,7 @@ func TestValidateDefaultsAndExplicitTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.VIPSubnet.ID != params.Spec.VIPSubnet.ID || req.MemberSubnet.Name != "members" || req.ExternalNetwork != nil {
+	if req.MemberMode != cloud.MemberModeNodePort || req.VIPSubnet.ID != params.Spec.VIPSubnet.ID || req.MemberSubnet.Name != "members" || req.ExternalNetwork != nil {
 		t.Fatalf("request = %#v", req)
 	}
 	if address != corev1.NodeInternalIP || monitor != (cloud.HealthMonitorConfig{Path: "/", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3}) {
@@ -77,6 +77,11 @@ func TestValidateRejectsInvalidConfiguration(t *testing.T) {
 		name   string
 		mutate func(*configv1alpha1.OpenStackGatewayClassConfigSpec)
 	}{
+		{"unknown member mode", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) { s.MemberMode = "PodIP" }},
+		{"endpoint referenced backend", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
+			s.MemberMode = configv1alpha1.MemberModeEndpoint
+			s.BackendSecurity = configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendReferenced, Groups: []configv1alpha1.ResourceReference{{Name: "workers"}}}
+		}},
 		{"missing reference", func(s *configv1alpha1.OpenStackGatewayClassConfigSpec) {
 			s.VIPSubnet = configv1alpha1.ResourceReference{}
 		}},
@@ -186,20 +191,22 @@ func TestResolveUsesCurrentParametersAndClassifiesCloudErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.ParametersUID != params.UID || resolved.ParametersGeneration != 2 || resolved.Topology.MemberSubnetID != "22222222-2222-2222-2222-222222222222" {
+	if resolved.ParametersUID != params.UID || resolved.ParametersGeneration != 2 || resolved.Topology.MemberSubnetID != "22222222-2222-2222-2222-222222222222" || resolved.Topology.MemberMode != cloud.MemberModeNodePort {
 		t.Fatalf("resolved=%#v", resolved)
 	}
 	if err := reader.Get(context.Background(), types.NamespacedName{Name: params.Name}, params); err != nil {
 		t.Fatal(err)
 	}
 	params.Spec.MemberSubnet = configv1alpha1.ResourceReference{Name: "replacement"}
+	params.Spec.MemberMode = configv1alpha1.MemberModeEndpoint
 	if err := reader.Update(context.Background(), params); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Resolve(context.Background(), reader, resolver, class); err != nil {
+	updated, err := Resolve(context.Background(), reader, resolver, class)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if resolver.request.MemberSubnet.Name != "replacement" {
+	if resolver.request.MemberSubnet.Name != "replacement" || resolver.request.MemberMode != cloud.MemberModeEndpoint || updated.Topology.MemberMode != cloud.MemberModeEndpoint {
 		t.Fatal("reused obsolete topology request")
 	}
 	resolver.err = cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, errors.New("private-network-id"))

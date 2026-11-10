@@ -172,6 +172,31 @@ func TestInspectPreservesMemberFailure(t *testing.T) {
 	assertStatus(t, report, "barbican", diagnostics.Skipped)
 }
 
+func TestEndpointDiagnosticsDoNotValidateWorkerPorts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/security-groups" {
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL)
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(writer, `{"security_groups":[]}`)
+	}))
+	defer server.Close()
+	reader := &fakeTopology{resolved: cloud.Topology{MemberMode: cloud.MemberModeEndpoint}}
+	scanner := &Scanner{clients: testClients(server.URL), topology: reader, timeout: time.Minute}
+	report := scanner.Inspect(context.Background(), diagnostics.Request{
+		Topology: cloud.TopologyRequest{MemberMode: cloud.MemberModeEndpoint},
+		Nodes:    []diagnostics.Node{{ProviderID: "unused-worker", Address: "192.0.2.7"}},
+	})
+	assertStatus(t, report, "nodePort", diagnostics.Skipped)
+	assertStatus(t, report, "backendReachability", diagnostics.Unknown)
+	assertStatus(t, report, "dataPlaneTopology", diagnostics.Unknown)
+	if len(reader.nodes) != 0 || len(report.IPFamilies) != 0 {
+		t.Fatalf("endpoint diagnostic used worker information: nodes=%v, report=%+v", reader.nodes, report)
+	}
+}
+
 func TestNodeDiagnosticsAllowUnmanagedPortSecurity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/ports" {

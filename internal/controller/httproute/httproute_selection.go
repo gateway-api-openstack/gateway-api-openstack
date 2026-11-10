@@ -62,11 +62,11 @@ func (r *Reconciler) isSelectedRouteWithReader(
 			validateRouteParent(candidate, candidateParent) != nil || !structurallySupportedRoute(candidate) {
 			continue
 		}
-		canReserve, err := r.routeCanReserveSlotWithReader(ctx, reader, candidate)
+		decision, err := r.evaluateRouteSlotWithReader(ctx, reader, candidate, parent.gateway)
 		if err != nil {
 			return false, err
 		}
-		if !canReserve {
+		if !decision.canReserve {
 			continue
 		}
 		if routePrecedes(candidate, winner) {
@@ -81,19 +81,21 @@ type routeSlotDecision struct {
 	rejection  error
 }
 
-// evaluateRouteSlot excludes a definitively rejected NodePort profile while
-// allowing an otherwise valid route with temporarily unresolved references to
-// retain deterministic selection. Callers must first verify that the route is
-// structurally supported.
-func (r *Reconciler) evaluateRouteSlot(ctx context.Context, route *gatewayv1.HTTPRoute) (routeSlotDecision, error) {
-	return r.evaluateRouteSlotWithReader(ctx, r.Client, route)
-}
-
+// evaluateRouteSlotWithReader excludes rejected Service profiles using the
+// Gateway's frozen mode. Missing dependencies retain deterministic selection.
 func (r *Reconciler) evaluateRouteSlotWithReader(
 	ctx context.Context,
 	reader client.Reader,
 	route *gatewayv1.HTTPRoute,
+	gateway *gatewayv1.Gateway,
 ) (routeSlotDecision, error) {
+	if !controller.HasGatewayTopologyBinding(r.Config, gateway) {
+		return routeSlotDecision{canReserve: true}, nil
+	}
+	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
+	if err != nil {
+		return routeSlotDecision{}, err
+	}
 	backend := route.Spec.Rules[0].BackendRefs[0]
 	var service corev1.Service
 	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(backend.Name)}, &service); err != nil {
@@ -102,10 +104,7 @@ func (r *Reconciler) evaluateRouteSlotWithReader(
 		}
 		return routeSlotDecision{}, fmt.Errorf("get candidate backend Service: %w", err)
 	}
-	if service.Spec.Type != corev1.ServiceTypeNodePort {
-		return routeSlotDecision{rejection: newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)}, nil
-	}
-	if _, err := nodePortForBackend(&service, int32(*backend.Port)); err != nil {
+	if _, err := servicePortForBackend(&service, *backend.Port, topology.Topology.MemberMode); err != nil {
 		var buildError *routeBuildError
 		if errors.As(err, &buildError) && buildError.kind == routeErrorPending {
 			return routeSlotDecision{canReserve: true}, nil
@@ -113,19 +112,6 @@ func (r *Reconciler) evaluateRouteSlotWithReader(
 		return routeSlotDecision{rejection: err}, nil
 	}
 	return routeSlotDecision{canReserve: true}, nil
-}
-
-func (r *Reconciler) routeCanReserveSlot(ctx context.Context, route *gatewayv1.HTTPRoute) (bool, error) {
-	return r.routeCanReserveSlotWithReader(ctx, r.Client, route)
-}
-
-func (r *Reconciler) routeCanReserveSlotWithReader(
-	ctx context.Context,
-	reader client.Reader,
-	route *gatewayv1.HTTPRoute,
-) (bool, error) {
-	decision, err := r.evaluateRouteSlotWithReader(ctx, reader, route)
-	return decision.canReserve, err
 }
 
 func routePrecedes(left, right *gatewayv1.HTTPRoute) bool {

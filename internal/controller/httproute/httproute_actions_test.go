@@ -74,7 +74,7 @@ func TestUnsupportedAmphoraActionsDoNotBindOrProvision(t *testing.T) {
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithStatusSubresource(route).WithObjects(class, gateway, route).Build()
 			provider := &recordingProvider{}
 			r := newTestReconciler(Reconciler{Client: kubeClient, APIReader: kubeClient, Config: cfg, Coordinator: &graph.Coordinator{}}, provider)
-			_, err := r.buildRouteSpecWithReader(t.Context(), kubeClient, route, gateway)
+			_, err := r.buildRouteModelWithReader(t.Context(), kubeClient, route, gateway)
 			var unsupported *routeBuildError
 			if !errors.As(err, &unsupported) || unsupported.kind != routeErrorUnsupported || !strings.Contains(unsupported.message, test.message) {
 				t.Fatalf("unsupported action error=%v", err)

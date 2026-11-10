@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/diagnostics"
@@ -67,12 +68,15 @@ func collectInputs(ctx context.Context, reader client.Reader, options commandOpt
 	if err != nil {
 		return diagnostics.Request{}, err
 	}
+	request := diagnostics.Request{Topology: topologyRequest, CheckBarbican: options.barbican}
+	if topologyRequest.MemberMode == cloud.MemberModeEndpoint {
+		return request, nil
+	}
 	nodes := &corev1.NodeList{}
 	if err := reader.List(ctx, nodes, client.MatchingLabelsSelector{Selector: options.nodeSelector}); err != nil {
 		return diagnostics.Request{}, fmt.Errorf("list worker Nodes: %w", err)
 	}
 	slices.SortFunc(nodes.Items, func(left, right corev1.Node) int { return strings.Compare(left.Name, right.Name) })
-	request := diagnostics.Request{Topology: topologyRequest, CheckBarbican: options.barbican}
 	for index := range nodes.Items {
 		node := &nodes.Items[index]
 		if controller.NodePortNodeExcluded(node) {

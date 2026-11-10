@@ -36,6 +36,16 @@ const (
 	FloatingIPAllocate FloatingIPMode = "Allocate"
 )
 
+// MemberMode determines which addresses receive backend traffic from Amphora.
+type MemberMode string
+
+const (
+	// MemberModeNodePort uses eligible worker addresses and Service NodePorts.
+	MemberModeNodePort MemberMode = "NodePort"
+	// MemberModeEndpoint uses addresses and ports resolved from EndpointSlices.
+	MemberModeEndpoint MemberMode = "Endpoint"
+)
+
 // ResourceReference selects exactly one existing Neutron resource.
 // Tags are an AND selector and must match exactly one visible resource.
 type ResourceReference struct {
@@ -101,12 +111,14 @@ type HealthMonitorConfig struct {
 // OpenStackGatewayClassConfigSpec supplies infrastructure defaults for new
 // Gateways. Existing Gateways retain the complete validated configuration.
 type OpenStackGatewayClassConfigSpec struct {
-	VIPSubnet        ResourceReference      `json:"vipSubnet"`
-	MemberSubnet     ResourceReference      `json:"memberSubnet"`
+	VIPSubnet    ResourceReference `json:"vipSubnet"`
+	MemberSubnet ResourceReference `json:"memberSubnet"`
+	// MemberMode defaults to NodePort. Endpoint requires operator-managed connectivity.
+	MemberMode       MemberMode             `json:"memberMode,omitempty"`
 	FloatingIP       FloatingIPConfig       `json:"floatingIP,omitempty"`
 	FrontendSecurity FrontendSecurityConfig `json:"frontendSecurity,omitempty"`
 	BackendSecurity  BackendSecurityConfig  `json:"backendSecurity,omitempty"`
-	// NodeAddressType is InternalIP or ExternalIP. It defaults to InternalIP.
+	// NodeAddressType is InternalIP or ExternalIP. It defaults to InternalIP and is unused in Endpoint mode.
 	NodeAddressType string `json:"nodeAddressType,omitempty"`
 	// FlavorID selects an enabled Amphora flavor by UUID.
 	FlavorID string `json:"flavorID,omitempty"`

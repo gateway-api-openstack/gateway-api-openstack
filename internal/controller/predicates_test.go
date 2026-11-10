@@ -279,8 +279,14 @@ func TestServicePredicate(t *testing.T) {
 	statusChanged.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "192.0.2.10"}}
 	testPredicateUpdate(t, pred, service, statusChanged, false, "Service status")
 	specChanged := service.DeepCopy()
-	specChanged.Generation++
-	testPredicateUpdate(t, pred, service, specChanged, true, "Service generation")
+	specChanged.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: 80}}
+	testPredicateUpdate(t, pred, service, specChanged, true, "Service port without a generation change")
+	deleting := service.DeepCopy()
+	markDeleting(&deleting.ObjectMeta)
+	testPredicateUpdate(t, pred, service, deleting, true, "Service deletion")
+	metadataChanged := service.DeepCopy()
+	metadataChanged.Labels = map[string]string{"example.com/label": "value"}
+	testPredicateUpdate(t, pred, service, metadataChanged, false, "unrelated Service metadata")
 }
 
 func TestEndpointSlicePredicate(t *testing.T) {
@@ -296,9 +302,30 @@ func TestEndpointSlicePredicate(t *testing.T) {
 	}
 	pred := EndpointSlicePredicate()
 
-	irrelevant := base.DeepCopy()
-	irrelevant.Endpoints[0].Addresses = []string{"10.0.0.10"}
-	testPredicateUpdate(t, pred, base, irrelevant, false, "endpoint address")
+	addressChanged := base.DeepCopy()
+	addressChanged.Endpoints[0].Addresses = []string{"10.0.0.10"}
+	testPredicateUpdate(t, pred, base, addressChanged, true, "endpoint address")
+	replaced := addressChanged.DeepCopy()
+	replaced.Endpoints[0].Addresses = []string{"10.0.0.11"}
+	testPredicateUpdate(t, pred, addressChanged, replaced, true, "endpoint replacement on the same Node")
+	servingChanged := base.DeepCopy()
+	servingChanged.Endpoints[0].Conditions.Serving = ptr.To(false)
+	testPredicateUpdate(t, pred, base, servingChanged, true, "endpoint serving")
+	terminating := base.DeepCopy()
+	terminating.Endpoints[0].Conditions.Terminating = ptr.To(true)
+	testPredicateUpdate(t, pred, base, terminating, true, "endpoint terminating")
+	defaultConditions := base.DeepCopy()
+	defaultConditions.Endpoints[0].Conditions = discoveryv1.EndpointConditions{}
+	testPredicateUpdate(t, pred, base, defaultConditions, false, "equivalent default conditions")
+	duplicate := base.DeepCopy()
+	duplicate.Endpoints = append(duplicate.Endpoints, duplicate.Endpoints[0])
+	testPredicateUpdate(t, pred, base, duplicate, false, "duplicate observation")
+	reordered := addressChanged.DeepCopy()
+	reordered.Endpoints = append(reordered.Endpoints, discoveryv1.Endpoint{Addresses: []string{"10.0.0.12", "10.0.0.13"}})
+	otherOrder := reordered.DeepCopy()
+	otherOrder.Endpoints[1].Addresses[0], otherOrder.Endpoints[1].Addresses[1] = otherOrder.Endpoints[1].Addresses[1], otherOrder.Endpoints[1].Addresses[0]
+	otherOrder.Endpoints[0], otherOrder.Endpoints[1] = otherOrder.Endpoints[1], otherOrder.Endpoints[0]
+	testPredicateUpdate(t, pred, reordered, otherOrder, false, "endpoint and address order")
 
 	notReady := false
 	readinessChanged := base.DeepCopy()
