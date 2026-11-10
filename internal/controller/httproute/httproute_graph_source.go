@@ -41,6 +41,14 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 	if err != nil {
 		return graph.RouteInputs{}, err
 	}
+	var backends *routeModelInputs
+	if request.Action == graph.Ensure {
+		// Cleanup requests use durable ownership without requiring backend reads.
+		backends, err = collectRouteModelInputs(ctx, r.APIReader, gateway, routes)
+		if err != nil {
+			return graph.RouteInputs{}, err
+		}
+	}
 	input := graph.RouteInputs{Nodes: make([]cloud.RouteGraphNode, 0, len(routes))}
 	fences := make([]func(context.Context) error, 0, len(routes))
 	foundRequested := request.Route == nil
@@ -78,7 +86,7 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 			if gateway == nil {
 				return graph.RouteInputs{}, errors.New("gateway is required for an attached route")
 			}
-			snapshot, err := r.buildRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForEnsure)
+			snapshot, err := r.buildRouteValidationSnapshotFromInputs(ctx, route, gateway, routeSnapshotForEnsure, backends)
 			if err != nil {
 				return graph.RouteInputs{}, &cloud.GraphError{Identity: identity, Err: err}
 			}
@@ -87,7 +95,7 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 			}
 			node.Disposition, node.Spec = cloud.GraphEnsure, snapshot.desired
 			fences = append(fences, func(ctx context.Context) error {
-				return r.sealRouteMutationSnapshot(ctx, snapshot, routeBindingRequired)
+				return r.sealRouteOwnershipSnapshot(ctx, snapshot, routeBindingRequired)
 			})
 		}
 		if request.Action == graph.DeleteRoute && request.Route != nil && route.UID == request.Route.UID && node.Disposition != cloud.GraphDelete {
@@ -110,6 +118,9 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 			if err := fence(ctx); err != nil {
 				return err
 			}
+		}
+		if backends != nil {
+			return backends.validate(ctx, r.APIReader)
 		}
 		return nil
 	}

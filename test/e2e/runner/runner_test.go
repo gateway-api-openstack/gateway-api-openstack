@@ -1041,7 +1041,7 @@ func installedClassConfigCRD(t *testing.T) *apiextensionsv1.CustomResourceDefini
 func installedCRDs(t *testing.T) []client.Object {
 	t.Helper()
 	objects := []client.Object{installedClassConfigCRD(t)}
-	for _, name := range []string{"gatewayclasses", "gateways", "httproutes"} {
+	for _, name := range []string{"gatewayclasses", "gateways", "httproutes", "referencegrants"} {
 		objects = append(objects, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
 			Name: name + ".gateway.networking.k8s.io",
 			Annotations: map[string]string{

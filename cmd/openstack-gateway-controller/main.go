@@ -247,7 +247,7 @@ func requireGatewayAPIs(restConfig *rest.Config) error {
 	for _, resource := range resourceList.APIResources {
 		availableResources = append(availableResources, resource.Name)
 	}
-	for _, required := range []string{"gatewayclasses", "gateways", "httproutes"} {
+	for _, required := range []string{"gatewayclasses", "gateways", "httproutes", "referencegrants"} {
 		if !slices.Contains(availableResources, required) {
 			return fmt.Errorf("required Gateway API resource %s is missing from %s; install Gateway API Standard %s", required, gatewayv1.GroupVersion, gatewayconsts.BundleVersion)
 		}

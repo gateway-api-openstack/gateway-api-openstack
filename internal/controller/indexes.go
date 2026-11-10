@@ -22,6 +22,7 @@ import (
 	"sort"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,6 +42,8 @@ const (
 	IndexHTTPRouteByStatusGateway = "status.parentGateway"
 	// IndexHTTPRouteByBackendService indexes HTTPRoutes by backend Service key.
 	IndexHTTPRouteByBackendService = "spec.backendService"
+	// IndexHTTPRouteByBackendNamespace indexes cross-namespace Service references.
+	IndexHTTPRouteByBackendNamespace = "spec.backendNamespace"
 	// IndexHTTPRouteByBoundGateway indexes HTTPRoutes by bound Gateway key.
 	IndexHTTPRouteByBoundGateway = "metadata.boundGateway"
 	// indexHTTPRouteByBoundGatewayUID indexes HTTPRoutes by bound Gateway UID.
@@ -127,6 +130,11 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 				}
 				return backendServiceKeys(route)
 			},
+		},
+		{
+			object:  &gatewayv1.HTTPRoute{},
+			field:   IndexHTTPRouteByBackendNamespace,
+			extract: backendNamespaceKeys,
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
@@ -240,20 +248,27 @@ func backendServiceKeys(route *gatewayv1.HTTPRoute) []string {
 	keys := make(map[string]struct{})
 	for _, rule := range route.Spec.Rules {
 		for _, backend := range rule.BackendRefs {
-			if !isCoreServiceBackend(backend.BackendObjectReference) || backend.Name == "" {
-				continue
+			key, supported := model.BackendServiceReference(route.Namespace, backend.BackendObjectReference)
+			if supported && key.Namespace != "" && key.Name != "" {
+				keys[ObjectKeyString(key)] = struct{}{}
 			}
-			namespace := route.Namespace
-			if backend.Namespace != nil {
-				namespace = string(*backend.Namespace)
+		}
+	}
+	return sortedIndexKeys(keys)
+}
+
+func backendNamespaceKeys(object client.Object) []string {
+	route, ok := object.(*gatewayv1.HTTPRoute)
+	if !ok {
+		return nil
+	}
+	keys := make(map[string]struct{})
+	for _, rule := range route.Spec.Rules {
+		for _, backend := range rule.BackendRefs {
+			key, supported := model.BackendServiceReference(route.Namespace, backend.BackendObjectReference)
+			if supported && key.Namespace != "" && key.Name != "" && key.Namespace != route.Namespace {
+				keys[key.Namespace] = struct{}{}
 			}
-			if namespace == "" {
-				continue
-			}
-			keys[ObjectKeyString(types.NamespacedName{
-				Namespace: namespace,
-				Name:      string(backend.Name),
-			})] = struct{}{}
 		}
 	}
 	return sortedIndexKeys(keys)

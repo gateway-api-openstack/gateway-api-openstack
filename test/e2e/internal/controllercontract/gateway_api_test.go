@@ -41,7 +41,7 @@ func TestRequireGatewayAPICRDsChecksEveryInstalledDefinition(t *testing.T) {
 		{name: "pinned Standard bundle"},
 		{name: "missing required CRD", change: func(objects []client.Object) []client.Object { return objects[1:] }, wantErr: true},
 		{name: "extra CRD from different version", change: func(objects []client.Object) []client.Object {
-			return append(objects, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "referencegrants.gateway.networking.k8s.io", Annotations: map[string]string{gatewayconsts.BundleVersionAnnotation: "v0.0.0"}}})
+			return append(objects, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "grpcroutes.gateway.networking.k8s.io", Annotations: map[string]string{gatewayconsts.BundleVersionAnnotation: "v0.0.0"}}})
 		}, wantErr: true},
 		{name: "experimental channel", change: func(objects []client.Object) []client.Object {
 			objects[0].GetAnnotations()[gatewayconsts.ChannelAnnotation] = "experimental"
@@ -56,7 +56,7 @@ func TestRequireGatewayAPICRDsChecksEveryInstalledDefinition(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var objects []client.Object
-			for _, name := range []string{"gatewayclasses", "gateways", "httproutes"} {
+			for _, name := range []string{"gatewayclasses", "gateways", "httproutes", "referencegrants"} {
 				objects = append(objects, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{
 					Name:        name + ".gateway.networking.k8s.io",
 					Annotations: map[string]string{gatewayconsts.BundleVersionAnnotation: gatewayconsts.BundleVersion, gatewayconsts.ChannelAnnotation: "standard"},
