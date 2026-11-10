@@ -806,8 +806,12 @@ func TestEnsureRouteGraphCheckpointsBeforeProviderCall(t *testing.T) {
 			if err != nil || result.bindingState != test.wantState {
 				t.Fatalf("ensureRouteGraph() = %#v, %v; want binding state %d", result, err, test.wantState)
 			}
-			if liveReader.endpointSliceLists != 1 {
-				t.Fatalf("EndpointSlice lists = %d, want one model build", liveReader.endpointSliceLists)
+			wantLists := 1
+			if test.programmed {
+				wantLists++ // Reobserve membership before persisting the binding.
+			}
+			if liveReader.endpointSliceLists != wantLists {
+				t.Fatalf("EndpointSlice lists = %d, want %d for model and binding validation", liveReader.endpointSliceLists, wantLists)
 			}
 			if len(provider.gatewaySpecs)+len(provider.routeSpecs) != 0 {
 				t.Fatal("called the provider before the binding checkpoint")

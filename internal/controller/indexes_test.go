@@ -65,16 +65,17 @@ func TestSetupIndexes(t *testing.T) {
 	}
 
 	wantTypes := map[string]client.Object{
-		IndexGatewayClassByController:   &gatewayv1.GatewayClass{},
-		IndexGatewayClassByParameters:   &gatewayv1.GatewayClass{},
-		IndexGatewayByClass:             &gatewayv1.Gateway{},
-		IndexHTTPRouteByParentGateway:   &gatewayv1.HTTPRoute{},
-		IndexHTTPRouteByStatusGateway:   &gatewayv1.HTTPRoute{},
-		IndexHTTPRouteByBackendService:  &gatewayv1.HTTPRoute{},
-		IndexHTTPRouteByBoundGateway:    &gatewayv1.HTTPRoute{},
-		indexHTTPRouteByBoundGatewayUID: &gatewayv1.HTTPRoute{},
-		IndexHTTPRouteByNodeBackend:     &gatewayv1.HTTPRoute{},
-		IndexEndpointSliceByService:     &discoveryv1.EndpointSlice{},
+		IndexGatewayClassByController:    &gatewayv1.GatewayClass{},
+		IndexGatewayClassByParameters:    &gatewayv1.GatewayClass{},
+		IndexGatewayByClass:              &gatewayv1.Gateway{},
+		IndexHTTPRouteByParentGateway:    &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByStatusGateway:    &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByBackendService:   &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByBackendNamespace: &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByBoundGateway:     &gatewayv1.HTTPRoute{},
+		indexHTTPRouteByBoundGatewayUID:  &gatewayv1.HTTPRoute{},
+		IndexHTTPRouteByNodeBackend:      &gatewayv1.HTTPRoute{},
+		IndexEndpointSliceByService:      &discoveryv1.EndpointSlice{},
 	}
 	if len(indexer.indexes) != len(wantTypes) {
 		t.Fatalf("registered indexes = %d, want %d", len(indexer.indexes), len(wantTypes))
@@ -100,6 +101,7 @@ func TestSetupIndexes(t *testing.T) {
 	assertIndexValues(t, indexer, IndexHTTPRouteByParentGateway, route, []string{"gateways/edge", "routes/z-gateway"})
 	assertIndexValues(t, indexer, IndexHTTPRouteByStatusGateway, route, []string{"gateways/edge", "routes/status-gateway"})
 	assertIndexValues(t, indexer, IndexHTTPRouteByBackendService, route, []string{"apps/a-service", "routes/z-service"})
+	assertIndexValues(t, indexer, IndexHTTPRouteByBackendNamespace, route, []string{"apps"})
 	assertIndexValues(t, indexer, IndexHTTPRouteByBoundGateway, route, []string{"gateways/edge"})
 	assertIndexValues(t, indexer, indexHTTPRouteByBoundGatewayUID, route, []string{"gateway-uid"})
 	assertIndexValues(t, indexer, IndexHTTPRouteByNodeBackend, route, []string{NodeBackendIndexValue})
@@ -222,6 +224,7 @@ func TestIndexesOmitObjectsWithoutUsableKeys(t *testing.T) {
 	assertIndexValues(t, indexer, IndexHTTPRouteByParentGateway, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, IndexHTTPRouteByStatusGateway, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, IndexHTTPRouteByBackendService, &gatewayv1.HTTPRoute{}, nil)
+	assertIndexValues(t, indexer, IndexHTTPRouteByBackendNamespace, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, IndexHTTPRouteByBoundGateway, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, indexHTTPRouteByBoundGatewayUID, &gatewayv1.HTTPRoute{}, nil)
 	assertIndexValues(t, indexer, IndexHTTPRouteByNodeBackend, &gatewayv1.HTTPRoute{}, nil)
@@ -307,5 +310,26 @@ func assertIndexValues(
 	}
 	if got := index.extract(object); !reflect.DeepEqual(got, want) {
 		t.Errorf("field index %q values = %#v, want %#v", field, got, want)
+	}
+}
+
+func TestBackendNamespaceIndexTracksDeclaredReferences(t *testing.T) {
+	route := indexedTestHTTPRoute(testConfig())
+	if got, want := backendNamespaceKeys(route), []string{"apps"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("backend namespaces = %v, want %v", got, want)
+	}
+	// Authorization and Service existence are deliberately absent from indexes.
+	// A newly created grant must find routes that were previously denied.
+	namespace := gatewayv1.Namespace("replacement")
+	route.Spec.Rules = []gatewayv1.HTTPRouteRule{{BackendRefs: []gatewayv1.HTTPBackendRef{{
+		BackendRef: gatewayv1.BackendRef{BackendObjectReference: gatewayv1.BackendObjectReference{
+			Name: "replacement", Namespace: &namespace,
+		}},
+	}}}}
+	if got, want := backendNamespaceKeys(route), []string{"replacement"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("replacement namespaces = %v, want %v", got, want)
+	}
+	if got, want := backendServiceKeys(route), []string{"replacement/replacement"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("replacement Services = %v, want %v", got, want)
 	}
 }

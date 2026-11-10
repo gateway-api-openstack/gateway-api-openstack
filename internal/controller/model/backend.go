@@ -46,16 +46,14 @@ func resolveBackend(route *gatewayv1.HTTPRoute, reference gatewayv1.HTTPBackendR
 		Authorization: BackendAuthorizationNotChecked, State: BackendInvalid,
 		Endpoints: []Endpoint{},
 	}
-	if ptr.Deref(reference.Group, "") != "" || ptr.Deref(reference.Kind, "Service") != "Service" {
+	serviceKey, supported := BackendServiceReference(route.Namespace, reference.BackendObjectReference)
+	if !supported {
 		group.Diagnostic = backendDiagnostic(gatewayv1.RouteReasonInvalidKind,
 			fmt.Sprintf("backendRef group %q and kind %q are unsupported", ptr.Deref(reference.Group, ""), ptr.Deref(reference.Kind, "Service")))
 		return group
 	}
-	group.Service = types.NamespacedName{
-		Namespace: string(ptr.Deref(reference.Namespace, gatewayv1.Namespace(route.Namespace))),
-		Name:      string(reference.Name),
-	}
-	if !backendReferenceAllowed(route.Namespace, group.Service, input.ReferenceGrants) {
+	group.Service = serviceKey
+	if !BackendReferenceAllowed(route.Namespace, group.Service, input.ReferenceGrants) {
 		group.Authorization = BackendAuthorizationDenied
 		group.Diagnostic = backendDiagnostic(gatewayv1.RouteReasonRefNotPermitted,
 			fmt.Sprintf("backend Service %s is not permitted by a ReferenceGrant", group.Service))
@@ -84,12 +82,26 @@ func resolveBackend(route *gatewayv1.HTTPRoute, reference gatewayv1.HTTPBackendR
 	return group
 }
 
-func backendReferenceAllowed(namespace string, target types.NamespacedName, grants []gatewayv1.ReferenceGrant) bool {
+// BackendServiceReference normalizes a core Service reference using its source namespace.
+// Other groups and kinds remain unsupported rather than being interpreted as Services.
+func BackendServiceReference(namespace string, reference gatewayv1.BackendObjectReference) (types.NamespacedName, bool) {
+	if ptr.Deref(reference.Group, "") != "" || ptr.Deref(reference.Kind, "Service") != "Service" {
+		return types.NamespacedName{}, false
+	}
+	return types.NamespacedName{
+		Namespace: string(ptr.Deref(reference.Namespace, gatewayv1.Namespace(namespace))),
+		Name:      string(reference.Name),
+	}, true
+}
+
+// BackendReferenceAllowed checks Service reference authorization against observed grants.
+// It performs no reads and does not confer ownership of the referenced Service.
+func BackendReferenceAllowed(namespace string, target types.NamespacedName, grants []gatewayv1.ReferenceGrant) bool {
 	if namespace == target.Namespace {
 		return true
 	}
 	for _, grant := range grants {
-		if grant.Namespace != target.Namespace {
+		if grant.Namespace != target.Namespace || !grant.DeletionTimestamp.IsZero() {
 			continue
 		}
 		fromAllowed := slices.ContainsFunc(grant.Spec.From, func(from gatewayv1.ReferenceGrantFrom) bool {
@@ -110,7 +122,7 @@ func backendReferenceAllowed(namespace string, target types.NamespacedName, gran
 func findBackendService(key types.NamespacedName, services []corev1.Service) *corev1.Service {
 	for index := range services {
 		service := &services[index]
-		if service.Namespace == key.Namespace && service.Name == key.Name {
+		if service.Namespace == key.Namespace && service.Name == key.Name && service.DeletionTimestamp.IsZero() {
 			return service
 		}
 	}

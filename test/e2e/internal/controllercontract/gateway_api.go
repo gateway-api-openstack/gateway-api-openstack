@@ -51,6 +51,7 @@ func RequireGatewayAPICRDs(ctx context.Context, reader client.Reader) error {
 		"gatewayclasses.gateway.networking.k8s.io",
 		"gateways.gateway.networking.k8s.io",
 		"httproutes.gateway.networking.k8s.io",
+		"referencegrants.gateway.networking.k8s.io",
 	} {
 		if _, found := present[name]; !found {
 			return fmt.Errorf("a required Gateway API CRD is absent")

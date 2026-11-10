@@ -104,6 +104,8 @@ Set `CONTAINER_TOOL=podman` on the `make` command when Podman is preferred.
 
 The base installation includes the cluster-scoped OpenStackGatewayClassConfig CRD.
 Inspect its effect on any other installation using this API before applying or removing the base manifests.
+The controller also needs Namespace `get`, `list`, and `watch` access and ReferenceGrant `list` and `watch` access for backend input collection and reference events.
+Its startup and bundle checks require the ReferenceGrant API from the pinned Standard Channel bundle.
 Render and inspect the resources, then install them:
 
 ```sh

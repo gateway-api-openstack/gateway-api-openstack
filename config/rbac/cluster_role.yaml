@@ -37,6 +37,13 @@ rules:
   - apiGroups:
       - gateway.networking.k8s.io
     resources:
+      - referencegrants
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
       - gatewayclasses/status
       - gateways/status
       - httproutes/status
@@ -57,6 +64,7 @@ rules:
     resources:
       - nodes
       - services
+      - namespaces
     verbs:
       - get
       - list
