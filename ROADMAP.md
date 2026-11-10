@@ -4,7 +4,7 @@ This roadmap sets the order of work and completion criteria for gateway-api-open
 It is a planning document, not a release promise.
 The target is an OpenStack implementation listed upstream as Conformant for GATEWAY-HTTP.
 Phase 5 requires the pinned profile's complete Core suite and every declared Extended feature to pass.
-Partial results document progress but do not satisfy that milestone.
+An eligible partial report may support an earlier Partially Conformant listing, but does not satisfy that milestone.
 
 Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
 Phase 5 development can proceed for an accepted design while unrelated Phase 4 work and Octavia reviews remain open.
@@ -166,15 +166,16 @@ The HTTPRoute compiler has explicit unsupported functions and upstream TODOs for
 Tests verify that these paths create neither bindings nor cloud resources.
 They do not count as Core implementations, and Phase 4 cannot close while the blockers remain.
 
-[ADR 0005](docs/design/adr/0005-core-resource-mapping.md) records the proposed mappings and their acceptance gates.
+[ADR 0006](docs/design/adr/0006-core-model-boundaries.md) accepts explicit forwarding environments, the complete logical Gateway model, backend groups, and direct policy attachment.
+[ADR 0005](docs/design/adr/0005-core-resource-mapping.md) retains the proposed physical mappings and their acceptance gates.
 The [conformance guide](docs/testing-conformance.md#prepare-the-suite) explains the pinned Core inventory and local verification.
 
 Before implementing the corresponding Phase 5 features, accept designs for:
 
-- Service forwarding that accepts the required Service inputs without modifying user Services or OCCM graphs
-- logical listener grouping, route precedence, partial validity, status, and cleanup
-- request filters, error responses, redirects, and Service-level backend weights
-- TLS Secret validation, ReferenceGrant revocation, SNI, and Barbican resource lifecycle
+- the concrete endpoint member mode and initial CNI, routing, security, and address-family profile, without modifying user Services or OCCM graphs
+- physical listener grouping, fragment identity, cross-namespace inventory, route precedence, partial validity, status, and cleanup
+- an Octavia pool mapping that preserves backend groups, weights, health behavior, and invalid backend shares, including the required HTTP actions
+- TLS Secret validation, ReferenceGrant revocation, SNI, and cloud certificate publication and recovery
 
 Validate the [proof cases](docs/design/conformance-feasibility.md#phase-4-proof-cases) through API review and model tests before live testing.
 Member mode, resource mapping, capability requirements, and certificate ownership changes require accepted ADRs.
@@ -191,8 +192,16 @@ Record independently settled decisions in focused ADRs and leave unresolved mapp
 Begin with listener and route attachment, deterministic forwarding rules, and backend reference authorization using existing Octavia primitives.
 Prove the Service forwarding path before implementing a new member mode, and settle Barbican ownership before implementing certificate creation.
 Secret validation and reference authorization can be developed independently of certificate publication.
-Treat Service weighting, cross-action ordering, and API input limits as design questions until their proof cases establish the required behavior.
+Keep Service groups and their endpoint membership separate in the desired model.
+Before choosing a pool layout, verify unequal endpoint counts, overlapping endpoints, weight zero, rounding, health changes, and mixed invalid and empty backends.
+If the current API cannot express that model, scope the necessary upstream primitive from the failed proof rather than adding approximate forwarding behavior.
+Cross-action ordering and API input limits remain design questions until their proof cases establish the required behavior.
 Do not assume that each gap needs a separate Octavia API extension.
+
+Retain one logical writer per Gateway as concurrency grows.
+First measure and tune bounded workers for different Gateway UIDs under one active leader and a shared OpenStack request budget.
+Same-Gateway parent and route work remains serialized through the common coordinator.
+Active controller sharding is later work requiring a separate ownership and handoff design, not a second writer for the same load balancer.
 
 For each feature:
 
@@ -310,7 +319,7 @@ Project-specific policies and arbitrary ExtensionRef support do not replace Core
 Accept ordinary ClusterIP Services, headless Services, and Services backed by manually managed EndpointSlices through the forwarding design selected in Phase 4.
 Support the required endpoint and port resolution without requiring users to change their Service type.
 Do not modify user Services, take over OCCM resources, or create tenant network routes implicitly.
-Direct endpoint members are a candidate only where existing Amphora and endpoint routing has been verified.
+Develop direct endpoint members for the explicit environment selected under ADR 0006, and enable that mode only after its routing and lifecycle proof passes.
 NodePort forwarding may remain available, but a NodePort-only user contract cannot satisfy this phase.
 
 ### Cross-namespace references
@@ -322,13 +331,22 @@ Attachment of a route in another namespace to a Gateway follows Gateway API's `a
 
 ### Terminated HTTPS
 
-Support terminated HTTPS from Kubernetes TLS Secrets through Barbican resources created by the controller.
+Use Kubernetes TLS Secrets as the default certificate source for terminated HTTPS.
+The source does not determine the cloud transport: stock Amphora receives key manager references rather than inline Kubernetes Secret payloads.
+The [certificate assessment](docs/design/conformance-feasibility.md#certificate-transport-and-ownership) describes the existing PKCS12 path and the unresolved ownership boundary.
 Support the required certificate reference for each logical listener.
 When logical listeners share a physical listener, include the SNI certificates needed to preserve those Core configurations.
 Do not defer that mapping as optional multiple-certificate support.
 
-The TLS design must cover Secret validation, redaction of private keys and certificate data, cross-namespace authorization, immutable identity for Barbican resources, certificate rotation without downtime, crash recovery between old and new certificates, and deletion of only the secrets and containers created by the controller.
-If Barbican cannot expose enough identity to prove ownership, the controller does not manage that resource type until a safe identity mechanism has been designed and tested.
+Prefer one PKCS12 Secret per Gateway certificate revision over legacy certificate Containers, subject to an accepted ownership mechanism.
+The TLS design must cover validation, payload redaction, cross-namespace authorization, publication with discoverable ownership, rotation without downtime, restart after a lost create response, and deletion of only owned certificate revisions.
+Investigate atomic ownership metadata at creation together with idempotent recovery, and determine whether existing APIs suffice or a Barbican change is needed.
+Do not enable managed upload while identity cannot be proved safely.
+
+Evaluate explicit references to operator-managed Barbican certificates as a separate optional input.
+Define authorization, project scope, missing-reference behavior, and removal in an ADR before adding the API.
+The controller would change only its Listener references, not the external certificate or its ACL.
+This option cannot replace the standard Secret path for Core HTTPS, and does not make a key manager optional for stock Amphora TLS.
 
 The conformance environment must provide the certificate service required by the accepted HTTPS design.
 An HTTP-only development environment can still run selected diagnostics, but it cannot establish GATEWAY-HTTP completion.
@@ -342,7 +360,8 @@ The API contract must state whether `Allocate` adds a new FIP to a requested VIP
 
 Introduce a namespaced OpenStackBackendPolicy only when documented use cases require health monitor settings for individual Services.
 If added, the first version will be an experimental `v1alpha1` Direct Policy Attachment.
-It will use a `targetRef` to a Service in the same namespace, or to a named Service port through `sectionName`, and contain only health monitor settings.
+Follow ADR 0006 with a `targetRef` to a Service in the same namespace, or to a named Service port through `sectionName`, and contain only health monitor settings.
+Settle whole-Service and port-specific overlap in the API review, and keep inherited defaults, overrides, and field merging outside the first version.
 The CRD carries the `gateway.networking.k8s.io/policy: Direct` label and reports standard `Accepted`, `Conflicted`, and `TargetNotFound` reasons through `PolicyAncestorStatus` entries for each Gateway and controller.
 Session persistence, pool algorithms, and connection limits do not belong in the first version without separate evidence.
 
@@ -368,6 +387,18 @@ Any additional member mode needs its own compatibility evidence.
   Publish the blocker and diagnostic evidence without weakening the completion condition.
 - Experimental backend policies or additional member modes, if shipped, have a separate contract and evidence.
 
+### Upstream implementation listing
+
+During Phase 5 development, seek a Partially Conformant listing once an immutable evaluation release can run the upstream profile and produce an eligible report with explicit gaps.
+The required setup and reusable report runner must work first.
+The current adapted single-test diagnostic is not a submission artifact.
+Recheck the upstream version window, skip limits, feature declaration requirements, and implementation-list generator at submission time.
+The [conformance publication guide](docs/testing-conformance.md#publish-results) records those requirements.
+An early listing does not close Phase 4 or Phase 5 and does not claim production readiness.
+
+After the full Phase 5 gate passes, submit the successful report and implementation metadata for a Conformant listing without waiting for Phase 6 operational maturity.
+Upstream review remains an external process, and the stable release still requires the accepted listing.
+
 ## Phase 6 - Production candidate and community evidence
 
 **Status:** Later
@@ -384,6 +415,8 @@ Phase 6 validates installation, operation, troubleshooting, upgrades, and remova
 - Include paths with and without a Floating IP and an HTTPS environment with Barbican enabled.
 - Exercise controller restart, leader change, credential rotation, Octavia failure, version upgrade, rollback, finalization, and leak detection.
 - Publish measured scale results and behavior under bursts of EndpointSlice updates, including OpenStack API call budgets.
+- Measure concurrent Gateway updates and leader handoff before raising worker limits.
+  Consider active controller sharding only if a measured bottleneck remains, with disjoint graph ownership, complete dependency watches, safe handoff, and an aggregate project request budget.
 - Publish Gateway creation and route update latency, Amphora instance and quota cost per Gateway topology, and the conditions that make direct Amphora a better fit than an Octavia L4 load balancer in front of an in-cluster proxy.
 
 ### Operations and security
@@ -411,9 +444,8 @@ Phase 6 validates installation, operation, troubleshooting, upgrades, and remova
 - Collect feedback and publishable upgrade evidence from at least two external adopters.
 - Develop at least two release-capable maintainers from different organizations.
   Record independent review of real pull requests and design decisions, and make release and security response possible when one maintainer is unavailable.
-- Submit the successful pinned profile report, reproduction instructions, and implementation metadata upstream for a Conformant listing.
-  Use a Gateway API release eligible under the current upstream listing rules.
-  Partial reports may document earlier progress but do not satisfy the project target or release gate.
+- Maintain the Phase 5 upstream submission and refresh its report, reproduction instructions, and implementation metadata for eligible supported Gateway API releases.
+  A Partially Conformant listing does not satisfy the project target or release gate.
 
 An eventual Kubernetes SIG or OpenInfra home is a community decision, not an engineering milestone this repository can promise.
 Consider that step only after the project has neutral governance, maintainers from more than one organization, adopter evidence, and sustained upstream participation.

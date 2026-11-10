@@ -61,6 +61,7 @@ API and model checks precede live proofs.
 Each proof depends on the APIs needed for that behavior, not on resolving every blocker above.
 Existing Octavia APIs can support independent proofs while other extensions are under review.
 The [development sequence](../../ROADMAP.md#develop-and-verify-one-feature-at-a-time) separates integration against pinned development builds from phase completion on released dependencies.
+The accepted [model boundaries](adr/0006-core-model-boundaries.md) preserve backend groups and constrain direct endpoint forwarding to an explicitly verified network environment.
 The following primitives inform the proposed mappings in [ADR 0005](adr/0005-core-resource-mapping.md), which defines their verification and acceptance gates.
 
 | Requirement | Octavia constraint |
@@ -70,7 +71,7 @@ The following primitives inform the proposed mappings in [ADR 0005](adr/0005-cor
 | Fixed-host redirects | Redirect prefix and status fields exist, but cross-action precedence must be verified. |
 | Header and hostname matching | Host and header ACLs and ordered L7 policies exist, subject to API key and value limits. |
 | Logical listeners sharing a port | A physical listener can host L7 rules and SNI certificates, but duplicate protocol and port pairs are rejected. |
-| HTTPS | Terminated HTTPS accepts certificate references, but safe Barbican ownership is unresolved. |
+| HTTPS | Kubernetes Secrets can supply certificate data, but Octavia consumes key manager references. Managed publication ownership remains unresolved. |
 
 The [member API](https://docs.openstack.org/api-ref/load-balancer/v2/#create-member) permits addresses outside the supplied subnet when existing routing makes them reachable.
 Resolving a ClusterIP or headless Service to EndpointSlices is therefore a candidate, not an established portable mode.
@@ -94,12 +95,45 @@ The Amphora template emits different HAProxy rule types for those actions.
 Include a more specific forwarding route overlapping a broader redirect in the compiler proofs.
 Also check the [L7 rule key and value limits](https://github.com/openstack/octavia/blob/93689cb7701da65b5aad387bb824c477c64b0f2b/octavia/api/v2/types/l7rule.py#L63) before promising a mapping for every permitted Gateway API input.
 
-Barbican's [Secret metadata API](https://docs.openstack.org/barbican/latest/api/reference/secret_metadata.html) provides a possible identity mechanism.
-It does not establish safe ownership by itself.
-The certificate ADR must cover project-scoped discovery, duplicate detection, creation before identity metadata is durable, rotation, revocation, and deletion after listener references are removed.
-Kubernetes ReferenceGrant authorization and Barbican access control are separate checks.
+## Certificate transport and ownership
 
-### Implementation boundary
+The certificate source and the cloud transport are separate decisions.
+The planned default source is a Kubernetes TLS Secret referenced by the Gateway.
+Octavia 19.0.0's [Listener request](https://github.com/openstack/octavia/blob/19.0.0/octavia/api/v2/types/listener.py) accepts `default_tls_container_ref` and `sni_container_refs`, not inline certificate and private-key data or Kubernetes Secret references.
+The [PKCS12 support contract](https://github.com/openstack/octavia/blob/19.0.0/releasenotes/notes/Support-PKCS12-certificate-objects-1c6e896be9d35977.yaml) permits a single certificate bundle in a key manager Secret instead of deprecated legacy certificate Containers.
+
+The default source would therefore follow this path in a Barbican-backed cloud:
+
+```text
+Kubernetes TLS Secret -> validated PKCS12 bundle -> owned Barbican Secret -> Octavia Listener reference -> Amphora
+```
+
+Cloud-provider-openstack's [Octavia Ingress controller](https://github.com/kubernetes/cloud-provider-openstack/blob/master/pkg/ingress/controller/controller.go) already implements Secret conversion and Barbican publication.
+This establishes a working API path, not this project's ownership guarantee: its name-based discovery and deletion cannot be copied as proof of the full immutable identity required here.
+
+An optional operator-managed certificate reference would use an existing Barbican Secret without creating, rotating, or deleting it.
+That is comparable to [AWS LBC Gateway's existing ACM references](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/gateway/gateway/#certificate-discovery-for-secure-listeners), whose documented Gateway path does not synchronize Kubernetes certificate Secrets into ACM.
+Reference access and lifecycle ownership are different authorities.
+Kubernetes reference authorization and cloud access control must both be defined before adding the optional API.
+It does not replace standard Secret-based HTTPS for Core conformance.
+
+Barbican can store and serve the required certificate bundle.
+The unresolved issue is safe recovery of controller-created resources.
+The [Secret creation API](https://docs.openstack.org/barbican/latest/api/reference/secrets.html) and [user metadata API](https://docs.openstack.org/barbican/latest/api/reference/secret_metadata.html) are separate requests.
+If creation succeeds but its response is lost before ownership metadata or the returned ID is persisted, recovery lacks a complete identity with which to authorize mutation or deletion.
+A durable intent or an idempotency token alone does not establish that identity.
+
+Investigate a mechanism that records the complete ownership identity atomically with creation and permits scoped discovery, duplicate rejection, and safe retry.
+Determine whether an existing API mechanism can meet that contract before proposing a Barbican extension for atomic metadata creation and recovery.
+Do not treat a name, creator ID, ACL, or cached reference as the missing proof.
+Using one PKCS12 Secret reduces the number of creation boundaries but does not remove this failure window.
+Rotation must also account for [immutable Secret payloads](https://docs.openstack.org/api-guide/key-manager/secrets.html#single-step-secret-creation) by creating and switching to a new revision before retiring an unreferenced owned revision.
+
+Octavia supports operator-configured [certificate managers](https://docs.openstack.org/octavia/latest/configuration/configref.html#certificates), including a Castellan integration.
+A cloud with a suitable alternative backend can avoid Barbican, but this is cloud operator configuration, not a controller option that sends Kubernetes Secrets directly to stock Amphora.
+Replacing the key manager or adding an inline certificate transport is outside the accepted design and requires its own API, security, and recovery review.
+
+## Implementation boundary
 
 The current compiler exposes unsupported action entry points in `internal/controller/httproute/httproute_actions.go` for request header modification, redirects, and required HTTP responses.
 They return typed validation errors before binding or cloud mutation.

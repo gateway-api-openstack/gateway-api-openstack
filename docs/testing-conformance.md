@@ -34,7 +34,7 @@ The [Core inventory](../test/design/core-mapping.json) groups the pinned GATEWAY
 CI checks it against upstream source with `make test-core-mapping`.
 The target downloads only the pinned source module and runs a local inventory check, without contacting Kubernetes or OpenStack.
 An inventory match does not execute conformance tests or declare supported features.
-Use [ADR 0005](design/adr/0005-core-resource-mapping.md) for the proposed mappings and their outstanding verification cases.
+Use [ADR 0006](design/adr/0006-core-model-boundaries.md) for accepted model boundaries and [ADR 0005](design/adr/0005-core-resource-mapping.md) for unresolved mappings and verification cases.
 
 During development, follow the [incremental E2E plan](testing-openstack-e2e.md#validate-changes-incrementally) from a working traffic baseline to each implemented feature.
 Select applicable upstream tests once their setup dependencies are met, then test interactions such as route precedence with redirects, invalid shares with weighted backends, and ReferenceGrant revocation with TLS rotation.
@@ -90,9 +90,26 @@ This record does not replace the suite-generated conformance report.
 
 Upstream lists [Conformant and Partially Conformant implementations](https://gateway-api.sigs.k8s.io/docs/implementations/list/).
 This project's target requires the complete Core profile and all declared Extended features to pass.
-A partial report can document progress but does not satisfy that target.
+An eligible partial report can support an earlier listing during Phase 5 development, but does not satisfy that target or close Phase 4.
+The current adapted single-test diagnostic is not an eligible profile report, and this repository still needs a reusable report-producing runner.
+The current empty `supportedFeatures` list also blocks the suite's default inferred-feature setup.
+Resolve submission eligibility without declaring unverified features or overriding feature selection merely to qualify.
 
-Follow the pinned [reporting rules](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/conformance/reports/README.md) for an unmodified report, an immutable implementation version, reproduction instructions, and implementation metadata.
-Recheck version eligibility when submitting upstream.
+Before submitting a partial result, make the upstream setup work, publish a reproducible immutable evaluation version, and run the profile with known gaps explicitly identified.
+Keep the suite-generated report unmodified and retain the reasons for skipped tests and earlier failures.
+Do not weaken fixtures, relabel failed tests, or advertise unverified features to obtain a listing.
+The [reporting rules](https://github.com/kubernetes-sigs/gateway-api/blob/a52aff438a5c133b10376fbe45c4096a2b0ce8ff/conformance/reports/README.md) require successful or partial profile results, not failed results.
+
+Under the [conformance levels](https://gateway-api.sigs.k8s.io/docs/conformance/levels/) checked on 2026-11-06, full conformance uses one of the latest two minor releases and partial conformance uses one of the latest three.
+Recheck these windows and the actual list generator when submitting, rather than relying on an older implementation's entry.
+At the reviewed [upstream revision](https://github.com/kubernetes-sigs/gateway-api/tree/a52aff438a5c133b10376fbe45c4096a2b0ce8ff), profile validation adds a limit of five skipped tests to each partial Core or Extended status when evaluated as v1.7, while the list generator still evaluates against v1.6.
+This transition is not a permanent allowance for broad skips.
+Reassess version eligibility, skip limits, and feature declaration rules before scheduling the submission run.
+The repository remains pinned to v1.6.1 until a separate dependency update is reviewed.
+
+Submit the report and [ImplementationListDetails](https://github.com/kubernetes-sigs/gateway-api/blob/a52aff438a5c133b10376fbe45c4096a2b0ce8ff/conformance/list/implementations/README.md) upstream, and generate the list with `make update-implist` in the upstream repository.
+Follow the [entry procedure](https://gateway-api.sigs.k8s.io/docs/implementations/list/#adding-new-entries) instead of editing the generated implementation page directly.
+Phase 5 completion permits a full Conformant submission without waiting for Phase 6 operations or Phase 7 stability.
+Listing review is independent of those project milestones and does not establish production readiness.
 Keep `GatewayClass.status.supportedFeatures` limited to fully verified behavior.
 Formal Gateway reports infer features from that status, as described in the [implementer's guide](https://gateway-api.sigs.k8s.io/guides/implementers-guide/#conformance-and-version-compatibility).
