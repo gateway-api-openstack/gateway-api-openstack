@@ -141,7 +141,7 @@ func (r *Reconciler) enqueueHTTPRoutesForNode(ctx context.Context, object client
 		if !structurallySupportedRoute(route) {
 			continue
 		}
-		managed, err := inputs.hasManagedParent(ctx, r, route)
+		managed, err := inputs.hasNodePortParent(ctx, r, route)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Could not resolve HTTPRoute parents for Node", "httpRoute", client.ObjectKeyFromObject(route), "node", node.Name)
 			continue

@@ -107,6 +107,8 @@ const (
 type Member struct {
 	Address string
 	Port    int
+	// Draining keeps an endpoint registered at weight zero while it is terminating.
+	Draining bool
 	// ProviderID identifies the Node's server for read-only worker-port validation.
 	// It is not part of the Octavia member identity, which remains address and port.
 	ProviderID string
@@ -117,6 +119,7 @@ type RouteSpec struct {
 	Identity                Identity
 	Gateway                 GatewayState
 	GatewayRequirements     GatewayRequirements
+	MemberMode              MemberMode
 	MemberSubnetID          string
 	BackendSecurityGroupIDs []string
 	HealthMonitor           HealthMonitorConfig

@@ -18,14 +18,16 @@ This project does not adopt or migrate its resources.
 - Users configure routing through Gateway API resources and infrastructure defaults through OpenStackGatewayClassConfig.
 - One Gateway owns one Amphora load balancer and its dependent resources.
 - One deployment uses one OpenStack cloud, region, authenticated project, and credential scope.
-- User-provided NodePort Services supply backends.
+- User-provided Services supply backends through the class's frozen member mode.
 - This controller never shares a cloud resource graph with the OpenStack Cloud Controller Manager (OCCM) or another controller.
 - Existing OpenStack resources are not adopted.
 - Unsupported or unrepresentable behavior is rejected through status.
 
 The current profile supports one HTTP listener, one selected HTTPRoute in the Gateway namespace, one rule, and one Service backend in the route namespace.
 It supports an exact hostname with Exact or PathPrefix matching.
-Multiple listeners, multiple desired routes, TLS, ReferenceGrant, ClusterIP backends, Pod IP members, requested addresses, and backend policies remain unsupported.
+NodePort is the default member mode.
+The opt-in IPv4 Endpoint implementation awaits live network validation under [ADR 0007](adr/0007-direct-endpoint-members.md).
+Multiple listeners, multiple desired routes, TLS, ReferenceGrant, requested addresses, and backend policies remain unsupported.
 
 ## Design principles
 
@@ -93,7 +95,8 @@ Ownership of a security group alone is insufficient authority to change a port.
 | Gateway address | Allocated Floating IP or load balancer VIP | Existing addresses are not adopted, and requested Gateway addresses are unsupported. |
 | Listener | HTTP listener | One listener. Terminated HTTPS remains planned. |
 | HTTPRoute rule and match | Pool, ordered L7 policies, and conjunctive rules | One selected route, rule, and backend with exact hostname and path matching. |
-| NodePort backend | Members on eligible worker Node addresses | Pod IP and ClusterIP backends are unsupported. |
+| NodePort mode | Members on eligible worker Node addresses and NodePorts | Requires a NodePort Service. |
+| Endpoint mode | Members on resolved EndpointSlice addresses and ports | Opt-in IPv4 development mode with no verified cloud environment. |
 | Class health settings | HTTP health monitor for the route pool | Backend-specific policy is deferred. |
 | TLS Secret | Planned PKCS12 certificate through the cloud key manager | Default certificate source for future HTTPS. Publication ownership and recovery remain unresolved. |
 | Frontend security | Octavia-managed or referenced VIP security groups | Referenced groups require API 2.29 and validated ingress prerequisites. Their rules remain operator-owned. |
@@ -143,7 +146,7 @@ It retains logical listeners, parent attachments, ordered HTTP matches, source o
 Invalid references and unsupported rules remain explicit diagnostics, so a consumer cannot discard their traffic shares or silently forward their requests to a broader route.
 Endpoint conditions describe Kubernetes observations, not Amphora health or network reachability.
 
-The current NodePort path uses the model's normalized match and selected Service port, reusing the same EndpointSlice observation for worker selection.
+Both member modes use the model's normalized match and selected Service port, reusing the same EndpointSlice observation for member selection.
 The compiler can evaluate multiple HTTP listeners, routes, parents, and backend groups in local tests, while the deployed path retains the current profile's restrictions.
 Enabling those configurations still requires the physical mappings, complete live inventory, and durable parent bindings described in [ADR 0005](adr/0005-core-resource-mapping.md).
 The compiler does not assign cloud resource identities, choose a pool layout, or authorize cleanup.
@@ -208,7 +211,7 @@ A different transition order requires a design that addresses health, mixed traf
 
 Manager indexes cover class ownership and parameters, parent Gateways, backend Services, cleanup bindings, and EndpointSlice Services.
 Watch handlers use these relationships to enqueue affected objects.
-Node mapping filters managed NodePort backends and reuses parent, Service, and endpoint reads within one event.
+Node mapping filters by the frozen NodePort mode and reuses parent, Service, and endpoint reads within one event.
 Service and EndpointSlice mappers read each shared parent index once per invocation while retaining route contenders and direct cleanup requests.
 This temporary reuse does not replace the writer's live ownership checks or persist between events.
 
@@ -236,14 +239,11 @@ The writer reuses those resource packages through small source interfaces and ow
 
 ## Backend connectivity
 
-NodePort is the only implemented member mode.
-The [class configuration reference](../reference/class-configuration.md#worker-nodeport-members) defines worker, Service port, EndpointSlice, and address-family eligibility for Cluster and Local traffic policies.
-The controller does not alter Node labels or create helper Services.
-
-The operator must provide routing and security rules that let Amphora reach NodePorts.
-A VIP subnet is not proof of the Amphora source network.
-Compatibility evidence must record the traffic policy, IP family, kube-proxy behavior, and topology tested.
-Pod IP mode remains deferred until direct reachability, CNI behavior, endpoint conditions, draining, and security have an explicit contract.
+The [class configuration reference](../reference/class-configuration.md) defines NodePort and experimental Endpoint selection, lifecycle, and network prerequisites.
+Member mode is fixed in the Gateway binding, and Endpoint mode does not depend on Node readiness or worker port identity.
+The controller does not alter user Services or network configuration to establish connectivity.
+Compatibility evidence must identify the forwarding mode, address family, CNI, routing, security, and actual traffic tested.
+Endpoint mode has local implementation evidence only.
 
 ## Class configuration and frozen topology
 
@@ -347,7 +347,7 @@ Traffic and Amphora health come from Octavia or the data plane and must be ident
 flowchart LR
     C["Client"] --> A["Floating IP or VIP"]
     A --> O["Octavia Amphora HTTP listener"]
-    O --> B["Worker NodePort backend"]
+    O --> B["Worker NodePort or resolved IPv4 endpoint"]
 ```
 
 An independently installed proxy may use OCCM and a LoadBalancer Service.

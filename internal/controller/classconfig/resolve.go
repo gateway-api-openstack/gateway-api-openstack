@@ -83,6 +83,7 @@ func Resolve(ctx context.Context, reader client.Reader, resolver cloud.TopologyR
 		}
 		return Resolved{}, &topologyResolutionError{cause: err}
 	}
+	topology.MemberMode = request.MemberMode
 	return Resolved{
 		Topology: topology, NodeAddressType: addressType, HealthMonitor: monitor,
 		ParametersName: parameters.Name, ParametersUID: parameters.UID, ParametersGeneration: parameters.Generation,

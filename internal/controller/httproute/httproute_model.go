@@ -59,13 +59,13 @@ func structurallySupportedRoute(route *gatewayv1.HTTPRoute) bool {
 	if len(route.Spec.ParentRefs) != 1 {
 		return false
 	}
-	_, err := validateNodePortRoute(route)
+	_, err := validateRouteStructure(route)
 	return err == nil
 }
 
-// validateNodePortRoute limits programming to the existing Octavia mapping.
+// validateRouteStructure limits programming to the existing Octavia mapping.
 // The logical compiler can represent a wider configuration without enabling it.
-func validateNodePortRoute(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObjectReference, error) {
+func validateRouteStructure(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObjectReference, error) {
 	if len(route.Spec.Hostnames) > 1 {
 		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
 	}
@@ -116,77 +116,87 @@ func validateNodePortRoute(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObjectR
 	return backend.BackendObjectReference, nil
 }
 
-func (r *Reconciler) buildRouteSpecWithReader(
+type routeModel struct {
+	cloud.RouteSpec
+	service model.Source
+}
+
+func (r *Reconciler) buildRouteModelWithReader(
 	ctx context.Context,
 	reader client.Reader,
 	route *gatewayv1.HTTPRoute,
 	gateway *gatewayv1.Gateway,
-) (cloud.RouteSpec, error) {
-	reference, err := validateNodePortRoute(route)
+) (routeModel, error) {
+	reference, err := validateRouteStructure(route)
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, err
 	}
 
 	var service corev1.Service
 	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)}, &service); err != nil {
-		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", err)
-	}
-	if service.Spec.Type != corev1.ServiceTypeNodePort {
-		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "backend Service %s must be type NodePort", service.Name)
-	}
-	if _, err := nodePortForBackend(&service, int32(*reference.Port)); err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, fmt.Errorf("get backend Service: %w", err)
 	}
 	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, err
+	}
+	mode := topology.Topology.MemberMode
+	if _, err := servicePortForBackend(&service, *reference.Port, mode); err != nil {
+		return routeModel{}, err
 	}
 	endpoints, err := backendEndpointSlices(ctx, reader, &service)
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, err
 	}
 	logical, err := model.Compile(model.Input{
 		Gateway: gateway, Routes: []gatewayv1.HTTPRoute{*route},
 		Services: []corev1.Service{service}, EndpointSlices: endpoints,
 	})
 	if err != nil {
-		return cloud.RouteSpec{}, fmt.Errorf("compile Gateway route model: %w", err)
+		return routeModel{}, fmt.Errorf("compile Gateway route model: %w", err)
 	}
-	match, backend, err := nodePortRouteModel(logical)
+	match, backend, err := supportedRouteModel(logical, mode)
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, err
 	}
-	// The logical backend supplies the selected Service port. Endpoint addresses
-	// remain observations here; only the existing NodePort mapping emits members.
-	members, err := nodePortMembersFromSlices(ctx, reader, &service, backend.Port, topology.NodeAddressType, endpoints)
+	var members []cloud.Member
+	if mode == cloud.MemberModeEndpoint {
+		members, err = endpointMembers(&service, backend.Endpoints)
+	} else {
+		members, err = nodePortMembersFromSlices(ctx, reader, &service, backend.Port, topology.NodeAddressType, endpoints)
+	}
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return routeModel{}, err
 	}
-	return cloud.RouteSpec{
-		Identity: controller.RouteIdentity(r.Config, gateway, route),
-		GatewayRequirements: cloud.GatewayRequirements{
-			Provider:          "amphora",
-			VIPSubnetID:       topology.Topology.VIPSubnetID,
-			ExternalNetworkID: topology.Topology.ExternalNetworkID,
-			ListenerPort:      int(logical.Listeners[0].Port),
-			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
-			VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
+	return routeModel{
+		RouteSpec: cloud.RouteSpec{
+			Identity: controller.RouteIdentity(r.Config, gateway, route),
+			GatewayRequirements: cloud.GatewayRequirements{
+				Provider:          "amphora",
+				VIPSubnetID:       topology.Topology.VIPSubnetID,
+				ExternalNetworkID: topology.Topology.ExternalNetworkID,
+				ListenerPort:      int(logical.Listeners[0].Port),
+				FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
+				VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
+			},
+			MemberMode:              mode,
+			MemberSubnetID:          topology.Topology.MemberSubnetID,
+			BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
+			HealthMonitor:           topology.HealthMonitor,
+			Hostname:                match.Hostname,
+			PathType:                cloud.PathMatchType(match.Match.PathType),
+			PathValue:               match.Match.PathValue,
+			Members:                 members,
 		},
-		MemberSubnetID:          topology.Topology.MemberSubnetID,
-		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
-		HealthMonitor:           topology.HealthMonitor,
-		Hostname:                match.Hostname,
-		PathType:                cloud.PathMatchType(match.Match.PathType),
-		PathValue:               match.Match.PathValue,
-		Members:                 members,
+		service: model.Source{Namespace: service.Namespace, Name: service.Name, UID: service.UID, ResourceVersion: service.ResourceVersion},
 	}, nil
 }
 
-// nodePortRouteModel lowers only the currently implemented graph shape. Model
+// supportedRouteModel lowers only the currently implemented graph shape. Model
 // diagnostics never grant authority to drop a fragment or choose a fallback.
-func nodePortRouteModel(logical model.Gateway) (model.RouteMatch, model.BackendGroup, error) {
+func supportedRouteModel(logical model.Gateway, mode cloud.MemberMode) (model.RouteMatch, model.BackendGroup, error) {
 	unsupported := func() (model.RouteMatch, model.BackendGroup, error) {
-		return model.RouteMatch{}, model.BackendGroup{}, newRouteBuildError(routeErrorUnsupported, "logical Gateway configuration is outside the supported NodePort profile")
+		return model.RouteMatch{}, model.BackendGroup{}, newRouteBuildError(routeErrorUnsupported, "logical Gateway configuration is outside the supported HTTP profile")
 	}
 	if len(logical.Diagnostics) != 0 || len(logical.Listeners) != 1 || len(logical.Routes) != 1 {
 		return unsupported()
@@ -207,7 +217,7 @@ func nodePortRouteModel(logical model.Gateway) (model.RouteMatch, model.BackendG
 	if backend.Diagnostic != nil || backend.Port == nil || backend.Weight == 0 || backend.Service.Namespace != route.Source.Namespace {
 		return unsupported()
 	}
-	if backend.Port.NodePort == 0 {
+	if mode == cloud.MemberModeNodePort && backend.Port.NodePort == 0 {
 		return unsupported()
 	}
 	return match, backend, nil

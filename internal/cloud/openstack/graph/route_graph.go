@@ -348,17 +348,20 @@ func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]ro
 		}
 		for _, member := range actual.members {
 			key := memberKey(member.Address, member.ProtocolPort)
-			if _, exists := desiredMembers[key]; !exists || member.SubnetID != desired.spec.MemberSubnetID {
+			wanted, exists := desiredMembers[key]
+			if !exists || member.SubnetID != desired.spec.MemberSubnetID {
 				nonPolicyPlan = append(nonPolicyPlan, routeMutation{kind: routeMutationDeleteMember, id: member.ID, parentID: pool.ID})
 				continue
 			}
 			state.MemberIDs = append(state.MemberIDs, member.ID)
 			delete(desiredMembers, key)
-			if !member.AdminStateUp {
+			weight := desiredMemberWeight(desired.spec.MemberMode, wanted)
+			if !member.AdminStateUp || weight != nil && member.Weight != *weight {
 				nonPolicyPlan = append(nonPolicyPlan, routeMutation{
 					kind:     routeMutationUpdateMember,
 					id:       member.ID,
 					parentID: pool.ID,
+					member:   wanted,
 				})
 			}
 		}
@@ -553,10 +556,12 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			SubnetID:     desired.spec.MemberSubnetID,
 			AdminStateUp: boolPointer(true),
 			Tags:         tags,
+			Weight:       desiredMemberWeight(desired.spec.MemberMode, step.member),
 		})
 	case routeMutationUpdateMember:
 		_, err = p.octavia.UpdateMember(ctx, step.parentID, step.id, pools.UpdateMemberOpts{
 			AdminStateUp: boolPointer(true),
+			Weight:       desiredMemberWeight(desired.spec.MemberMode, step.member),
 		})
 	case routeMutationCreateMonitor:
 		tags, tagErr := desired.identity.RouteTags(roleMonitor)
@@ -656,6 +661,19 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 		return fmt.Errorf("%s: %w", step.message(), classifyOctaviaMutationError(err))
 	}
 	return nil
+}
+
+// Endpoint weight represents readiness, not the Service backend's traffic share.
+// NodePort mode retains Octavia's default and does not own member weights.
+func desiredMemberWeight(mode cloud.MemberMode, member cloud.Member) *int {
+	if mode != cloud.MemberModeEndpoint {
+		return nil
+	}
+	weight := 1
+	if member.Draining {
+		weight = 0
+	}
+	return &weight
 }
 
 func isRouteDeletion(kind routeMutationKind) bool {

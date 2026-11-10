@@ -57,6 +57,9 @@ func (r *Resolver) ResolveTopology(ctx context.Context, request cloud.TopologyRe
 	if err := validateRequest(request); err != nil {
 		return cloud.Topology{}, err
 	}
+	if request.MemberMode == "" {
+		request.MemberMode = cloud.MemberModeNodePort
+	}
 	ctx, cancel := context.WithTimeout(ctx, r.operationTimeout)
 	defer cancel()
 	if err := r.checkCapabilities(ctx, request); err != nil {
@@ -75,6 +78,9 @@ func (r *Resolver) ResolveTopology(ctx context.Context, request cloud.TopologyRe
 	}
 	if vip.IPVersion != member.IPVersion {
 		return cloud.Topology{}, invalid("VIP and member subnets must use the same IP version")
+	}
+	if request.MemberMode == cloud.MemberModeEndpoint && vip.IPVersion != 4 {
+		return cloud.Topology{}, invalid("endpoint mode requires IPv4 VIP and member subnets")
 	}
 	// Reuse parent network reads only within this snapshot. Names and tags are
 	// resolved again on the next class evaluation.
@@ -97,7 +103,8 @@ func (r *Resolver) ResolveTopology(ctx context.Context, request cloud.TopologyRe
 	}
 	result = cloud.Topology{
 		VIPSubnetID: vip.ID, MemberSubnetID: member.ID,
-		FlavorID: request.FlavorID, AvailabilityZone: request.AvailabilityZone,
+		MemberMode: request.MemberMode,
+		FlavorID:   request.FlavorID, AvailabilityZone: request.AvailabilityZone,
 	}
 	if request.ExternalNetwork != nil {
 		if vip.IPVersion != 4 {
@@ -121,6 +128,15 @@ func (r *Resolver) ResolveTopology(ctx context.Context, request cloud.TopologyRe
 }
 
 func validateRequest(request cloud.TopologyRequest) error {
+	switch request.MemberMode {
+	case "", cloud.MemberModeNodePort:
+	case cloud.MemberModeEndpoint:
+		if len(request.BackendSecurityGroups) != 0 {
+			return invalid("endpoint mode requires unmanaged backend security")
+		}
+	default:
+		return invalid("unsupported member mode")
+	}
 	for _, reference := range []cloud.ResourceReference{request.VIPSubnet, request.MemberSubnet} {
 		if err := validateReference(reference); err != nil {
 			return err

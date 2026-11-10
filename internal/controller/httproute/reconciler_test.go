@@ -505,7 +505,7 @@ func TestUnsupportedRouteCannotReserveGatewaySlot(t *testing.T) {
 			if err != nil || !selected {
 				t.Fatalf("valid route lost selection to an unsupported route: selected=%t, error=%v", selected, err)
 			}
-			_, err = reconciler.buildRouteSpecWithReader(t.Context(), kubeClient, older, gateway)
+			_, err = reconciler.buildRouteModelWithReader(t.Context(), kubeClient, older, gateway)
 			var buildError *routeBuildError
 			if !errors.As(err, &buildError) || buildError.kind != test.kind {
 				t.Fatalf("unsupported route error = %v, want %s before backend lookup", err, test.kind)
@@ -535,11 +535,12 @@ func TestRouteCanReserveSlotRejectsTerminalServiceProfiles(t *testing.T) {
 			service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"}, Spec: test.spec}
 			kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(service).Build()
 			reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Config: testConfig()}, nil)
-			canReserve, err := reconciler.routeCanReserveSlot(context.Background(), route)
+			_, gateway := providerRouteParentObjects(testConfig())
+			decision, err := reconciler.evaluateRouteSlotWithReader(context.Background(), kubeClient, route, gateway)
 			if err != nil {
 				t.Fatalf("routeCanReserveSlot() error = %v", err)
 			}
-			if canReserve {
+			if decision.canReserve {
 				t.Fatal("terminally unsupported Service profile reserved the sole Gateway route slot")
 			}
 		})

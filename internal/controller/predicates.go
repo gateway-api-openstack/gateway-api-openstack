@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -200,7 +203,9 @@ func EndpointSlicePredicate() predicate.Predicate {
 		}
 		return oldSlice.AddressType != newSlice.AddressType ||
 			!equality.Semantic.DeepEqual(oldSlice.Ports, newSlice.Ports) ||
-			endpointSliceBackendState(oldSlice) != endpointSliceBackendState(newSlice)
+			oldSlice.Labels[discoveryv1.LabelServiceName] != newSlice.Labels[discoveryv1.LabelServiceName] ||
+			oldSlice.DeletionTimestamp.IsZero() != newSlice.DeletionTimestamp.IsZero() ||
+			!maps.Equal(endpointSliceBackendState(oldSlice), endpointSliceBackendState(newSlice))
 	})
 }
 
@@ -220,9 +225,18 @@ func NodePredicate(addressType corev1.NodeAddressType) predicate.Predicate {
 	})
 }
 
-// ServicePredicate selects Service spec changes.
+// ServicePredicate selects Service spec and deletion changes. The core Service
+// API does not increment generation when its spec changes.
 func ServicePredicate() predicate.Predicate {
-	return predicate.GenerationChangedPredicate{}
+	return updatePredicate(func(oldObject, newObject client.Object) bool {
+		oldService, oldOK := oldObject.(*corev1.Service)
+		newService, newOK := newObject.(*corev1.Service)
+		if !oldOK || !newOK {
+			return true
+		}
+		return !equality.Semantic.DeepEqual(oldService.Spec, newService.Spec) ||
+			!equality.Semantic.DeepEqual(oldService.DeletionTimestamp, newService.DeletionTimestamp)
+	})
 }
 
 func finalizerPresenceChanged(oldObject, newObject client.Object, finalizer string) bool {
@@ -353,36 +367,26 @@ func gatewayProgrammedState(gateway *gatewayv1.Gateway) programmedState {
 	}
 }
 
-type endpointBackendState struct {
-	serviceName string
-	hasReady    bool
-	readyNodes  string
-	deleting    bool
+type endpointState struct {
+	addresses   string
+	nodeName    string
+	ready       bool
+	serving     bool
+	terminating bool
 }
 
-func endpointSliceBackendState(endpointSlice *discoveryv1.EndpointSlice) endpointBackendState {
-	nodes := make(map[string]struct{})
-	hasReady := false
+func endpointSliceBackendState(endpointSlice *discoveryv1.EndpointSlice) map[endpointState]struct{} {
+	endpoints := make(map[endpointState]struct{}, len(endpointSlice.Endpoints))
 	for _, endpoint := range endpointSlice.Endpoints {
-		if !endpointReady(endpoint.Conditions) {
-			continue
-		}
-		hasReady = true
-		if endpoint.NodeName != nil {
-			nodes[*endpoint.NodeName] = struct{}{}
-		}
+		addresses := slices.Clone(endpoint.Addresses)
+		slices.Sort(addresses)
+		endpoints[endpointState{
+			addresses: strings.Join(slices.Compact(addresses), "\x00"), nodeName: ptr.Deref(endpoint.NodeName, ""),
+			ready: ptr.Deref(endpoint.Conditions.Ready, true), serving: ptr.Deref(endpoint.Conditions.Serving, true),
+			terminating: ptr.Deref(endpoint.Conditions.Terminating, false),
+		}] = struct{}{}
 	}
-	readyNodes := make([]string, 0, len(nodes))
-	for node := range nodes {
-		readyNodes = append(readyNodes, node)
-	}
-	sort.Strings(readyNodes)
-	return endpointBackendState{
-		serviceName: endpointSlice.Labels[discoveryv1.LabelServiceName],
-		hasReady:    hasReady,
-		readyNodes:  strings.Join(readyNodes, "\x00"),
-		deleting:    !endpointSlice.DeletionTimestamp.IsZero(),
-	}
+	return endpoints
 }
 
 type nodeBackendState struct {
@@ -411,13 +415,6 @@ func nodeBackendStateFor(node *corev1.Node, addressType corev1.NodeAddressType) 
 		}
 	}
 	return state
-}
-
-func endpointReady(conditions discoveryv1.EndpointConditions) bool {
-	if conditions.Terminating != nil && *conditions.Terminating {
-		return false
-	}
-	return conditions.Ready == nil || *conditions.Ready
 }
 
 func nodeAddresses(node *corev1.Node, addressType corev1.NodeAddressType) string {

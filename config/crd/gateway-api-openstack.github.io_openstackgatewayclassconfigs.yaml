@@ -28,10 +28,19 @@ spec:
               type: object
             spec:
               type: object
+              x-kubernetes-validations:
+                - rule: "self.memberMode != 'Endpoint' || self.backendSecurity.mode == 'Unmanaged'"
+                  message: Endpoint memberMode requires Unmanaged backendSecurity.
               required:
                 - vipSubnet
                 - memberSubnet
               properties:
+                memberMode:
+                  type: string
+                  default: NodePort
+                  enum:
+                    - NodePort
+                    - Endpoint
                 frontendSecurity:
                   type: object
                   default:

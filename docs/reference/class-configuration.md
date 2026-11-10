@@ -43,7 +43,7 @@ spec:
 The controller name must exactly match the installation's `--controller-name` setting.
 Credentials, project scope, cluster identity, region, and request limits remain [deployment settings](../getting-started.md#deployment-settings).
 A parameter object cannot select different credentials or a different project.
-Amphora and NodePort are the only provider and member mode.
+Amphora is the only provider, and NodePort is the default member mode.
 There are no deployment topology flags or fallback settings for a GatewayClass without `parametersRef`.
 Gateway `spec.infrastructure.parametersRef` is not supported.
 
@@ -53,13 +53,14 @@ Gateway `spec.infrastructure.parametersRef` is not supported.
 | --- | --- | --- |
 | `vipSubnet` | Required | Selects the existing subnet for the load balancer VIP. |
 | `memberSubnet` | Required | Selects the existing subnet supplied to Octavia members. |
+| `memberMode` | `NodePort` | Selects worker NodePorts or the experimental `Endpoint` mode described below. |
 | `floatingIP.mode` | `None` | `None` publishes the VIP. `Allocate` creates a Floating IP owned by the Gateway. |
 | `floatingIP.externalNetwork` | Unset | Required for `Allocate` and forbidden for `None`. Selects an existing external network. |
 | `frontendSecurity.mode` | `OctaviaManaged` | `Referenced` uses existing VIP security groups after capability and rule checks. |
 | `frontendSecurity.groups` | Unset | Required for `Referenced`. Supply 1 through 16 distinct group references. |
-| `backendSecurity.mode` | `Unmanaged` | `Referenced` validates groups already attached to the selected worker ports. |
+| `backendSecurity.mode` | `Unmanaged` | `Referenced` validates groups already attached to selected worker ports in NodePort mode. Endpoint mode requires `Unmanaged`. |
 | `backendSecurity.groups` | Unset | Required for `Referenced`. Supply 1 through 16 distinct group references. |
-| `nodeAddressType` | `InternalIP` | Selects `InternalIP` or `ExternalIP` from eligible Nodes. |
+| `nodeAddressType` | `InternalIP` | Selects `InternalIP` or `ExternalIP` from eligible Nodes in NodePort mode. Endpoint mode does not use it. |
 | `flavorID` | Unset | Selects an enabled Amphora flavor by UUID. |
 | `availabilityZone` | Unset | Selects an enabled Amphora availability zone by exact name. |
 | `healthMonitor.path` | `/` | HTTP path starting with `/`, with no control characters and at most 255 characters. |
@@ -143,7 +144,7 @@ Unknown or unverifiable capabilities are not accepted.
 
 | Configuration | Minimum configured Octavia microversion | Additional reads |
 | --- | --- | --- |
-| Base HTTP and NodePort profile | `2.5` | API version discovery, provider list, selected subnets, and their networks. |
+| Base HTTP profile | `2.5` | API version discovery, provider list, selected subnets, and their networks. Endpoint mode requires IPv4 subnets. |
 | `flavorID` | `2.6` | Flavor and flavor profile, including proof that the profile uses Amphora. |
 | `availabilityZone` | `2.14` | Availability zone and its profile, including proof that the profile uses Amphora. |
 | `floatingIP.mode: Allocate` | `2.5` | Selected external network. Recovery also reads Neutron revision extensions. |
@@ -168,12 +169,12 @@ Correct the configuration or restore the required access, then let reconciliatio
 
 ## Configuration after Gateway creation
 
-Before creating cloud resources, the controller records the resolved IDs, health monitor settings, Node address type, and parameter object identity in the Gateway's durable binding.
+Before creating cloud resources, the controller records the member mode, resolved IDs, health monitor settings, Node address type, and parameter object identity in the Gateway's durable binding.
 It persists that binding with its finalizers and returns before provisioning.
 The resulting configuration remains fixed for that Gateway UID.
 
 Editing the parameter object or changing its selectors affects Gateways that have not yet acquired a binding.
-It does not move an existing Gateway to another subnet, flavor, availability zone, Floating IP policy, or set of referenced groups.
+It does not change an existing Gateway's member mode, subnet, flavor, availability zone, Floating IP policy, or referenced groups.
 Deleting the parameter object makes the referencing GatewayClass invalid for new bindings, but an already bound Gateway continues to use its stored configuration.
 Its cleanup does not require the parameter object to exist.
 
@@ -186,6 +187,38 @@ A partial or changed binding stops mutation with an ownership conflict.
 Recovery requires the original identity and intact binding, as described in the [operator recovery guide](../operator-recovery.md).
 Deleting the entire configuration CRD is different from deleting one parameter object: the running controller still requires the API for its watches.
 Keep the CRD installed until all installations using it have been removed.
+
+## Direct endpoint members
+
+Set `spec.memberMode: Endpoint` on a class configuration to select the development implementation from [ADR 0007](../design/adr/0007-direct-endpoint-members.md).
+This mode has local tests but no verified OpenStack environment yet.
+Keep `backendSecurity.mode: Unmanaged` and select IPv4 VIP and member subnets.
+The current OpenStack E2E runner exercises NodePort modes and does not validate this path.
+
+HTTPRoute continues to reference a Service port.
+The controller resolves that port through EndpointSlices and registers their IPv4 addresses and resolved TCP ports as Octavia members.
+It accepts ClusterIP, headless, and NodePort Services, including manually managed EndpointSlices selected by namespace and the `kubernetes.io/service-name` label.
+It matches the Service port name rather than the `targetPort` string, allowing different resolved ports in different slices.
+LoadBalancer and ExternalName Services remain unsupported.
+Endpoint mode does not use Node eligibility, `nodeAddressType`, or Service traffic policies to choose members.
+
+Amphora must reach those addresses from the selected `memberSubnet`, and responses must return to the actual source address of Amphora's backend connection.
+An endpoint address may be outside that subnet's CIDR when routing provides the path.
+The controller does not configure routes, CNI tunnels, worker ports, security groups, or NetworkPolicies.
+Establish and test those prerequisites before cloud use.
+Successful class validation or member creation does not establish reachability.
+
+Ready, serving endpoints receive traffic.
+Serving endpoints marked terminating use Octavia weight zero until they disappear or stop serving.
+This requests draining but does not guarantee that existing connections finish successfully.
+Nil ready and serving conditions are treated as true, and nil terminating is false.
+Deleting slices are ignored, and conflicting duplicate observations use the less available state.
+The controller rejects loopback, link-local, multicast, and the referenced Service's virtual addresses.
+
+Endpoint updates preserve unchanged member IDs.
+A valid Service with no eligible endpoints keeps its pool, monitor, and route policies with an empty member list.
+This is distinct from an invalid backend reference and does not implement its required Core HTTP error response.
+IPv6 endpoint forwarding, broader route mappings, and conformance remain separate work.
 
 ## Worker NodePort members
 
