@@ -497,3 +497,23 @@ func markDeleting(metadata *metav1.ObjectMeta) {
 	timestamp := metav1.NewTime(time.Unix(1, 0))
 	metadata.DeletionTimestamp = &timestamp
 }
+
+func TestNamespacePredicate(t *testing.T) {
+	base := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "apps", Labels: map[string]string{"team": "blue"}}}
+	pred := NamespacePredicate()
+	changed := base.DeepCopy()
+	changed.Labels["team"] = "green"
+	testPredicateUpdate(t, pred, base, changed, true, "selector labels")
+	changed = base.DeepCopy()
+	changed.Annotations = map[string]string{"example.com/note": "changed"}
+	testPredicateUpdate(t, pred, base, changed, false, "annotation only")
+	changed = base.DeepCopy()
+	changed.Status.Phase = corev1.NamespaceTerminating
+	testPredicateUpdate(t, pred, base, changed, false, "status only")
+	changed = base.DeepCopy()
+	changed.DeletionTimestamp = ptr.To(metav1.Now())
+	testPredicateUpdate(t, pred, base, changed, true, "deletion")
+	if !pred.Create(event.CreateEvent{Object: base}) || !pred.Delete(event.DeleteEvent{Object: base}) {
+		t.Fatal("namespace lifecycle events must be observed")
+	}
+}

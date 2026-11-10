@@ -189,8 +189,28 @@ func TestGatewayClassReconcileReportsUnsupportedGatewayAPIVersion(t *testing.T) 
 			definitions: []client.Object{
 				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("referencegrants.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 			},
 			wantMessage: "httproutes.gateway.networking.k8s.io is not installed",
+		},
+		{
+			name: "ReferenceGrant CRD is missing",
+			definitions: []client.Object{
+				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("httproutes.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+			},
+			wantMessage: "referencegrants.gateway.networking.k8s.io is not installed",
+		},
+		{
+			name: "ReferenceGrant CRD uses a different version",
+			definitions: []client.Object{
+				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("httproutes.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("referencegrants.gateway.networking.k8s.io", "v1.5.0"),
+			},
+			wantMessage: "referencegrants.gateway.networking.k8s.io uses bundle version v1.5.0",
 		},
 		{
 			name: "annotation is missing",
@@ -198,6 +218,7 @@ func TestGatewayClassReconcileReportsUnsupportedGatewayAPIVersion(t *testing.T) 
 				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				gatewayAPICRD("httproutes.gateway.networking.k8s.io", ""),
+				gatewayAPICRD("referencegrants.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 			},
 			wantMessage: "httproutes.gateway.networking.k8s.io has no bundle version annotation",
 		},
@@ -207,6 +228,7 @@ func TestGatewayClassReconcileReportsUnsupportedGatewayAPIVersion(t *testing.T) 
 				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				gatewayAPICRD("gateways.gateway.networking.k8s.io", "v1.5.0"),
 				gatewayAPICRD("httproutes.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+				gatewayAPICRD("referencegrants.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 			},
 			wantMessage: "gateways.gateway.networking.k8s.io uses bundle version v1.5.0",
 		},
@@ -232,6 +254,7 @@ func TestGatewayClassReconcileReportsUnsupportedGatewayAPIVersion(t *testing.T) 
 				gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				gatewayAPICRD("gateways.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 				terminatingRouteCRD,
+				gatewayAPICRD("referencegrants.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 			},
 			wantMessage: "httproutes.gateway.networking.k8s.io is being deleted",
 		},
@@ -592,20 +615,17 @@ func TestGatewayClassRequestsForGatewayAPICRD(t *testing.T) {
 		Spec:       gatewayv1.GatewayClassSpec{ControllerName: "other.example/controller"},
 	}
 	reconciler, _ := newGatewayClassReconciler(t, managed, managedFirst, unmanaged)
-	definition := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
-		Name: "gateways.gateway.networking.k8s.io",
-	}}
-	definition.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"))
-	requests := reconciler.gatewayClassRequestsForGatewayAPICRD(
-		context.Background(),
-		definition,
-	)
 	want := []ctrl.Request{
 		{NamespacedName: types.NamespacedName{Name: managedFirst.Name}},
 		{NamespacedName: types.NamespacedName{Name: managed.Name}},
 	}
-	if !reflect.DeepEqual(requests, want) {
-		t.Fatalf("requests = %#v, want %#v", requests, want)
+	for _, name := range []string{"gateways.gateway.networking.k8s.io", "referencegrants.gateway.networking.k8s.io"} {
+		definition := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		definition.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"))
+		requests := reconciler.gatewayClassRequestsForGatewayAPICRD(context.Background(), definition)
+		if !reflect.DeepEqual(requests, want) {
+			t.Fatalf("requests for %s = %#v, want %#v", name, requests, want)
+		}
 	}
 	otherGroup := gatewayAPICRD("widgets.example.com", gatewayconsts.BundleVersion)
 	otherGroup.Spec.Group = "example.com"

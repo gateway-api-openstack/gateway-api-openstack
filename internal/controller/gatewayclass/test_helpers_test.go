@@ -40,6 +40,7 @@ var requiredGatewayAPICRDs = []string{
 	"gatewayclasses.gateway.networking.k8s.io",
 	"gateways.gateway.networking.k8s.io",
 	"httproutes.gateway.networking.k8s.io",
+	"referencegrants.gateway.networking.k8s.io",
 }
 
 func testConfig() Config {

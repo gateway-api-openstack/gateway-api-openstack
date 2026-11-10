@@ -143,6 +143,9 @@ func TestControllerEnvtest(t *testing.T) {
 	testGatewayBindingCheckpoint(t, apiClient, cacheClient, config, gateway)
 	testGatewayTopologySnapshot(t, apiClient, cacheClient, config, gateway)
 	testCacheFieldIndexes(t, apiClient, cacheClient, gateway)
+	t.Run("HTTPRoute reference index updates", func(t *testing.T) {
+		testHTTPRouteReferenceIndexUpdates(t, apiClient, cacheClient)
+	})
 	testGraphWriterTriggerEquivalence(t, apiClient, cacheClient, config, gateway)
 	testFinalizersWithNewReconciler(t, apiClient, cacheClient, config, gatewayClass, gateway)
 	t.Run("GatewayClass topology isolation", func(t *testing.T) {

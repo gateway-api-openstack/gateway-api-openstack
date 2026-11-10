@@ -27,7 +27,7 @@ The current profile supports one HTTP listener, one selected HTTPRoute in the Ga
 It supports an exact hostname with Exact or PathPrefix matching.
 NodePort is the default member mode.
 The opt-in IPv4 Endpoint implementation awaits live network validation under [ADR 0007](adr/0007-direct-endpoint-members.md).
-Multiple listeners, multiple desired routes, TLS, ReferenceGrant, requested addresses, and backend policies remain unsupported.
+Multiple listeners, multiple desired routes, TLS, cross-namespace forwarding, requested addresses, and backend policies remain unsupported.
 
 ## Design principles
 
@@ -70,9 +70,9 @@ The cloud graph contains the Gateway's load balancer, listener, optional Floatin
 A resource that stops selecting this controller remains its cleanup responsibility when a durable finalizer or binding records prior ownership.
 That responsibility permits cleanup of the recorded graph, not provisioning for the new controller.
 
-Reading a Service, EndpointSlice, Node, class parameter, OpenStack network, security group, or worker port does not confer ownership.
+Reading Kubernetes dependencies or referenced OpenStack networks, security groups, and worker ports does not confer ownership.
 The controller does not create tenant networks, subnets, routers, or routes as a side effect of a Gateway.
-Secrets, ReferenceGrants, security group policies, and Barbican resources enter the graph only when their future feature contracts are implemented.
+TLS Secret handling, backend policies, and Barbican resources require their remaining feature contracts.
 
 ### Shared fields require a separate decision
 
@@ -147,6 +147,11 @@ Invalid references and unsupported rules remain explicit diagnostics, so a consu
 Endpoint conditions describe Kubernetes observations, not Amphora health or network reachability.
 
 Both member modes use the model's normalized match and selected Service port, reusing the same EndpointSlice observation for member selection.
+The graph source collects backend inputs for its complete current route inventory and compiles them once per observation.
+Service and EndpointSlice reads are shared across rules and routes, while backend weights, authorization results, and diagnostics remain separate.
+Cross-namespace targets are read only when an observed ReferenceGrant permits at least one referring route.
+Namespace labels are collected when listener attachment uses a namespace selector.
+The current single-route selection then chooses the portion eligible for cloud programming without dropping any of that route's rules or backend groups.
 The compiler can evaluate multiple HTTP listeners, routes, parents, and backend groups in local tests, while the deployed path retains the current profile's restrictions.
 Enabling those configurations still requires the physical mappings, complete live inventory, and durable parent bindings described in [ADR 0005](adr/0005-core-resource-mapping.md).
 The compiler does not assign cloud resource identities, choose a pool layout, or authorize cleanup.
@@ -166,8 +171,12 @@ A preserved fragment cannot authorize restoring disabled parent traffic.
 
 The route source lists the Gateway namespace through the uncached reader, including bound routes whose ParentRef has disappeared and candidates that can affect selection.
 It repeats that inventory before mutation and checks route UIDs and resource versions, then validates the required object revisions, bindings, finalizers, lifecycle, ownership, and API version.
+It also reobserves backend dependencies once per graph to detect replacement objects, changed EndpointSlice membership, and revised reference permissions.
+Binding creation performs the same inventory and dependency checks before persisting ownership.
+Cleanup requests rely on durable bindings and do not require Service, EndpointSlice, or ReferenceGrant reads.
 These checks detect observed changes without claiming an atomic Kubernetes snapshot.
 Cached indexes drive event mapping, not proof of inventory completeness.
+Collecting an authorized backend in another namespace does not expand the route inventory or enable cross-namespace provisioning.
 
 Bound routes require an explicit `Attached` or `Detaching` marker.
 The route reconciler makes the applicable status and cleanup checkpoint durable before changing the marker to `Detaching`.
@@ -209,10 +218,12 @@ A different transition order requires a design that addresses health, mixed traf
 
 ### Kubernetes events and measurements
 
-Manager indexes cover class ownership and parameters, parent Gateways, backend Services, cleanup bindings, and EndpointSlice Services.
+Manager indexes cover class ownership and parameters, parent Gateways, backend Services and target namespaces, cleanup bindings, and EndpointSlice Services.
 Watch handlers use these relationships to enqueue affected objects.
 Node mapping filters by the frozen NodePort mode and reuses parent, Service, and endpoint reads within one event.
-Service and EndpointSlice mappers read each shared parent index once per invocation while retaining route contenders and direct cleanup requests.
+Service, EndpointSlice, and ReferenceGrant mappers read each shared parent index once per invocation while retaining route contenders and direct cleanup requests.
+ReferenceGrant events include denied references so both granting and revoking permission trigger reevaluation.
+Namespace label changes follow routes in that namespace to parent listeners that use namespace selectors.
 This temporary reuse does not replace the writer's live ownership checks or persist between events.
 
 Predicates react to readiness, schedulability, deletion, relevant labels, and selected addresses.

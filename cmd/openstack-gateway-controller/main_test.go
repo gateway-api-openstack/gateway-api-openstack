@@ -17,13 +17,57 @@ limitations under the License.
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
 )
+
+func TestRequireGatewayAPIsIncludesReferenceGrant(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		name := "ReferenceGrant missing"
+		if installed {
+			name = "ReferenceGrant installed"
+		}
+		t.Run(name, func(t *testing.T) {
+			resources := metav1.APIResourceList{
+				GroupVersion: gatewayv1.GroupVersion.String(),
+				APIResources: []metav1.APIResource{{Name: "gatewayclasses"}, {Name: "gateways"}, {Name: "httproutes"}},
+			}
+			if installed {
+				resources.APIResources = append(resources.APIResources, metav1.APIResource{Name: "referencegrants"})
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet || request.URL.Path != "/apis/"+gatewayv1.GroupVersion.String() {
+					t.Errorf("unexpected discovery request: %s %s", request.Method, request.URL.Path)
+					http.NotFound(w, request)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(resources); err != nil {
+					t.Errorf("encode discovery response: %v", err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			err := requireGatewayAPIs(&rest.Config{Host: server.URL})
+			if installed && err != nil {
+				t.Fatalf("requireGatewayAPIs() rejected available resources: %v", err)
+			}
+			if !installed && (err == nil || !strings.Contains(err.Error(), "referencegrants")) {
+				t.Fatalf("requireGatewayAPIs() = %v, want missing ReferenceGrant resource", err)
+			}
+		})
+	}
+}
 
 func TestConfigureOpenStackRequestMetrics(t *testing.T) {
 	registry := prometheus.NewRegistry()

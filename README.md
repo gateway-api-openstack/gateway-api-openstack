@@ -47,13 +47,13 @@ The controller uses Gateway API v1.6.1 Standard Channel and supports:
 - Ownership validation, restart recovery, and ordered cleanup
 
 The [class configuration reference](docs/reference/class-configuration.md) describes member modes and their network prerequisites.
-Multiple listeners and routes, HTTPS, and ReferenceGrant remain unimplemented.
+Multiple listeners and routes, HTTPS, and cross-namespace forwarding remain unimplemented.
 OVN, non-HTTP Route kinds, existing resource adoption, and proxy data planes are outside the current product scope.
 
 ## Development status
 
 Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
-Phase 5 includes the logical HTTP model and local Endpoint mode implementation.
+Phase 5 includes the logical HTTP model, shared backend input collection, reference watches, and local Endpoint mode implementation.
 See the [compatibility record](docs/providers/compatibility.md) for completed checks and outstanding evidence.
 Development results do not establish general OpenStack support or Gateway API conformance.
 
