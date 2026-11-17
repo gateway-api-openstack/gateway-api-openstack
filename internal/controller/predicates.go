@@ -239,6 +239,14 @@ func ServicePredicate() predicate.Predicate {
 	})
 }
 
+// NamespacePredicate selects namespace labels used by allowedRoutes selectors.
+func NamespacePredicate() predicate.Predicate {
+	return updatePredicate(func(oldObject, newObject client.Object) bool {
+		return !maps.Equal(oldObject.GetLabels(), newObject.GetLabels()) ||
+			!equality.Semantic.DeepEqual(oldObject.GetDeletionTimestamp(), newObject.GetDeletionTimestamp())
+	})
+}
+
 func finalizerPresenceChanged(oldObject, newObject client.Object, finalizer string) bool {
 	return containsString(oldObject.GetFinalizers(), finalizer) != containsString(newObject.GetFinalizers(), finalizer)
 }

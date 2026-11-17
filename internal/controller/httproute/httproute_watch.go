@@ -83,10 +83,16 @@ func (r *Reconciler) enqueueHTTPRoutesForServiceKey(ctx context.Context, service
 		log.FromContext(ctx).Error(err, "Could not list HTTPRoutes for Service", "service", serviceKey)
 		return nil
 	}
+	return r.enqueueHTTPRouteConsumers(ctx, direct.Items)
+}
+
+// enqueueHTTPRouteConsumers includes contenders because a dependency change can
+// change the selected route for every parent shared by a direct consumer.
+func (r *Reconciler) enqueueHTTPRouteConsumers(ctx context.Context, routes []gatewayv1.HTTPRoute) []reconcile.Request {
 	keys := map[types.NamespacedName]struct{}{}
 	observedParents := map[string]struct{}{}
-	for index := range direct.Items {
-		route := &direct.Items[index]
+	for index := range routes {
+		route := &routes[index]
 		keys[client.ObjectKeyFromObject(route)] = struct{}{}
 		for _, gatewayKey := range controller.ParentGatewayKeys(route) {
 			if _, observed := observedParents[gatewayKey]; observed {
@@ -97,7 +103,7 @@ func (r *Reconciler) enqueueHTTPRoutesForServiceKey(ctx context.Context, service
 			observedParents[gatewayKey] = struct{}{}
 			var peers gatewayv1.HTTPRouteList
 			if err := r.List(ctx, &peers, client.MatchingFields{controller.IndexHTTPRouteByParentGateway: gatewayKey}); err != nil {
-				log.FromContext(ctx).Error(err, "Could not list HTTPRoute contenders for Service", "service", serviceKey, "gateway", gatewayKey)
+				log.FromContext(ctx).Error(err, "Could not list HTTPRoute contenders", "gateway", gatewayKey)
 				continue
 			}
 			for peerIndex := range peers.Items {
@@ -213,6 +219,8 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForGateway), builder.WithPredicates(controller.GatewayForHTTPRoutePredicate(r.Config))).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForService), builder.WithPredicates(controller.ServicePredicate())).
 		Watches(&discoveryv1.EndpointSlice{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForEndpointSlice), builder.WithPredicates(controller.EndpointSlicePredicate())).
+		Watches(&gatewayv1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForReferenceGrant), builder.WithPredicates(controller.GenerationOrDeletionChangedPredicate())).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForNamespace), builder.WithPredicates(controller.NamespacePredicate())).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.enqueueHTTPRoutesForNode), builder.WithPredicates(controller.NodePredicate(""))).
 		Named("httproute").
 		Complete(r)

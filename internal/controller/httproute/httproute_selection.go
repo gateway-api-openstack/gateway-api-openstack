@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
@@ -51,9 +52,15 @@ func (r *Reconciler) isSelectedRouteWithReader(
 	if err := reader.List(ctx, &routes, listOptions...); err != nil {
 		return false, fmt.Errorf("list HTTPRoutes for attachment selection: %w", err)
 	}
+	return selectRouteCandidate(route, parent, routes.Items, func(candidate *gatewayv1.HTTPRoute) (routeSlotDecision, error) {
+		return r.evaluateRouteSlotWithReader(ctx, reader, candidate, parent.gateway)
+	})
+}
+
+func selectRouteCandidate(route *gatewayv1.HTTPRoute, parent managedRouteParent, routes []gatewayv1.HTTPRoute, evaluate func(*gatewayv1.HTTPRoute) (routeSlotDecision, error)) (bool, error) {
 	winner := route
-	for index := range routes.Items {
-		candidate := &routes.Items[index]
+	for index := range routes {
+		candidate := &routes[index]
 		if candidate.Name == route.Name || !candidate.DeletionTimestamp.IsZero() || len(candidate.Spec.ParentRefs) != 1 {
 			continue
 		}
@@ -62,7 +69,7 @@ func (r *Reconciler) isSelectedRouteWithReader(
 			validateRouteParent(candidate, candidateParent) != nil || !structurallySupportedRoute(candidate) {
 			continue
 		}
-		decision, err := r.evaluateRouteSlotWithReader(ctx, reader, candidate, parent.gateway)
+		decision, err := evaluate(candidate)
 		if err != nil {
 			return false, err
 		}
@@ -104,14 +111,21 @@ func (r *Reconciler) evaluateRouteSlotWithReader(
 		}
 		return routeSlotDecision{}, fmt.Errorf("get candidate backend Service: %w", err)
 	}
-	if _, err := servicePortForBackend(&service, *backend.Port, topology.Topology.MemberMode); err != nil {
+	return routeSlotForService(&service, *backend.Port, topology.Topology.MemberMode), nil
+}
+
+func routeSlotForService(service *corev1.Service, port gatewayv1.PortNumber, mode cloud.MemberMode) routeSlotDecision {
+	if service == nil {
+		return routeSlotDecision{canReserve: true}
+	}
+	if _, err := servicePortForBackend(service, port, mode); err != nil {
 		var buildError *routeBuildError
 		if errors.As(err, &buildError) && buildError.kind == routeErrorPending {
-			return routeSlotDecision{canReserve: true}, nil
+			return routeSlotDecision{canReserve: true}
 		}
-		return routeSlotDecision{rejection: err}, nil
+		return routeSlotDecision{rejection: err}
 	}
-	return routeSlotDecision{canReserve: true}, nil
+	return routeSlotDecision{canReserve: true}
 }
 
 func routePrecedes(left, right *gatewayv1.HTTPRoute) bool {

@@ -263,6 +263,7 @@ Activating scheduled validation still requires an approved dedicated environment
 ## Phase 5 - Complete GATEWAY-HTTP conformance
 
 **Status:** In progress, with the [logical HTTP model](docs/design/architecture.md#logical-http-model) and opt-in IPv4 Endpoint mode implemented locally.
+Gateway input collection preserves backend groups and follows Service, EndpointSlice, ReferenceGrant, and Namespace changes within the current inventory scope.
 Endpoint traffic verification remains pending.
 Each feature requires its corresponding Phase 4 design to be accepted before implementation.
 Unreleased Octavia dependencies can be used for development integration under the sequence above, while phase completion remains blocked on the required releases and evidence.
@@ -312,6 +313,7 @@ These responses also depend on resolving the Phase 4 API blocker.
 Implement multiple Service backends, proportional weights, weight zero, and the required distribution of failures when only part of the backend configuration is invalid.
 Preserve Service-level behavior as endpoint counts and health change.
 The accepted design and pinned tests must establish this behavior rather than infer it from Octavia member weights.
+The local model retains those groups through input collection, but the Octavia mapping and traffic behavior remain unimplemented.
 
 Method and query matching, response header modification, backendRef-level request header modification, URLRewrite, mirroring, and route timeouts or retries are outside the initial Extended claim.
 Optional requested addresses, listener isolation, or other Extended features require an explicit claim and every corresponding test to pass before publication.
@@ -328,7 +330,8 @@ NodePort forwarding may remain available, but a NodePort-only user contract cann
 
 ### Cross-namespace references
 
-Add ReferenceGrant handling for Service and Secret references.
+Service authorization checks and reference watches are implemented for the logical model.
+Complete cross-namespace inventory, provisioning, and status before enabling Service references across namespaces, and add Secret references with the HTTPS implementation.
 Removal of a grant must revoke the reference and safely converge the dependent graph.
 Include `ReferenceGrant` in `supportedFeatures` only after every applicable combination with the controller's other reported features passes conformance.
 Attachment of a route in another namespace to a Gateway follows Gateway API's `allowedRoutes` rules and is not treated as a generic object reference grant.

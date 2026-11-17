@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -116,79 +117,80 @@ func validateRouteStructure(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObject
 	return backend.BackendObjectReference, nil
 }
 
-type routeModel struct {
-	cloud.RouteSpec
-	service model.Source
-}
-
 func (r *Reconciler) buildRouteModelWithReader(
 	ctx context.Context,
 	reader client.Reader,
 	route *gatewayv1.HTTPRoute,
 	gateway *gatewayv1.Gateway,
-) (routeModel, error) {
+) (cloud.RouteSpec, error) {
+	if _, err := validateRouteStructure(route); err != nil {
+		return cloud.RouteSpec{}, err
+	}
+	inputs, err := collectRouteModelInputs(ctx, reader, gateway, []gatewayv1.HTTPRoute{*route})
+	if err != nil {
+		return cloud.RouteSpec{}, err
+	}
+	return r.buildRouteModelFromInputs(ctx, reader, route, gateway, inputs)
+}
+
+func (r *Reconciler) buildRouteModelFromInputs(
+	ctx context.Context,
+	reader client.Reader,
+	route *gatewayv1.HTTPRoute,
+	gateway *gatewayv1.Gateway,
+	inputs *routeModelInputs,
+) (cloud.RouteSpec, error) {
 	reference, err := validateRouteStructure(route)
 	if err != nil {
-		return routeModel{}, err
+		return cloud.RouteSpec{}, err
 	}
-
-	var service corev1.Service
-	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)}, &service); err != nil {
-		return routeModel{}, fmt.Errorf("get backend Service: %w", err)
+	key := types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)}
+	service := inputs.service(key)
+	if service == nil {
+		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", apierrors.NewNotFound(corev1.Resource("services"), key.Name))
 	}
 	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
 	if err != nil {
-		return routeModel{}, err
+		return cloud.RouteSpec{}, err
 	}
 	mode := topology.Topology.MemberMode
-	if _, err := servicePortForBackend(&service, *reference.Port, mode); err != nil {
-		return routeModel{}, err
+	if _, err := servicePortForBackend(service, *reference.Port, mode); err != nil {
+		return cloud.RouteSpec{}, err
 	}
-	endpoints, err := backendEndpointSlices(ctx, reader, &service)
-	if err != nil {
-		return routeModel{}, err
-	}
-	logical, err := model.Compile(model.Input{
-		Gateway: gateway, Routes: []gatewayv1.HTTPRoute{*route},
-		Services: []corev1.Service{service}, EndpointSlices: endpoints,
-	})
-	if err != nil {
-		return routeModel{}, fmt.Errorf("compile Gateway route model: %w", err)
-	}
+	// Route selection is still the current single-route contract. Preserve every
+	// rule and backend of that route so unsupported groups cannot disappear here.
+	logical := inputs.selectedRoute(route)
 	match, backend, err := supportedRouteModel(logical, mode)
 	if err != nil {
-		return routeModel{}, err
+		return cloud.RouteSpec{}, err
 	}
 	var members []cloud.Member
 	if mode == cloud.MemberModeEndpoint {
-		members, err = endpointMembers(&service, backend.Endpoints)
+		members, err = endpointMembers(service, backend.Endpoints)
 	} else {
-		members, err = nodePortMembersFromSlices(ctx, reader, &service, backend.Port, topology.NodeAddressType, endpoints)
+		members, err = nodePortMembersFromSlices(ctx, reader, service, backend.Port, topology.NodeAddressType, inputs.endpointSlices(key))
 	}
 	if err != nil {
-		return routeModel{}, err
+		return cloud.RouteSpec{}, err
 	}
-	return routeModel{
-		RouteSpec: cloud.RouteSpec{
-			Identity: controller.RouteIdentity(r.Config, gateway, route),
-			GatewayRequirements: cloud.GatewayRequirements{
-				Provider:          "amphora",
-				VIPSubnetID:       topology.Topology.VIPSubnetID,
-				ExternalNetworkID: topology.Topology.ExternalNetworkID,
-				ListenerPort:      int(logical.Listeners[0].Port),
-				FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
-				VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
-			},
-			MemberMode:              mode,
-			MemberSubnetID:          topology.Topology.MemberSubnetID,
-			BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
-			HealthMonitor:           topology.HealthMonitor,
-			Hostname:                match.Hostname,
-			PathType:                cloud.PathMatchType(match.Match.PathType),
-			PathValue:               match.Match.PathValue,
-			Members:                 members,
+	return cloud.RouteSpec{
+		Identity: controller.RouteIdentity(r.Config, gateway, route),
+		GatewayRequirements: cloud.GatewayRequirements{
+			Provider:          "amphora",
+			VIPSubnetID:       topology.Topology.VIPSubnetID,
+			ExternalNetworkID: topology.Topology.ExternalNetworkID,
+			ListenerPort:      int(logical.Listeners[0].Port),
+			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
+			VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 		},
-		service: model.Source{Namespace: service.Namespace, Name: service.Name, UID: service.UID, ResourceVersion: service.ResourceVersion},
+		MemberMode:              mode,
+		MemberSubnetID:          topology.Topology.MemberSubnetID,
+		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
+		HealthMonitor:           topology.HealthMonitor,
+		Hostname:                match.Hostname,
+		PathType:                cloud.PathMatchType(match.Match.PathType),
+		PathValue:               match.Match.PathValue,
+		Members:                 members,
 	}, nil
 }
 

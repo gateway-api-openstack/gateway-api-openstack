@@ -29,6 +29,7 @@ import (
 func TestObserveGatewayAPIVersionReturnsDeterministicIssues(t *testing.T) {
 	definitions := []client.Object{
 		gatewayAPICRD("httproutes.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
+		gatewayAPICRD("referencegrants.gateway.networking.k8s.io", gatewayconsts.BundleVersion),
 		gatewayAPICRD("gateways.gateway.networking.k8s.io", ""),
 		gatewayAPICRD("gatewayclasses.gateway.networking.k8s.io", "v1.5.0"),
 	}

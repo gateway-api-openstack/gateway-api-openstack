@@ -20,9 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +34,6 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	gatewaycontroller "github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/gateway"
-	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 type routeSnapshotPurpose int
@@ -83,7 +82,7 @@ type routeValidationSnapshot struct {
 	binding           routeBindingSnapshot
 	selection         routeSelectionSnapshot
 	desired           cloud.RouteSpec
-	service           model.Source
+	backends          *routeModelInputs
 	gatewayProgrammed bool
 	disposition       routeValidationDisposition
 }
@@ -116,6 +115,16 @@ func (r *Reconciler) buildRouteValidationSnapshot(
 	expectedGateway *gatewayv1.Gateway,
 	purpose routeSnapshotPurpose,
 ) (routeValidationSnapshot, error) {
+	return r.buildRouteValidationSnapshotFromInputs(ctx, expectedRoute, expectedGateway, purpose, nil)
+}
+
+func (r *Reconciler) buildRouteValidationSnapshotFromInputs(
+	ctx context.Context,
+	expectedRoute *gatewayv1.HTTPRoute,
+	expectedGateway *gatewayv1.Gateway,
+	purpose routeSnapshotPurpose,
+	inputs *routeModelInputs,
+) (routeValidationSnapshot, error) {
 	snapshot, err := r.observeRouteValidationInputs(ctx, expectedRoute, expectedGateway)
 	if err != nil {
 		return routeValidationSnapshot{}, err
@@ -129,13 +138,23 @@ func (r *Reconciler) buildRouteValidationSnapshot(
 		return routeValidationSnapshot{}, errHTTPRouteChanged
 	}
 
-	selection, desired, err := r.selectAndBuildRouteModel(ctx, snapshot, parent, purpose)
+	if inputs == nil {
+		routes, err := r.liveGraphRoutes(ctx, controller.GatewayIdentity(r.Config, snapshot.gateway))
+		if err != nil {
+			return routeValidationSnapshot{}, err
+		}
+		inputs, err = collectRouteModelInputs(ctx, r.APIReader, snapshot.gateway, routes)
+		if err != nil {
+			return routeValidationSnapshot{}, err
+		}
+	}
+	selection, desired, err := r.selectAndBuildRouteModel(ctx, snapshot, parent, purpose, inputs)
 	if err != nil {
 		return routeValidationSnapshot{}, err
 	}
 	snapshot.selection = selection
-	snapshot.desired = desired.RouteSpec
-	snapshot.service = desired.service
+	snapshot.desired = desired
+	snapshot.backends = inputs
 
 	if err := r.finishRouteBindingSnapshot(&snapshot, purpose); err != nil {
 		return routeValidationSnapshot{}, err
@@ -237,37 +256,44 @@ func (r *Reconciler) selectAndBuildRouteModel(
 	snapshot routeValidationSnapshot,
 	parent managedRouteParent,
 	purpose routeSnapshotPurpose,
-) (routeSelectionSnapshot, routeModel, error) {
+	inputs *routeModelInputs,
+) (routeSelectionSnapshot, cloud.RouteSpec, error) {
 	structurallySupported := structurallySupportedRoute(snapshot.route)
 	if !structurallySupported && purpose == routeSnapshotForBinding {
-		return routeSelectionSnapshot{}, routeModel{}, errHTTPRouteChanged
+		return routeSelectionSnapshot{}, cloud.RouteSpec{}, errHTTPRouteChanged
+	}
+	topology, err := controller.StoredGatewayTopology(r.Config, snapshot.gateway)
+	if err != nil {
+		return routeSelectionSnapshot{}, cloud.RouteSpec{}, err
+	}
+	evaluate := func(route *gatewayv1.HTTPRoute) (routeSlotDecision, error) {
+		reference := route.Spec.Rules[0].BackendRefs[0]
+		service := inputs.service(types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)})
+		return routeSlotForService(service, *reference.Port, topology.Topology.MemberMode), nil
 	}
 	selection := routeSelectionSnapshot{}
 	if structurallySupported {
-		decision, err := r.evaluateRouteSlotWithReader(ctx, r.APIReader, snapshot.route, snapshot.gateway)
-		if err != nil {
-			return routeSelectionSnapshot{}, routeModel{}, routeSnapshotReadError(purpose, err)
-		}
+		decision, _ := evaluate(snapshot.route)
 		selection.slot = decision
 		if !decision.canReserve {
-			return routeSelectionSnapshot{}, routeModel{}, routeSnapshotRejection(purpose, decision.rejection)
+			return routeSelectionSnapshot{}, cloud.RouteSpec{}, routeSnapshotRejection(purpose, decision.rejection)
 		}
 	}
-	selected, err := r.isSelectedRouteWithReader(ctx, r.APIReader, snapshot.route, parent, false)
+	selected, err := selectRouteCandidate(snapshot.route, parent, inputs.input.Routes, evaluate)
 	if err != nil {
-		return routeSelectionSnapshot{}, routeModel{}, routeSnapshotReadError(purpose, err)
+		return routeSelectionSnapshot{}, cloud.RouteSpec{}, routeSnapshotReadError(purpose, err)
 	}
 	selection.selected = selected
 	if !selected {
-		return routeSelectionSnapshot{}, routeModel{}, routeSnapshotRejection(purpose, newRouteBuildError(
+		return routeSelectionSnapshot{}, cloud.RouteSpec{}, routeSnapshotRejection(purpose, newRouteBuildError(
 			routeErrorUnsupported,
 			"only one HTTPRoute per Gateway is supported. An older route is already selected",
 		))
 	}
 
-	desired, err := r.buildRouteModelWithReader(ctx, r.APIReader, snapshot.route, snapshot.gateway)
+	desired, err := r.buildRouteModelFromInputs(ctx, r.APIReader, snapshot.route, snapshot.gateway, inputs)
 	if err != nil {
-		return routeSelectionSnapshot{}, routeModel{}, routeSnapshotReadError(purpose, err)
+		return routeSelectionSnapshot{}, cloud.RouteSpec{}, routeSnapshotReadError(purpose, err)
 	}
 	return selection, desired, nil
 }
@@ -362,6 +388,22 @@ func (r *Reconciler) sealRouteMutationSnapshot(
 	snapshot routeValidationSnapshot,
 	bindingRequirement routeBindingRequirement,
 ) error {
+	if err := r.sealRouteOwnershipSnapshot(ctx, snapshot, bindingRequirement); err != nil {
+		return err
+	}
+	routes, err := r.liveGraphRoutes(ctx, controller.GatewayIdentity(r.Config, snapshot.gateway))
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(routeGraphRevisions(snapshot.backends.input.Routes), routeGraphRevisions(routes)) {
+		return errHTTPRouteChanged
+	}
+	return snapshot.backends.validate(ctx, r.APIReader)
+}
+
+// sealRouteOwnershipSnapshot checks durable route and Gateway authority. The
+// graph writer validates shared backend inputs once after all route fences.
+func (r *Reconciler) sealRouteOwnershipSnapshot(ctx context.Context, snapshot routeValidationSnapshot, bindingRequirement routeBindingRequirement) error {
 	if err := controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader); err != nil {
 		return err
 	}
@@ -417,13 +459,7 @@ func (r *Reconciler) sealRouteMutationSnapshot(
 	if !controller.GatewayClassSupportsInstalledVersion(&gatewayClass) {
 		return controller.ErrUnsupportedGatewayAPIVersion
 	}
-	var service corev1.Service
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: snapshot.service.Namespace, Name: snapshot.service.Name}, &service); err != nil {
-		return errors.Join(errHTTPRouteChanged, client.IgnoreNotFound(err))
-	}
-	if service.UID != snapshot.service.UID || service.ResourceVersion != snapshot.service.ResourceVersion || !service.DeletionTimestamp.IsZero() {
-		return errHTTPRouteChanged
-	}
+
 	return nil
 }
 
