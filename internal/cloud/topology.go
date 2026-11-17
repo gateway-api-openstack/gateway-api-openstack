@@ -20,6 +20,16 @@ package cloud
 
 import "context"
 
+// MemberMode identifies the backend forwarding path frozen for a Gateway.
+type MemberMode string
+
+const (
+	// MemberModeNodePort forwards to worker addresses and Service NodePorts.
+	MemberModeNodePort MemberMode = "NodePort"
+	// MemberModeEndpoint forwards to addresses and ports from endpoint observations.
+	MemberModeEndpoint MemberMode = "Endpoint"
+)
+
 // ResourceReference selects one existing resource visible to the project.
 // Exactly one of ID, Name, or Tags must be set.
 type ResourceReference struct {
@@ -31,6 +41,7 @@ type ResourceReference struct {
 // TopologyRequest contains only existing infrastructure references.
 // Resolution never creates, adopts, or modifies the selected resources.
 type TopologyRequest struct {
+	MemberMode            MemberMode
 	VIPSubnet             ResourceReference
 	MemberSubnet          ResourceReference
 	ExternalNetwork       *ResourceReference
@@ -42,13 +53,14 @@ type TopologyRequest struct {
 
 // Topology is the validated infrastructure placement for a Gateway.
 type Topology struct {
-	VIPSubnetID             string   `json:"vipSubnetID"`
-	MemberSubnetID          string   `json:"memberSubnetID"`
-	ExternalNetworkID       string   `json:"externalNetworkID,omitempty"`
-	FlavorID                string   `json:"flavorID,omitempty"`
-	AvailabilityZone        string   `json:"availabilityZone,omitempty"`
-	VIPSecurityGroupIDs     []string `json:"vipSecurityGroupIDs,omitempty"`
-	BackendSecurityGroupIDs []string `json:"backendSecurityGroupIDs,omitempty"`
+	MemberMode              MemberMode `json:"memberMode"`
+	VIPSubnetID             string     `json:"vipSubnetID"`
+	MemberSubnetID          string     `json:"memberSubnetID"`
+	ExternalNetworkID       string     `json:"externalNetworkID,omitempty"`
+	FlavorID                string     `json:"flavorID,omitempty"`
+	AvailabilityZone        string     `json:"availabilityZone,omitempty"`
+	VIPSecurityGroupIDs     []string   `json:"vipSecurityGroupIDs,omitempty"`
+	BackendSecurityGroupIDs []string   `json:"backendSecurityGroupIDs,omitempty"`
 }
 
 // TopologyResolver resolves project-visible references and verifies available

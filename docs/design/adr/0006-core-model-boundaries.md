@@ -9,6 +9,7 @@ Owner: `jihyun-huh`
 The repository owner approved these scoped directions after reviewing other Gateway API implementations.
 This records project approval, not independent review, implemented support, or conformance evidence.
 [ADR 0005](0005-core-resource-mapping.md) retains the unresolved physical mappings and their verification gates.
+[ADR 0007](0007-direct-endpoint-members.md) subsequently permits an explicit Endpoint mode implementation while network verification remains pending.
 
 ## Context
 

@@ -313,7 +313,7 @@ func testClassParameters() *configv1alpha1.OpenStackGatewayClassConfig {
 
 func testBoundTopology() classconfig.Resolved {
 	return classconfig.Resolved{
-		Topology:        cloud.Topology{VIPSubnetID: testVIPSubnetID, MemberSubnetID: testMemberSubnetID},
+		Topology:        cloud.Topology{MemberMode: cloud.MemberModeNodePort, VIPSubnetID: testVIPSubnetID, MemberSubnetID: testMemberSubnetID},
 		NodeAddressType: corev1.NodeInternalIP,
 		HealthMonitor:   cloud.HealthMonitorConfig{Path: "/", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
 		ParametersName:  "test-parameters", ParametersUID: "test-parameters-uid", ParametersGeneration: 1,
@@ -352,7 +352,7 @@ func completeRouteLifecycleFixture(cfg Config, route *gatewayv1.HTTPRoute) {
 }
 
 func (*recordingProvider) ResolveTopology(_ context.Context, request cloud.TopologyRequest) (cloud.Topology, error) {
-	topology := cloud.Topology{VIPSubnetID: request.VIPSubnet.ID, MemberSubnetID: request.MemberSubnet.ID, FlavorID: request.FlavorID, AvailabilityZone: request.AvailabilityZone}
+	topology := cloud.Topology{MemberMode: cloud.MemberModeNodePort, VIPSubnetID: request.VIPSubnet.ID, MemberSubnetID: request.MemberSubnet.ID, FlavorID: request.FlavorID, AvailabilityZone: request.AvailabilityZone}
 	if request.ExternalNetwork != nil {
 		topology.ExternalNetworkID = request.ExternalNetwork.ID
 	}

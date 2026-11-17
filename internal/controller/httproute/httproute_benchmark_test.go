@@ -30,6 +30,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
 func BenchmarkNodePortModel(b *testing.B) {
@@ -98,11 +99,15 @@ func nodeFanoutFixture(t testing.TB, count int, policy corev1.ServiceExternalTra
 	cfg := testConfig()
 	service, endpoints, node := validNodePortBackend("default", "backend")
 	service.Spec.ExternalTrafficPolicy = policy
+	gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge"}, Spec: gatewayv1.GatewaySpec{GatewayClassName: "managed"}}
+	if err := controller.BindGatewayTopology(cfg, gateway, testBoundTopology()); err != nil {
+		t.Fatal(err)
+	}
 	objects := []client.Object{
 		service, endpoints, node,
 		&gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "managed"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}},
 		&gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "foreign"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: "other.example.com/controller"}},
-		&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge"}, Spec: gatewayv1.GatewaySpec{GatewayClassName: "managed"}},
+		gateway,
 		&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "foreign"}, Spec: gatewayv1.GatewaySpec{GatewayClassName: "foreign"}},
 	}
 	for i := range count {

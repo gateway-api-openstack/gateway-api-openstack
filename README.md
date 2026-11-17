@@ -36,22 +36,24 @@ The [architecture](docs/design/architecture.md) defines ownership, resource mapp
 The controller uses Gateway API v1.6.1 Standard Channel and supports:
 
 - One HTTP listener and one selected HTTPRoute in the Gateway namespace
-- One rule, one backend NodePort Service, and Exact or PathPrefix matching
+- One rule, one backend Service, and Exact or PathPrefix matching
 - At most one exact route hostname
 - Eligible worker NodePort members with Local or Cluster traffic policy
+- An opt-in IPv4 Endpoint mode for ClusterIP, headless, and NodePort Services, pending live network validation
 - Typed GatewayClass configuration with topology settings fixed for each Gateway
 - Optional Floating IP allocation and recovery after detachment
 - Referenced frontend and backend security groups without changing their rules
 - Read-only environment diagnostics
 - Ownership validation, restart recovery, and ordered cleanup
 
-The [class configuration reference](docs/reference/class-configuration.md) describes deployment options and worker selection.
-Multiple listeners and routes, HTTPS, ReferenceGrant, and ordinary ClusterIP backends remain unimplemented.
+The [class configuration reference](docs/reference/class-configuration.md) describes member modes and their network prerequisites.
+Multiple listeners and routes, HTTPS, and ReferenceGrant remain unimplemented.
 OVN, non-HTTP Route kinds, existing resource adoption, and proxy data planes are outside the current product scope.
 
 ## Development status
 
 Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
+Phase 5 includes the logical HTTP model and local Endpoint mode implementation.
 See the [compatibility record](docs/providers/compatibility.md) for completed checks and outstanding evidence.
 Development results do not establish general OpenStack support or Gateway API conformance.
 

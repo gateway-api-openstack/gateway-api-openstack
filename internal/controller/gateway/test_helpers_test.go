@@ -298,7 +298,7 @@ func testClassParameters() *configv1alpha1.OpenStackGatewayClassConfig {
 
 func testBoundTopology() classconfig.Resolved {
 	return classconfig.Resolved{
-		Topology:        cloud.Topology{VIPSubnetID: testVIPSubnetID, MemberSubnetID: testMemberSubnetID},
+		Topology:        cloud.Topology{MemberMode: cloud.MemberModeNodePort, VIPSubnetID: testVIPSubnetID, MemberSubnetID: testMemberSubnetID},
 		NodeAddressType: corev1.NodeInternalIP,
 		HealthMonitor:   cloud.HealthMonitorConfig{Path: "/", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
 		ParametersName:  "test-parameters", ParametersUID: "test-parameters-uid", ParametersGeneration: 1,

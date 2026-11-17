@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
@@ -45,7 +46,7 @@ type nodeServiceObservation struct {
 	err     error
 }
 
-func (inputs *nodeEventInputs) hasManagedParent(ctx context.Context, r *Reconciler, route *gatewayv1.HTTPRoute) (bool, error) {
+func (inputs *nodeEventInputs) hasNodePortParent(ctx context.Context, r *Reconciler, route *gatewayv1.HTTPRoute) (bool, error) {
 	keys := controller.ParentGatewayKeys(route)
 	if len(keys) != 1 {
 		return false, nil
@@ -54,7 +55,12 @@ func (inputs *nodeEventInputs) hasManagedParent(ctx context.Context, r *Reconcil
 		return observation.eligible, observation.err
 	}
 	parents, err := r.managedParents(ctx, route)
-	observation := nodeEligibilityObservation{eligible: len(parents) > 0, err: err}
+	observation := nodeEligibilityObservation{err: err}
+	if err == nil && len(parents) == 1 && controller.HasGatewayTopologyBinding(r.Config, parents[0].gateway) {
+		topology, err := controller.StoredGatewayTopology(r.Config, parents[0].gateway)
+		observation.err = err
+		observation.eligible = err == nil && topology.Topology.MemberMode == cloud.MemberModeNodePort
+	}
 	inputs.parents[keys[0]] = observation
 	return observation.eligible, observation.err
 }

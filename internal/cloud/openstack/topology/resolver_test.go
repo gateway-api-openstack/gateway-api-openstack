@@ -125,6 +125,7 @@ func TestResolveTopologyUsesVisibleSharedExternalNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := cloud.Topology{
+		MemberMode:  cloud.MemberModeNodePort,
 		VIPSubnetID: "vip-subnet", MemberSubnetID: "member-subnet", ExternalNetworkID: "public-net",
 		FlavorID: "flavor-1", AvailabilityZone: "zone-1",
 	}
@@ -152,6 +153,56 @@ func TestResolveTopologyReusesIdenticalSubnetReference(t *testing.T) {
 	}
 	if f.calls("/v2.0/subnets/vip-subnet") != 1 || f.calls("/v2.0/subnets/member-subnet") != 0 {
 		t.Fatal("identical subnet reference was resolved more than once")
+	}
+}
+
+func TestResolveEndpointTopology(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		version int
+		wantErr bool
+	}{
+		{name: "IPv4", version: 4},
+		{name: "IPv6", version: 6, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newTopologyFixture(t)
+			request := topologyRequest()
+			request.MemberMode = cloud.MemberModeEndpoint
+			if test.version == 6 {
+				f.responses["/v2.0/subnets/vip-subnet"] = fixtureResponse{body: `{"subnet":{"id":"vip-subnet","network_id":"private-net","project_id":"project-a","cidr":"2001:db8::/64","ip_version":6}}`}
+				f.responses["/v2.0/subnets/member-subnet"] = fixtureResponse{body: `{"subnet":{"id":"member-subnet","network_id":"private-net","project_id":"project-a","cidr":"2001:db8:1::/64","ip_version":6}}`}
+			}
+			got, err := f.resolver.ResolveTopology(context.Background(), request)
+			if test.wantErr {
+				if !errors.Is(err, cloud.ErrTerminalValidation) {
+					t.Fatalf("error = %v, want terminal validation", err)
+				}
+				return
+			}
+			if err != nil || got.MemberMode != cloud.MemberModeEndpoint || got.MemberSubnetID != "member-subnet" {
+				t.Fatalf("topology = %+v, error = %v", got, err)
+			}
+			if f.calls("/v2.0/ports") != 0 {
+				t.Fatal("endpoint topology looked up worker ports")
+			}
+		})
+	}
+}
+
+func TestResolveTopologyRejectsInvalidMemberModeBeforeReads(t *testing.T) {
+	for _, request := range []cloud.TopologyRequest{
+		{MemberMode: "unknown"},
+		{MemberMode: cloud.MemberModeEndpoint, BackendSecurityGroups: []cloud.ResourceReference{{ID: "group"}}},
+	} {
+		f := newTopologyFixture(t)
+		request.VIPSubnet, request.MemberSubnet = cloud.ResourceReference{ID: "vip-subnet"}, cloud.ResourceReference{ID: "member-subnet"}
+		if _, err := f.resolver.ResolveTopology(context.Background(), request); !errors.Is(err, cloud.ErrTerminalValidation) {
+			t.Fatalf("error = %v, want terminal validation", err)
+		}
+		if len(f.requests) != 0 {
+			t.Fatalf("invalid member mode performed API reads: %v", f.requests)
+		}
 	}
 }
 

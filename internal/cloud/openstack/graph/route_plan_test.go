@@ -88,6 +88,7 @@ func TestBuildRouteEnsurePlanRepairsDisabledMember(t *testing.T) {
 		kind:     routeMutationUpdateMember,
 		id:       "member-1",
 		parentID: "pool-1",
+		member:   desired.members[0],
 	}}
 	if !reflect.DeepEqual(plan, want) {
 		t.Fatalf("route plan = %#v, want %#v", plan, want)

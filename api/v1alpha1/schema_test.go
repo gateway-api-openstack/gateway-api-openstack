@@ -67,6 +67,16 @@ func TestClassConfigurationSchema(t *testing.T) {
 		invalid bool
 	}{
 		{name: "defaults"},
+		{name: "endpoint mode", change: func(s map[string]any) { s["memberMode"] = "Endpoint" }},
+		{name: "unknown member mode", invalid: true, change: func(s map[string]any) { s["memberMode"] = "PodIP" }},
+		{name: "endpoint referenced frontend", change: func(s map[string]any) {
+			s["memberMode"] = "Endpoint"
+			s["frontendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"name": "frontend"}}}
+		}},
+		{name: "endpoint referenced backend", invalid: true, change: func(s map[string]any) {
+			s["memberMode"] = "Endpoint"
+			s["backendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"name": "workers"}}}
+		}},
 		{name: "referenced security", change: func(s map[string]any) {
 			s["frontendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"name": "frontend"}}}
 			s["backendSecurity"] = map[string]any{"mode": "Referenced", "groups": []any{map[string]any{"tags": []any{"workers"}}}}
@@ -135,7 +145,7 @@ func TestClassConfigurationSchema(t *testing.T) {
 				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object, &typed); err != nil {
 					t.Fatal(err)
 				}
-				if typed.Spec.NodeAddressType != "InternalIP" || typed.Spec.FloatingIP.Mode != FloatingIPNone || typed.Spec.FrontendSecurity.Mode != FrontendOctaviaManaged || typed.Spec.BackendSecurity.Mode != BackendUnmanaged || typed.Spec.HealthMonitor.Delay == nil || *typed.Spec.HealthMonitor.Delay != 10 || typed.Spec.HealthMonitor.Timeout == nil || *typed.Spec.HealthMonitor.Timeout != 5 {
+				if typed.Spec.MemberMode != MemberModeNodePort || typed.Spec.NodeAddressType != "InternalIP" || typed.Spec.FloatingIP.Mode != FloatingIPNone || typed.Spec.FrontendSecurity.Mode != FrontendOctaviaManaged || typed.Spec.BackendSecurity.Mode != BackendUnmanaged || typed.Spec.HealthMonitor.Delay == nil || *typed.Spec.HealthMonitor.Delay != 10 || typed.Spec.HealthMonitor.Timeout == nil || *typed.Spec.HealthMonitor.Timeout != 5 {
 					t.Fatalf("defaults=%#v", typed.Spec)
 				}
 			}

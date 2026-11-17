@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -31,7 +32,7 @@ import (
 
 func testResolvedTopology() classconfig.Resolved {
 	return classconfig.Resolved{
-		Topology:        cloud.Topology{VIPSubnetID: "11111111-1111-1111-1111-111111111111", MemberSubnetID: "22222222-2222-2222-2222-222222222222"},
+		Topology:        cloud.Topology{MemberMode: cloud.MemberModeNodePort, VIPSubnetID: "11111111-1111-1111-1111-111111111111", MemberSubnetID: "22222222-2222-2222-2222-222222222222"},
 		NodeAddressType: corev1.NodeInternalIP, HealthMonitor: cloud.HealthMonitorConfig{Path: "/", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
 		ParametersName: "parameters", ParametersUID: "parameters-uid", ParametersGeneration: 1,
 	}
@@ -124,5 +125,64 @@ func TestGatewaySecurityBinding(t *testing.T) {
 		if err := BindGatewayTopology(config, &gatewayv1.Gateway{}, resolved); !errors.Is(err, cloud.ErrOwnershipConflict) {
 			t.Fatalf("invalid security IDs %v error=%v", ids, err)
 		}
+	}
+}
+
+func TestGatewayTopologyFreezesMemberMode(t *testing.T) {
+	config := Config{ControllerName: "gateway.example/controller"}
+	for _, mode := range []cloud.MemberMode{cloud.MemberModeNodePort, cloud.MemberModeEndpoint} {
+		t.Run(string(mode), func(t *testing.T) {
+			resolved := testResolvedTopology()
+			resolved.Topology.MemberMode = mode
+			gateway := &gatewayv1.Gateway{}
+			if err := BindGatewayTopology(config, gateway, resolved); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := StoredGatewayTopology(config, gateway)
+			if err != nil || stored.Topology.MemberMode != mode {
+				t.Fatalf("stored member mode = %s, error = %v", stored.Topology.MemberMode, err)
+			}
+			changed := resolved
+			changed.Topology.MemberMode = cloud.MemberModeEndpoint
+			if mode == cloud.MemberModeEndpoint {
+				changed.Topology.MemberMode = cloud.MemberModeNodePort
+			}
+			if err := BindGatewayTopology(config, gateway, changed); !errors.Is(err, cloud.ErrOwnershipConflict) {
+				t.Fatalf("member mode change error = %v", err)
+			}
+		})
+	}
+}
+
+func TestGatewayTopologyRejectsInvalidMemberMode(t *testing.T) {
+	config := Config{ControllerName: "gateway.example/controller"}
+	for _, test := range []struct {
+		name   string
+		mode   cloud.MemberMode
+		groups []string
+	}{
+		{name: "missing"},
+		{name: "unknown", mode: "PodIP"},
+		{name: "endpoint referenced backend", mode: cloud.MemberModeEndpoint, groups: []string{"33333333-3333-3333-3333-333333333333"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := testResolvedTopology()
+			resolved.Topology.MemberMode = test.mode
+			resolved.Topology.BackendSecurityGroupIDs = test.groups
+			if err := BindGatewayTopology(config, &gatewayv1.Gateway{}, resolved); !errors.Is(err, cloud.ErrOwnershipConflict) {
+				t.Fatalf("invalid configuration binding error = %v", err)
+			}
+			encoded, err := json.Marshal(resolved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{config.GatewayTopologyAnnotation(): string(encoded)},
+				Finalizers:  []string{config.GatewayTopologyFinalizer(string(encoded))},
+			}}
+			if _, err := StoredGatewayTopology(config, gateway); !errors.Is(err, cloud.ErrOwnershipConflict) {
+				t.Fatalf("invalid stored configuration error = %v", err)
+			}
+		})
 	}
 }

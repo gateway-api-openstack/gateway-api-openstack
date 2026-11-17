@@ -79,7 +79,17 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 	if spec.GatewayRequirements.ListenerPort < 1 || spec.GatewayRequirements.ListenerPort > 65535 {
 		return invalid(fmt.Errorf("gateway listener port %d is outside 1-65535", spec.GatewayRequirements.ListenerPort))
 	}
-	if len(spec.Members) == 0 {
+	switch spec.MemberMode {
+	case "", cloud.MemberModeNodePort:
+		spec.MemberMode = cloud.MemberModeNodePort
+	case cloud.MemberModeEndpoint:
+		if len(spec.BackendSecurityGroupIDs) != 0 {
+			return invalid(errors.New("endpoint members require unmanaged backend security"))
+		}
+	default:
+		return invalid(fmt.Errorf("unsupported member mode %q", spec.MemberMode))
+	}
+	if len(spec.Members) == 0 && spec.MemberMode != cloud.MemberModeEndpoint {
 		return invalid(errors.New("at least one ready backend member is required"))
 	}
 	if strings.TrimSpace(spec.MemberSubnetID) == "" {
@@ -98,10 +108,20 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 		if err != nil {
 			return invalid(fmt.Errorf("member address %q is not a valid IP address: %w", member.Address, err))
 		}
+		if spec.MemberMode == cloud.MemberModeEndpoint {
+			if !address.Is4() || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+				return invalid(errors.New("endpoint members require unicast IPv4 destinations"))
+			}
+			if member.ProviderID != "" {
+				return invalid(errors.New("endpoint members must not identify a worker provider instance"))
+			}
+		} else if member.Draining {
+			return invalid(errors.New("draining members require endpoint mode"))
+		}
 		member.Address = address.String()
 		key := memberKey(member.Address, member.Port)
-		if existing, duplicate := membersByKey[key]; duplicate && existing.ProviderID != member.ProviderID {
-			return invalid(errors.New("members with the same address and port must identify the same provider instance"))
+		if existing, duplicate := membersByKey[key]; duplicate && (existing.ProviderID != member.ProviderID || existing.Draining != member.Draining) {
+			return invalid(errors.New("members with the same address and port must have consistent state"))
 		}
 		membersByKey[key] = member
 	}

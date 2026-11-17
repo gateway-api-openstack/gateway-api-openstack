@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/clients"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/diagnostics"
 )
@@ -156,6 +157,30 @@ func TestCollectInputsUsesClassDefaultsAndWorkerSelector(t *testing.T) {
 	first.Status.Addresses = append(first.Status.Addresses, corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "192.0.2.5"})
 	if selectedAddress(first, corev1.NodeInternalIP) != "" {
 		t.Fatal("ambiguous selected addresses were accepted")
+	}
+}
+
+func TestCollectEndpointInputsDoesNotReadNodes(t *testing.T) {
+	// Only register the class API. A Node list would fail rather than silently
+	// pass against an empty fake cluster.
+	scheme := runtime.NewScheme()
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	parameters := &configv1alpha1.OpenStackGatewayClassConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "endpoint"},
+		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
+			MemberMode: configv1alpha1.MemberModeEndpoint,
+			VIPSubnet:  configv1alpha1.ResourceReference{Name: "vip"}, MemberSubnet: configv1alpha1.ResourceReference{Name: "backend"},
+		},
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(parameters).Build()
+	request, err := collectInputs(t.Context(), reader, commandOptions{classConfig: parameters.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Topology.MemberMode != cloud.MemberModeEndpoint || len(request.Nodes) != 0 {
+		t.Fatalf("unexpected endpoint diagnostic inputs: %+v", request)
 	}
 }
 

@@ -72,7 +72,7 @@ func resolveBackend(route *gatewayv1.HTTPRoute, reference gatewayv1.HTTPBackendR
 		group.Diagnostic = backendDiagnostic(gatewayv1.RouteReasonUnsupportedValue, "backend Service must use ClusterIP or NodePort type")
 		return group
 	}
-	port, diagnostic := resolveServicePort(service, reference.Port)
+	port, diagnostic := ResolveServicePort(service, reference.Port)
 	if diagnostic != nil {
 		group.Diagnostic = diagnostic
 		return group
@@ -117,7 +117,8 @@ func findBackendService(key types.NamespacedName, services []corev1.Service) *co
 	return nil
 }
 
-func resolveServicePort(service *corev1.Service, selected *gatewayv1.PortNumber) (*corev1.ServicePort, *Diagnostic) {
+// ResolveServicePort resolves the referenced TCP port and HTTP appProtocol.
+func ResolveServicePort(service *corev1.Service, selected *gatewayv1.PortNumber) (*corev1.ServicePort, *Diagnostic) {
 	var unsupportedProtocol bool
 	for index := range service.Spec.Ports {
 		port := &service.Spec.Ports[index]
@@ -143,7 +144,7 @@ func resolveServicePort(service *corev1.Service, selected *gatewayv1.PortNumber)
 func resolveServiceEndpoints(service *corev1.Service, servicePort *corev1.ServicePort, endpointSlices []discoveryv1.EndpointSlice) []Endpoint {
 	observations := map[Endpoint]struct{}{}
 	for _, endpointSlice := range endpointSlices {
-		if endpointSlice.Namespace != service.Namespace || endpointSlice.Labels[discoveryv1.LabelServiceName] != service.Name {
+		if !endpointSlice.DeletionTimestamp.IsZero() || endpointSlice.Namespace != service.Namespace || endpointSlice.Labels[discoveryv1.LabelServiceName] != service.Name {
 			continue
 		}
 		if endpointSlice.AddressType != discoveryv1.AddressTypeIPv4 && endpointSlice.AddressType != discoveryv1.AddressTypeIPv6 {

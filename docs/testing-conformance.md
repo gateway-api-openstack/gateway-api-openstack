@@ -14,13 +14,13 @@ The [compatibility record](providers/compatibility.md) summarizes the available 
 | Listeners | One HTTP listener without a listener hostname | Multiple listeners and their lifecycle, hostname matching, HTTPS, and certificate validation |
 | Route attachment | One selected HTTPRoute with one parent in the Gateway namespace | Multiple routes and parents, namespace selection, and precedence |
 | Matching | One rule and match, Exact or PathPrefix, and at most one exact hostname | Multiple rules and matches, wildcard and multiple hostnames, and exact header matching |
-| Service inputs | One NodePort Service in the route namespace | ClusterIP and headless Services, and manually managed EndpointSlices |
+| Service inputs | One Service in the route namespace, with NodePort forwarding or opt-in IPv4 Endpoint forwarding | Live proof for ClusterIP, headless, and manually managed EndpointSlice inputs in a verified network environment |
 | Backend selection and errors | One backend | Weighted backends, weight zero, unmatched-request HTTP 404, and required responses for omitted or invalid backends |
 | Filters | No filters | RequestHeaderModifier and Core RequestRedirect behavior |
 | References | References within the route namespace | ReferenceGrant for Service and certificate references |
 | Partial validity and status | Conditions and listener status for the supported subset | Required behavior for invalid siblings, reference errors, listener changes, and generation updates |
 
-Requiring NodePort Services is a Core gap, even though NodePort can be used internally as a forwarding mechanism.
+The Endpoint mode implementation removes the NodePort requirement from Service input handling, but local tests do not close the Core traffic gap.
 Rejecting unsupported input does not satisfy a requirement for positive traffic behavior or a particular HTTP response.
 The [feasibility assessment](design/conformance-feasibility.md) identifies Octavia API blockers and designs that need verification.
 The [roadmap](../ROADMAP.md) assigns that work and defines the completion gates.

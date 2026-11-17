@@ -190,7 +190,8 @@ ADR 0005 remains proposed.
 Record independently settled decisions in focused ADRs and leave unresolved mappings in ADR 0005.
 
 Begin with listener and route attachment, deterministic forwarding rules, and backend reference authorization using existing Octavia primitives.
-Prove the Service forwarding path before implementing a new member mode, and settle Barbican ownership before implementing certificate creation.
+[ADR 0007](docs/design/adr/0007-direct-endpoint-members.md) permits local Endpoint mode implementation while the development network is prepared.
+Prove its forwarding path before claiming an environment is verified, and settle Barbican ownership before implementing certificate creation.
 Secret validation and reference authorization can be developed independently of certificate publication.
 Keep Service groups and their endpoint membership separate in the desired model.
 Before choosing a pool layout, verify unequal endpoint counts, overlapping endpoints, weight zero, rounding, health changes, and mixed invalid and empty backends.
@@ -261,7 +262,8 @@ Activating scheduled validation still requires an approved dedicated environment
 
 ## Phase 5 - Complete GATEWAY-HTTP conformance
 
-**Status:** In progress, beginning with the [logical HTTP model](docs/design/architecture.md#logical-http-model).
+**Status:** In progress, with the [logical HTTP model](docs/design/architecture.md#logical-http-model) and opt-in IPv4 Endpoint mode implemented locally.
+Endpoint traffic verification remains pending.
 Each feature requires its corresponding Phase 4 design to be accepted before implementation.
 Unreleased Octavia dependencies can be used for development integration under the sequence above, while phase completion remains blocked on the required releases and evidence.
 
@@ -320,7 +322,8 @@ Project-specific policies and arbitrary ExtensionRef support do not replace Core
 Accept ordinary ClusterIP Services, headless Services, and Services backed by manually managed EndpointSlices through the forwarding design selected in Phase 4.
 Support the required endpoint and port resolution without requiring users to change their Service type.
 Do not modify user Services, take over OCCM resources, or create tenant network routes implicitly.
-Develop direct endpoint members for the explicit environment selected under ADR 0006, and enable that mode only after its routing and lifecycle proof passes.
+The development implementation in ADR 0007 provides explicit Endpoint selection, frozen mode, resolved ports, endpoint conditions, and incremental membership.
+Verify forward and return traffic, draining, and cleanup in the environment selected under ADR 0006 before treating this requirement as complete.
 NodePort forwarding may remain available, but a NodePort-only user contract cannot satisfy this phase.
 
 ### Cross-namespace references

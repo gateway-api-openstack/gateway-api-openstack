@@ -75,11 +75,17 @@ func (s *Scanner) Inspect(ctx context.Context, request diagnostics.Request) diag
 	} else {
 		appendCheck(&report, "topology", diagnostics.Passed, "Amphora, the configured Octavia API version, and the selected infrastructure are available.")
 	}
-	s.inspectNodes(ctx, request.Nodes, resolved, err == nil, &report)
+	if request.Topology.MemberMode == cloud.MemberModeEndpoint {
+		appendCheck(&report, "nodePort", diagnostics.Skipped, "Endpoint mode does not use worker NodePort or Neutron port identity checks.")
+		appendCheck(&report, "backendReachability", diagnostics.Unknown, "Endpoint reachability requires forward and return routing, port security, and network policy evidence.")
+		appendCheck(&report, "dataPlaneTopology", diagnostics.Unknown, "Amphora access to endpoint addresses requires environment-specific traffic tests.")
+	} else {
+		s.inspectNodes(ctx, request.Nodes, resolved, err == nil, &report)
+		appendCheck(&report, "backendReachability", diagnostics.Unknown, "Port structure does not prove Amphora source routing, NodePort access, or healthy traffic.")
+		appendCheck(&report, "dataPlaneTopology", diagnostics.Unknown, "Amphora topology and the kube-proxy implementation require environment-specific evidence.")
+	}
 	s.inspectSecurityGroups(ctx, &report)
 	appendCheck(&report, "securityGroupUpdate", diagnostics.Unknown, "Read APIs cannot prove permission to update security groups or worker ports.")
-	appendCheck(&report, "backendReachability", diagnostics.Unknown, "Port structure does not prove Amphora source routing, NodePort access, or healthy traffic.")
-	appendCheck(&report, "dataPlaneTopology", diagnostics.Unknown, "Amphora topology and the kube-proxy implementation require environment-specific evidence.")
 	if request.Topology.ExternalNetwork == nil {
 		appendCheck(&report, "floatingIPQuota", diagnostics.Skipped, "The configuration does not allocate a Floating IP.")
 	} else {

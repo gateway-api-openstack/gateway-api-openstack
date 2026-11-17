@@ -35,6 +35,14 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 // for callers that read unstructured fixtures without API-server defaulting.
 func Validate(spec configv1alpha1.OpenStackGatewayClassConfigSpec) (cloud.TopologyRequest, corev1.NodeAddressType, cloud.HealthMonitorConfig, error) {
 	request := cloud.TopologyRequest{FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone}
+	switch spec.MemberMode {
+	case "", configv1alpha1.MemberModeNodePort:
+		request.MemberMode = cloud.MemberModeNodePort
+	case configv1alpha1.MemberModeEndpoint:
+		request.MemberMode = cloud.MemberModeEndpoint
+	default:
+		return request, "", cloud.HealthMonitorConfig{}, invalid("memberMode must be NodePort or Endpoint")
+	}
 	var err error
 	request.VIPSubnet, err = reference(spec.VIPSubnet)
 	if err != nil {
@@ -51,6 +59,9 @@ func Validate(spec configv1alpha1.OpenStackGatewayClassConfigSpec) (cloud.Topolo
 	request.BackendSecurityGroups, err = securityGroups(string(spec.BackendSecurity.Mode), string(configv1alpha1.BackendUnmanaged), spec.BackendSecurity.Groups)
 	if err != nil {
 		return request, "", cloud.HealthMonitorConfig{}, invalid("backendSecurity requires Unmanaged without groups or Referenced with 1 to 16 distinct resource references")
+	}
+	if request.MemberMode == cloud.MemberModeEndpoint && len(request.BackendSecurityGroups) != 0 {
+		return request, "", cloud.HealthMonitorConfig{}, invalid("Endpoint memberMode requires Unmanaged backendSecurity")
 	}
 	mode := spec.FloatingIP.Mode
 	if mode == "" {

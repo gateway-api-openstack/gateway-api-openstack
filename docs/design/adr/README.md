@@ -36,6 +36,7 @@ Their release evidence remains a separate gate.
 ADR 0003 records the owner's subsequent repository transfer and explicit choice of the project organization's API domain.
 ADR 0004 records the scoped Phase 4 implementation request and the decision to leave managed backend security for later design.
 ADR 0006 records the owner's approval of explicit forwarding environments, backend groups, and direct policy attachment while leaving physical mappings and certificate ownership open.
+ADR 0007 permits local Endpoint mode development before the test network is ready, retaining live verification as a support gate.
 
 Use one of these statuses:
 
@@ -58,3 +59,4 @@ Clarifications and implementation evidence may be added without changing the ori
 | [0004](0004-network-access-and-recovery.md) | Accepted for development | Define referenced security groups, conditional Floating IP recovery, and redacted read-only diagnostics. |
 | [0005](0005-core-resource-mapping.md) | Proposed | Define Core mapping candidates, verification cases, and unresolved forwarding, backend, and certificate ownership gates. |
 | [0006](0006-core-model-boundaries.md) | Accepted for development | Define forwarding scope, per-Gateway concurrency, backend groups, and direct policy boundaries. |
+| [0007](0007-direct-endpoint-members.md) | Accepted for development | Add opt-in IPv4 endpoint members with frozen mode, incremental membership, and pending live verification. |

@@ -58,7 +58,7 @@ type cachedRouteDecision struct {
 }
 
 // Reconciler owns the route-scoped Octavia resources for the current
-// HTTP/NodePort profile.
+// HTTP forwarding profile.
 type Reconciler struct {
 	// Client reads and patches cached Kubernetes objects.
 	client.Client
@@ -190,7 +190,7 @@ func (r *Reconciler) validateCachedRouteDecision(
 		return decision, nil
 	}
 	if structurallySupportedRoute(route) {
-		slot, err := r.evaluateRouteSlot(ctx, route)
+		slot, err := r.evaluateRouteSlotWithReader(ctx, r.Client, route, parent.gateway)
 		if err != nil {
 			return cachedRouteDecision{}, err
 		}

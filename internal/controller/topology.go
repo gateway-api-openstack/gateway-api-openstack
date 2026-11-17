@@ -145,6 +145,7 @@ func validateStoredTopology(resolved classconfig.Resolved) error {
 	monitor := resolved.HealthMonitor
 	delay, timeout, retries, retriesDown := int32(monitor.Delay), int32(monitor.Timeout), int32(monitor.MaxRetries), int32(monitor.MaxRetriesDown)
 	spec := configv1alpha1.OpenStackGatewayClassConfigSpec{
+		MemberMode:      configv1alpha1.MemberMode(resolved.Topology.MemberMode),
 		VIPSubnet:       configv1alpha1.ResourceReference{ID: resolved.Topology.VIPSubnetID},
 		MemberSubnet:    configv1alpha1.ResourceReference{ID: resolved.Topology.MemberSubnetID},
 		NodeAddressType: string(resolved.NodeAddressType), FlavorID: resolved.Topology.FlavorID, AvailabilityZone: resolved.Topology.AvailabilityZone,
@@ -159,8 +160,8 @@ func validateStoredTopology(resolved classconfig.Resolved) error {
 	if len(resolved.Topology.BackendSecurityGroupIDs) != 0 {
 		spec.BackendSecurity = configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendReferenced, Groups: securityGroupReferences(resolved.Topology.BackendSecurityGroupIDs)}
 	}
-	_, addressType, validatedMonitor, err := classconfig.Validate(spec)
-	if err != nil || addressType != resolved.NodeAddressType || validatedMonitor != monitor ||
+	request, addressType, validatedMonitor, err := classconfig.Validate(spec)
+	if err != nil || request.MemberMode != resolved.Topology.MemberMode || addressType != resolved.NodeAddressType || validatedMonitor != monitor ||
 		!slices.IsSorted(resolved.Topology.VIPSecurityGroupIDs) || !slices.IsSorted(resolved.Topology.BackendSecurityGroupIDs) {
 		return fmt.Errorf("%w: Gateway topology contains an invalid resolved configuration", cloud.ErrOwnershipConflict)
 	}

@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -133,6 +134,7 @@ func TestControllerEnvtest(t *testing.T) {
 	// These phases share one API server scenario. Each phase leaves the durable
 	// state that the next phase needs to exercise.
 	testClassConfigurationAPIServer(t, apiClient)
+	testServicePortUpdatePredicate(t, apiClient, namespace.Name)
 	gatewayClass := createEnvtestGatewayClass(t, apiClient, cacheClient, config)
 	testGatewayClassStatusSubresource(t, apiClient, cacheClient, config, gatewayClass)
 	testGatewayBindingConflict(t, apiClient, cacheClient, config, namespace.Name, gatewayClass.Name)
@@ -663,7 +665,7 @@ func testClassConfigurationAPIServer(t *testing.T, apiClient client.Client) {
 	if err := apiClient.Create(t.Context(), parameters); err != nil {
 		t.Fatalf("create default class parameters: %v", err)
 	}
-	if parameters.Spec.NodeAddressType != "InternalIP" || parameters.Spec.FloatingIP.Mode != configv1alpha1.FloatingIPNone || parameters.Spec.HealthMonitor.Delay == nil || *parameters.Spec.HealthMonitor.Delay != 10 || parameters.Spec.HealthMonitor.Timeout == nil || *parameters.Spec.HealthMonitor.Timeout != 5 {
+	if parameters.Spec.MemberMode != configv1alpha1.MemberModeNodePort || parameters.Spec.NodeAddressType != "InternalIP" || parameters.Spec.FloatingIP.Mode != configv1alpha1.FloatingIPNone || parameters.Spec.HealthMonitor.Delay == nil || *parameters.Spec.HealthMonitor.Delay != 10 || parameters.Spec.HealthMonitor.Timeout == nil || *parameters.Spec.HealthMonitor.Timeout != 5 {
 		t.Fatalf("API server defaults = %#v", parameters.Spec)
 	}
 	parameters.Spec.VIPSubnet.Name = "ambiguous"
@@ -678,7 +680,58 @@ func testClassConfigurationAPIServer(t *testing.T, apiClient client.Client) {
 	if err := apiClient.Update(t.Context(), parameters); !apierrors.IsInvalid(err) {
 		t.Fatalf("health monitor CEL error = %v", err)
 	}
+	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(parameters), parameters); err != nil {
+		t.Fatal(err)
+	}
+	parameters.Spec.MemberMode = configv1alpha1.MemberModeEndpoint
+	if err := apiClient.Update(t.Context(), parameters); err != nil {
+		t.Fatalf("select Endpoint member mode: %v", err)
+	}
+	if parameters.Spec.MemberMode != configv1alpha1.MemberModeEndpoint || parameters.Spec.BackendSecurity.Mode != configv1alpha1.BackendUnmanaged {
+		t.Fatalf("Endpoint configuration = %#v", parameters.Spec)
+	}
+	parameters.Spec.BackendSecurity = configv1alpha1.BackendSecurityConfig{
+		Mode: configv1alpha1.BackendReferenced, Groups: []configv1alpha1.ResourceReference{{Name: "workers"}},
+	}
+	if err := apiClient.Update(t.Context(), parameters); !apierrors.IsInvalid(err) {
+		t.Fatalf("Endpoint referenced backend CEL error = %v", err)
+	}
 	if err := apiClient.Delete(t.Context(), parameters); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testServicePortUpdatePredicate(t *testing.T, apiClient client.Client, namespace string) {
+	t.Helper()
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "service-port-update"},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{Name: "http", Port: 80}},
+		},
+	}
+	if err := apiClient.Create(t.Context(), service); err != nil {
+		t.Fatalf("create Service for predicate test: %v", err)
+	}
+	before := service.DeepCopy()
+	service.Spec.Ports[0].Port = 8080
+	if err := apiClient.Update(t.Context(), service); err != nil {
+		t.Fatalf("update Service port: %v", err)
+	}
+	if service.Generation != before.Generation {
+		t.Fatalf("Service generation changed from %d to %d", before.Generation, service.Generation)
+	}
+	if !controller.ServicePredicate().Update(event.UpdateEvent{ObjectOld: before, ObjectNew: service}) {
+		t.Fatal("Service port update was ignored despite unchanged generation")
+	}
+	before = service.DeepCopy()
+	service.Labels = map[string]string{"example.net/description": "changed"}
+	if err := apiClient.Update(t.Context(), service); err != nil {
+		t.Fatalf("update Service label: %v", err)
+	}
+	if controller.ServicePredicate().Update(event.UpdateEvent{ObjectOld: before, ObjectNew: service}) {
+		t.Fatal("unrelated Service label update triggered reconciliation")
+	}
+	if err := apiClient.Delete(t.Context(), service); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -689,11 +742,15 @@ func testGatewayTopologySnapshot(t *testing.T, apiClient, cacheClient client.Cli
 	if err != nil {
 		t.Fatal(err)
 	}
+	if before.Topology.MemberMode != cloud.MemberModeNodePort {
+		t.Fatalf("initial member mode = %s, want NodePort", before.Topology.MemberMode)
+	}
 	parameters := &configv1alpha1.OpenStackGatewayClassConfig{}
 	if err := apiClient.Get(t.Context(), client.ObjectKey{Name: before.ParametersName}, parameters); err != nil {
 		t.Fatal(err)
 	}
 	parameters.Spec.VIPSubnet.ID = "33333333-3333-3333-3333-333333333333"
+	parameters.Spec.MemberMode = configv1alpha1.MemberModeEndpoint
 	if err := apiClient.Update(t.Context(), parameters); err != nil {
 		t.Fatal(err)
 	}

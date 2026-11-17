@@ -43,7 +43,7 @@ func TestNodePortRouteUsesLogicalMatchAndSharedEndpointObservation(t *testing.T)
 	endpoints.Endpoints[0].Addresses = []string{"198.51.100.20"}
 	reader := &fanoutCountingClient{Client: indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(service, endpoints, node).Build()}
 	r := &Reconciler{Config: cfg}
-	desired, err := r.buildRouteSpecWithReader(t.Context(), reader, route, gateway)
+	desired, err := r.buildRouteModelWithReader(t.Context(), reader, route, gateway)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestLogicalModelCannotEnableUnmappedNodePortBehavior(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _, err = nodePortRouteModel(logical)
+			_, _, err = supportedRouteModel(logical, cloud.MemberModeNodePort)
 			var rejected *routeBuildError
 			if !errors.As(err, &rejected) || rejected.kind != routeErrorUnsupported {
 				t.Fatalf("unmapped logical model escaped NodePort lowering: %v", err)

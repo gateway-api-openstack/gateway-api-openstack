@@ -4,6 +4,7 @@ Status: Accepted
 
 The development API identity in this record is superseded by [ADR 0003](0003-project-organization.md).
 The class configuration, topology binding, and worker selection decisions remain in effect.
+[ADR 0007](0007-direct-endpoint-members.md) extends the member mode contract for local Endpoint development.
 
 Date: 2026-10-09
 

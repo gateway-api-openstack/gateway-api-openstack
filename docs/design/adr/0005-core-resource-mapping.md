@@ -28,15 +28,16 @@ Apply endpoint readiness, termination, and address family independently of NodeP
 
 ADR 0006 selects direct endpoint forwarding as the development direction for an explicitly verified network environment.
 A ClusterIP is not an endpoint address, and registering a Pod address does not establish connectivity.
-The class capability must describe the verified address families and forwarding environment before this member mode can be enabled.
+[ADR 0007](0007-direct-endpoint-members.md) defines the opt-in IPv4 development mode before a network environment is verified.
+A support claim still requires a documented and tested forwarding environment.
 Do not infer that capability from Octavia's acceptance of a member address.
 Do not change a user Service, worker port, tenant route, or OCCM graph to make the path work.
 A helper Service or an alternative forwarding path requires a separate ownership decision if direct endpoints cannot satisfy the selected environment.
 
 The existing NodePort implementation remains governed by ADR 0002 and the [worker eligibility rules](../../reference/class-configuration.md#worker-nodeport-members).
-Its port and address-family regression tests do not enable direct endpoint members.
+Its port and address-family regression tests do not establish direct endpoint connectivity.
 
-Before accepting a concrete member mode and environment profile, demonstrate forward and return traffic for ClusterIP, headless, and manually managed EndpointSlice inputs on the chosen CNI and security configuration.
+Before accepting an environment profile, demonstrate forward and return traffic for ClusterIP, headless, and manually managed EndpointSlice inputs on the chosen CNI and security configuration.
 Verify endpoint addition, removal, terminating endpoints, named ports, and each claimed address family without modifying foreign network resources.
 
 ## Listener and route mapping
@@ -146,7 +147,7 @@ Acceptance of this proposal requires the following evidence:
 ## Consequences
 
 Phase 4 local tests can expose incorrect candidates and protect current behavior without adding an unused parallel controller.
-The proposed mappings remain separate from the implemented NodePort contract.
+The remaining proposed mappings do not broaden the implemented member modes.
 Scoped acceptance requires the applicable design proofs above and records any unreleased dependencies.
 It does not accept unrelated mappings or close Phase 4, which still requires the named upstream releases and outstanding live evidence.
 Phase 5 implements accepted mappings incrementally and verifies actual traffic for each feature and its combinations.

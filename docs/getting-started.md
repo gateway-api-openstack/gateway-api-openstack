@@ -27,6 +27,8 @@ The [conformance plan](testing-conformance.md) describes the separate Gateway AP
 
 Each class selects network placement and Node addresses through an OpenStackGatewayClassConfig.
 See the [configuration reference](reference/class-configuration.md) for the fields and [worker eligibility rules](reference/class-configuration.md#worker-nodeport-members).
+These instructions use NodePort mode.
+The experimental [direct endpoint mode](reference/class-configuration.md#direct-endpoint-members) has separate network prerequisites and awaits live validation.
 
 The controller does not create networks, subnets, routers, or backend security groups and does not attach security groups to worker ports.
 Establish that connectivity before creating a Gateway.
@@ -169,13 +171,14 @@ bin/openstack-gateway-diagnostics \
 ```
 
 Use the same credential scope, region, and microversion as the controller.
-The Kubernetes identity needs get access to the selected OpenStackGatewayClassConfig and list access to Nodes.
+The Kubernetes identity needs get access to the selected OpenStackGatewayClassConfig and, for NodePort mode, list access to Nodes.
 `--node-selector` can narrow the worker selection.
 `--check-barbican` adds a metadata access check without reading secret payloads.
 The default deadline is two minutes, with the same 10 QPS and burst 20 defaults as the controller.
 
 The command inspects the current class template, not an existing Gateway's frozen binding.
 It checks label-eligible workers, including unready Nodes, without claiming the member eligibility of a particular Service.
+Endpoint mode skips Node and worker port checks and leaves endpoint reachability unknown.
 Results distinguish `passed`, `failed`, `unknown`, and `skipped` checks.
 Update permissions, actual backend reachability, Amphora topology, and the kube-proxy implementation remain unknown because these reads cannot establish them.
 Observed IP families describe selected Node addresses, not verified IPv6 or dual-stack support.
