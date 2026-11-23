@@ -19,6 +19,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
@@ -53,128 +54,38 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 	if !gatewayReady {
 		result.Gateway.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
 	}
+	usage := gatewayListenerUsage(desired.spec.Routes, actual.routes)
+	context := routePlanContext{actual: actual, gatewayReady: gatewayReady, preservedListeners: usage.preserved}
 	var deletions, ensures []graphMutation
-	canRestoreTraffic := true
-	preservedListeners := make(map[cloud.ListenerKey]bool)
-	for _, node := range desired.spec.Routes {
-		if node.Disposition != cloud.GraphPreserve {
-			continue
+	for index, node := range desired.spec.Routes {
+		routePlan, err := p.buildGatewayRoutePlan(index, node, desired.routes[index], context)
+		if routePlan.removesForwarding {
+			result.Gateway.Outcome = p.progressingOutcome("Removing obsolete forwarding resources")
 		}
-		for _, observed := range actual.routes[node.Spec.Identity.RouteUID] {
-			if observed.pool != nil || len(observed.policies) != 0 {
-				canRestoreTraffic = false
-			}
-			for _, policy := range observed.policies {
-				preservedListeners[policy.key.Listener] = true
-			}
+		if err != nil {
+			return nil, result, err
 		}
-	}
-	for routeIndex, node := range desired.spec.Routes {
-		id := node.Spec.Identity
-		observations := actual.routes[id.RouteUID]
-		wanted := make(map[int]desiredRoute, len(desired.routes[routeIndex]))
-		indices := make(map[int]struct{})
-		for _, route := range desired.routes[routeIndex] {
-			wanted[route.rule.Index] = route
-			indices[route.rule.Index] = struct{}{}
-		}
-		for index := range observations {
-			indices[index] = struct{}{}
-		}
-		ordered := make([]int, 0, len(indices))
-		for index := range indices {
-			ordered = append(ordered, index)
-		}
-		sort.Ints(ordered)
-		routeResult := cloud.RouteReadyResult(cloud.RouteState{})
-		for _, ruleIndex := range ordered {
-			observed := observedRouteGraph{index: ruleIndex}
-			if observations[ruleIndex] != nil {
-				observed = *observations[ruleIndex]
-			}
-			ruleState := ruleStateFromObservation(observed)
-			route, exists := wanted[ruleIndex]
-			var rulePlan []routeMutation
-			deleting := node.Disposition == cloud.GraphDelete || node.Disposition == cloud.GraphEnsure && !exists
-			switch {
-			case deleting:
-				rulePlan = buildRouteDeletionPlan(observed)
-			case node.Disposition == cloud.GraphEnsure:
-				if err := validateRecordedGateway(node.Spec.Gateway, actual.state); err != nil {
-					return nil, result, &cloud.GraphError{Identity: id, Err: err}
-				}
-				route.spec.Gateway = actual.state
-				rulePlan, ruleState, err = buildRouteEnsurePlan(route, observed)
-				if err != nil {
-					return nil, result, &cloud.GraphError{Identity: id, Err: err}
-				}
-				blocked := false
-				for _, policy := range route.policies {
-					blocked = blocked || preservedListeners[policy.key.Listener] || actual.listeners[policy.key.Listener] == nil
-				}
-				if blocked || actual.loadBalancer == nil {
-					rulePlan = nil
-					routeResult.Outcome = p.progressingOutcome("Waiting for the complete listener graph")
-				}
-				if !gatewayReady {
-					routeResult.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
-				}
-			}
-			if len(rulePlan) != 0 {
-				routeResult.Outcome = p.progressingOutcome(rulePlan[0].message())
-			}
-			for stepIndex, step := range rulePlan {
-				mutation := graphMutation{kind: graphRouteMutation, routeIndex: routeIndex, ruleIndex: ruleIndex, route: step, message: step.message()}
-				mutation.priority = routeStepPriority(route, observed, step)
-				if deleting {
-					if node.Disposition == cloud.GraphEnsure {
-						result.Gateway.Outcome = p.progressingOutcome("Removing obsolete forwarding resources")
-					}
-					deletions = append(deletions, mutation)
-				} else if stepIndex == 0 {
-					ensures = append(ensures, mutation)
-				}
-			}
-			routeResult.State.Rules = append(routeResult.State.Rules, ruleState)
-		}
-		if node.Disposition == cloud.GraphEnsure && !gatewayReady {
-			routeResult.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
-		}
-		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: id, Result: routeResult})
-		if routeResult.Outcome.State == cloud.OutcomeProgressing {
-			result.Outcome = routeResult.Outcome
+		deletions = append(deletions, routePlan.deletions...)
+		ensures = append(ensures, routePlan.ensures...)
+		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: node.Spec.Identity, Result: routePlan.result})
+		if routePlan.result.Outcome.State == cloud.OutcomeProgressing {
+			result.Outcome = routePlan.result.Outcome
 		}
 	}
-	// Each rule contributes its first dependency-safe mutation. Prioritize the
-	// target match, not the containing Route: matches from different rules can
-	// interleave, and Octavia clamps positions beyond the existing policy count.
+	// Each rule contributes its first dependency-safe mutation. Matches from
+	// different rules can interleave, and Octavia clamps out-of-range positions.
 	sort.SliceStable(ensures, func(i, j int) bool { return ensures[i].priority < ensures[j].priority })
 	plan = append(plan, deletions...)
 	plan = append(plan, ensures...)
 	if desired.spec.Gateway.Disposition == cloud.GraphEnsure {
-		wantedListeners := make(map[cloud.ListenerKey]bool)
-		for _, listener := range desired.spec.Gateway.Spec.Listeners {
-			wantedListeners[listener.Key] = true
-		}
-		for _, listener := range actual.state.Listeners {
-			if wantedListeners[listener.Key] {
-				continue
-			}
+		for _, listener := range obsoleteGatewayListeners(desired.spec.Gateway.Spec, actual.state) {
 			result.Gateway.Outcome = p.progressingOutcome("Removing obsolete listeners")
-			busy := false
-			for _, rules := range actual.routes {
-				for _, rule := range rules {
-					for _, policy := range rule.policies {
-						busy = busy || policy.key.Listener == listener.Key
-					}
-				}
-			}
-			if !busy {
+			if !usage.occupied[listener.Key] {
 				plan = append(plan, graphMutation{kind: graphDeleteChild, deletion: gatewayDeletionStep{resource: gatewayDeletionListener, resourceID: listener.ID}, message: "Deleted obsolete Octavia listener"})
 			}
 		}
 	}
-	if canRestoreTraffic {
+	if !usage.unresolved {
 		restore, err := buildGatewayTrafficRestorationPlan(desired, actual)
 		if err != nil {
 			return nil, result, err
@@ -187,6 +98,141 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 		result.Outcome = result.Gateway.Outcome
 	}
 	return plan, result, nil
+}
+
+type listenerUsage struct {
+	occupied   map[cloud.ListenerKey]bool
+	preserved  map[cloud.ListenerKey]bool
+	unresolved bool
+}
+
+// Observe listener references once. Preserved fragments block traffic repair,
+// while policies from every fragment keep their parent listener from deletion.
+func gatewayListenerUsage(nodes []cloud.RouteGraphNode, actual observedRoutes) listenerUsage {
+	usage := listenerUsage{occupied: make(map[cloud.ListenerKey]bool), preserved: make(map[cloud.ListenerKey]bool)}
+	preservedRoutes := make(map[string]bool)
+	for _, node := range nodes {
+		preservedRoutes[node.Spec.Identity.RouteUID] = node.Disposition == cloud.GraphPreserve
+	}
+	for uid, rules := range actual {
+		for _, rule := range rules {
+			preserved := preservedRoutes[uid]
+			if preserved && (rule.pool != nil || len(rule.policies) != 0) {
+				usage.unresolved = true
+			}
+			for _, policy := range rule.policies {
+				usage.occupied[policy.key.Listener] = true
+				if preserved {
+					usage.preserved[policy.key.Listener] = true
+				}
+			}
+		}
+	}
+	return usage
+}
+
+type routePlanContext struct {
+	actual             observedGatewayGraph
+	gatewayReady       bool
+	preservedListeners map[cloud.ListenerKey]bool
+}
+
+type gatewayRoutePlan struct {
+	result            cloud.RouteResult
+	deletions         []graphMutation
+	ensures           []graphMutation
+	removesForwarding bool
+}
+
+func (p *Provider) buildGatewayRoutePlan(routeIndex int, node cloud.RouteGraphNode, desired []desiredRoute, context routePlanContext) (gatewayRoutePlan, error) {
+	plan := gatewayRoutePlan{result: cloud.RouteReadyResult(cloud.RouteState{})}
+	observations := context.actual.routes[node.Spec.Identity.RouteUID]
+	wanted := make(map[int]desiredRoute, len(desired))
+	indices := make([]int, 0, len(desired)+len(observations))
+	for _, route := range desired {
+		wanted[route.rule.Index] = route
+		indices = append(indices, route.rule.Index)
+	}
+	for index := range observations {
+		indices = append(indices, index)
+	}
+	slices.Sort(indices)
+	for _, ruleIndex := range slices.Compact(indices) {
+		observed := observedRouteGraph{index: ruleIndex}
+		if observations[ruleIndex] != nil {
+			observed = *observations[ruleIndex]
+		}
+		state := ruleStateFromObservation(observed)
+		route, exists := wanted[ruleIndex]
+		var steps []routeMutation
+		deleting := node.Disposition == cloud.GraphDelete || node.Disposition == cloud.GraphEnsure && !exists
+		switch {
+		case deleting:
+			steps = buildRouteDeletionPlan(observed)
+		case node.Disposition == cloud.GraphEnsure:
+			if err := validateRecordedGateway(node.Spec.Gateway, context.actual.state); err != nil {
+				return plan, &cloud.GraphError{Identity: node.Spec.Identity, Err: err}
+			}
+			route.spec.Gateway = context.actual.state
+			var err error
+			steps, state, err = buildRouteEnsurePlan(route, observed)
+			if err != nil {
+				return plan, &cloud.GraphError{Identity: node.Spec.Identity, Err: err}
+			}
+			if !routeListenersAvailable(route, context) {
+				steps = nil
+				plan.result.Outcome = p.progressingOutcome("Waiting for the complete listener graph")
+			}
+		}
+		if len(steps) != 0 {
+			plan.result.Outcome = p.progressingOutcome(steps[0].message())
+			if !deleting {
+				// Later operations depend on observing this mutation's result.
+				steps = steps[:1]
+			} else if node.Disposition == cloud.GraphEnsure {
+				plan.removesForwarding = true
+			}
+		}
+		for _, step := range steps {
+			mutation := graphMutation{kind: graphRouteMutation, routeIndex: routeIndex, ruleIndex: ruleIndex, route: step, message: step.message(), priority: routeStepPriority(route, observed, step)}
+			if deleting {
+				plan.deletions = append(plan.deletions, mutation)
+			} else {
+				plan.ensures = append(plan.ensures, mutation)
+			}
+		}
+		plan.result.State.Rules = append(plan.result.State.Rules, state)
+	}
+	if node.Disposition == cloud.GraphEnsure && !context.gatewayReady {
+		plan.result.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
+	}
+	return plan, nil
+}
+
+func routeListenersAvailable(route desiredRoute, context routePlanContext) bool {
+	if context.actual.loadBalancer == nil {
+		return false
+	}
+	for _, policy := range route.policies {
+		if context.preservedListeners[policy.key.Listener] || context.actual.listeners[policy.key.Listener] == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func obsoleteGatewayListeners(desired cloud.GatewaySpec, actual cloud.GatewayState) []cloud.ListenerState {
+	wanted := make(map[cloud.ListenerKey]bool, len(desired.Listeners))
+	for _, listener := range desired.Listeners {
+		wanted[listener.Key] = true
+	}
+	var obsolete []cloud.ListenerState
+	for _, listener := range actual.Listeners {
+		if !wanted[listener.Key] {
+			obsolete = append(obsolete, listener)
+		}
+	}
+	return obsolete
 }
 
 func routeStepPriority(route desiredRoute, observed observedRouteGraph, step routeMutation) int32 {

@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
@@ -135,142 +134,6 @@ func (p *Provider) ReconcileGatewayGraph(ctx context.Context, spec cloud.Gateway
 	return result, nil
 }
 
-func (p *Provider) buildDesiredGatewayGraph(spec cloud.GatewayGraphSpec) (desiredGatewayGraph, error) {
-	identity, err := p.identity(spec.Identity)
-	if err != nil {
-		return desiredGatewayGraph{}, err
-	}
-	invalid := func(message string) (desiredGatewayGraph, error) {
-		return desiredGatewayGraph{}, cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, errors.New(message))
-	}
-	if spec.Identity.RouteUID != "" || spec.Identity.RouteName != "" || spec.Identity.RouteNamespace != "" {
-		return invalid("graph identity must not contain HTTPRoute fields")
-	}
-	if !validGraphDisposition(spec.Gateway.Disposition) {
-		return invalid("Gateway graph disposition is invalid")
-	}
-	listenerKeys := make(map[cloud.ListenerKey]struct{})
-	if spec.Gateway.Disposition == cloud.GraphEnsure {
-		if !sameGatewayIdentity(spec.Identity, spec.Gateway.Spec.Identity) {
-			return desiredGatewayGraph{}, fmt.Errorf("%w: Gateway model and graph identities differ", cloud.ErrOwnershipConflict)
-		}
-		if spec.Gateway.Spec.Provider != "amphora" || strings.TrimSpace(spec.Gateway.Spec.VIPSubnetID) == "" || len(spec.Gateway.Spec.Listeners) == 0 {
-			return invalid("Gateway requires Amphora, a VIP subnet, and HTTP listeners")
-		}
-		for _, listener := range spec.Gateway.Spec.Listeners {
-			if err := listener.Key.Validate(); err != nil {
-				return invalid(err.Error())
-			}
-			if _, duplicate := listenerKeys[listener.Key]; duplicate {
-				return invalid("duplicate physical listener key")
-			}
-			listenerKeys[listener.Key] = struct{}{}
-			if _, err := identity.ChildTags(roleListener, cloud.ResourceKey{Kind: cloud.ResourceListener, Listener: listener.Key}); err != nil {
-				return invalid(err.Error())
-			}
-		}
-		if _, err := identity.GatewayTags(roleLoadBalancer); err != nil {
-			return invalid(err.Error())
-		}
-	}
-	spec.Gateway.Spec.Listeners = slices.Clone(spec.Gateway.Spec.Listeners)
-	sort.Slice(spec.Gateway.Spec.Listeners, func(i, j int) bool {
-		return spec.Gateway.Spec.Listeners[i].Key.String() < spec.Gateway.Spec.Listeners[j].Key.String()
-	})
-	spec.Routes = slices.Clone(spec.Routes)
-	sort.Slice(spec.Routes, func(i, j int) bool {
-		a, b := spec.Routes[i].Spec.Identity, spec.Routes[j].Spec.Identity
-		if a.RouteNamespace != b.RouteNamespace {
-			return a.RouteNamespace < b.RouteNamespace
-		}
-		if a.RouteName != b.RouteName {
-			return a.RouteName < b.RouteName
-		}
-		return a.RouteUID < b.RouteUID
-	})
-	desired := desiredGatewayGraph{spec: spec, identity: identity, routes: make([][]desiredRoute, len(spec.Routes))}
-	identities := make(map[string]struct{}, len(spec.Routes))
-	priorities := make(map[cloud.ListenerKey]map[int]struct{})
-	policies := make(map[cloud.ListenerKey][]*desiredPolicy)
-	for index, node := range spec.Routes {
-		id := node.Spec.Identity
-		if !validGraphDisposition(node.Disposition) {
-			return invalid("HTTPRoute graph disposition is invalid")
-		}
-		if err := cloud.ValidateRouteIdentity(id); err != nil {
-			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: err}
-		}
-		if !sameGatewayIdentity(spec.Identity, id) {
-			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute belongs to a different Gateway graph", cloud.ErrOwnershipConflict)}
-		}
-		if _, duplicate := identities[id.RouteUID]; duplicate {
-			return desiredGatewayGraph{}, fmt.Errorf("%w: duplicate HTTPRoute fragment", cloud.ErrOwnershipConflict)
-		}
-		identities[id.RouteUID] = struct{}{}
-		routeIdentity, err := p.identity(id)
-		if err != nil {
-			return desiredGatewayGraph{}, err
-		}
-		desired.identities = append(desired.identities, routeIdentity)
-		if node.Disposition != cloud.GraphEnsure {
-			continue
-		}
-		if spec.Gateway.Disposition != cloud.GraphEnsure {
-			return invalid("an ensured HTTPRoute requires an ensured Gateway")
-		}
-		if !node.Spec.GatewayRequirements.Equal(gatewayRequirements(spec.Gateway.Spec)) {
-			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute and Gateway infrastructure requirements differ", cloud.ErrOwnershipConflict)}
-		}
-		if len(node.Spec.Rules) == 0 {
-			return invalid("ensured HTTPRoute requires forwarding rules")
-		}
-		ruleIndexes := make(map[int]struct{})
-		for _, rule := range node.Spec.Rules {
-			if _, duplicate := ruleIndexes[rule.Index]; duplicate {
-				return invalid("duplicate HTTPRoute rule index")
-			}
-			ruleIndexes[rule.Index] = struct{}{}
-			for _, match := range rule.Matches {
-				if _, present := listenerKeys[match.Listener]; !present {
-					return invalid("route match references an unknown physical listener")
-				}
-				if priorities[match.Listener] == nil {
-					priorities[match.Listener] = make(map[int]struct{})
-				}
-				if _, duplicate := priorities[match.Listener][match.Priority]; duplicate {
-					return invalid("listener matches must have distinct priorities")
-				}
-				priorities[match.Listener][match.Priority] = struct{}{}
-			}
-			compiled, err := p.buildDesiredRule(node.Spec, rule)
-			if err != nil {
-				return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: err}
-			}
-			for policyIndex := range compiled.policies {
-				policy := &compiled.policies[policyIndex]
-				if _, err := routeIdentity.ChildTags(policy.role, policy.key); err != nil {
-					return invalid(err.Error())
-				}
-				for _, predicate := range rulesFor(*policy) {
-					if _, err := routeIdentity.ChildTags(predicate.role, predicate.key); err != nil {
-						return invalid(err.Error())
-					}
-				}
-				policies[policy.key.Listener] = append(policies[policy.key.Listener], policy)
-			}
-			desired.routes[index] = append(desired.routes[index], compiled)
-		}
-		sort.Slice(desired.routes[index], func(i, j int) bool { return desired.routes[index][i].rule.Index < desired.routes[index][j].rule.Index })
-	}
-	for _, items := range policies {
-		sort.SliceStable(items, func(i, j int) bool { return items[i].match.Priority < items[j].match.Priority })
-		for index, policy := range items {
-			policy.position = int32(index + 1)
-		}
-	}
-	return desired, nil
-}
-
 func observedGatewayResult(desired desiredGatewayGraph, actual observedGatewayGraph, pending cloud.Outcome) cloud.GatewayResult {
 	result := cloud.GatewayResult{State: actual.state, Outcome: pending}
 	if actual.loadBalancer == nil || !gatewayListenersReady(desired.spec.Gateway.Spec, actual) || !actual.loadBalancer.AdminStateUp {
@@ -284,20 +147,6 @@ func observedGatewayResult(desired desiredGatewayGraph, actual observedGatewayGr
 		result.Outcome = cloud.ReadyOutcome()
 	}
 	return result
-}
-
-func validGraphDisposition(disposition cloud.GraphDisposition) bool {
-	return disposition == cloud.GraphEnsure || disposition == cloud.GraphPreserve || disposition == cloud.GraphDelete
-}
-
-func sameGatewayIdentity(a, b cloud.Identity) bool {
-	return a.OpenStackProjectID == b.OpenStackProjectID && a.ClusterID == b.ClusterID && a.Controller == b.Controller &&
-		a.GatewayNamespace == b.GatewayNamespace && a.GatewayName == b.GatewayName && a.GatewayUID == b.GatewayUID
-}
-
-func gatewayRequirements(spec cloud.GatewaySpec) cloud.GatewayRequirements {
-	return cloud.GatewayRequirements{Provider: spec.Provider, VIPSubnetID: spec.VIPSubnetID, ExternalNetworkID: spec.ExternalNetworkID,
-		FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone, VIPSecurityGroupIDs: spec.VIPSecurityGroupIDs}
 }
 
 func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatewayGraph) (observedGatewayGraph, error) {
@@ -351,9 +200,6 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 		}
 	}
 	if desired.spec.Gateway.Disposition == cloud.GraphDelete {
-		if observation.phase == loadBalancerPhasePending {
-			return actual, nil
-		}
 		actual.deletion, err = p.buildGatewayDeletionPlan(ctx, desired.identity, lb.ID)
 		return actual, err
 	}
