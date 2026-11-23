@@ -37,6 +37,7 @@ type Input struct {
 	Services        []corev1.Service
 	EndpointSlices  []discoveryv1.EndpointSlice
 	ReferenceGrants []gatewayv1.ReferenceGrant
+	Secrets         []corev1.Secret
 }
 
 // Source identifies the exact Kubernetes revision that contributed a model.
@@ -85,6 +86,7 @@ type Listener struct {
 	Port           gatewayv1.PortNumber
 	Protocol       gatewayv1.ProtocolType
 	Hostname       string
+	TLS            *ListenerTLS
 	AttachedRoutes int32
 	Rules          []RouteMatch
 	Diagnostics    []Diagnostic
@@ -104,6 +106,7 @@ type Rule struct {
 	Index       int
 	Matches     []Match
 	Backends    []BackendGroup
+	Filters     []Filter
 	Diagnostics []Diagnostic
 }
 
