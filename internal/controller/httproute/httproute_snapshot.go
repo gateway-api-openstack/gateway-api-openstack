@@ -122,19 +122,40 @@ func (r *Reconciler) buildRouteValidationSnapshotFromInputs(
 	purpose routeSnapshotPurpose,
 	inputs *routeModelInputs,
 ) (routeValidationSnapshot, error) {
-	snapshot, err := r.observeRouteValidationInputs(ctx, expectedRoute, expectedGateway)
-	if err != nil {
-		return routeValidationSnapshot{}, err
-	}
-
-	parent, err := r.validateRouteSnapshotParent(&snapshot, purpose)
+	snapshot, parent, err := r.observeRouteValidationSnapshot(ctx, expectedRoute, expectedGateway, purpose)
 	if err != nil || snapshot.disposition == routeValidationGatewayPending {
 		return snapshot, err
 	}
-	if purpose == routeSnapshotForBinding && !snapshot.gatewayProgrammed {
-		return routeValidationSnapshot{}, errHTTPRouteChanged
-	}
+	return r.completeRouteValidationSnapshot(ctx, snapshot, parent, purpose, inputs)
+}
 
+func (r *Reconciler) observeRouteValidationSnapshot(
+	ctx context.Context,
+	expectedRoute *gatewayv1.HTTPRoute,
+	expectedGateway *gatewayv1.Gateway,
+	purpose routeSnapshotPurpose,
+) (routeValidationSnapshot, managedRouteParent, error) {
+	snapshot, err := r.observeRouteValidationInputs(ctx, expectedRoute, expectedGateway)
+	if err != nil {
+		return routeValidationSnapshot{}, managedRouteParent{}, err
+	}
+	parent, err := r.validateRouteSnapshotParent(&snapshot, purpose)
+	if err != nil || snapshot.disposition == routeValidationGatewayPending {
+		return snapshot, parent, err
+	}
+	if purpose == routeSnapshotForBinding && !snapshot.gatewayProgrammed {
+		return routeValidationSnapshot{}, managedRouteParent{}, errHTTPRouteChanged
+	}
+	return snapshot, parent, nil
+}
+
+func (r *Reconciler) completeRouteValidationSnapshot(
+	ctx context.Context,
+	snapshot routeValidationSnapshot,
+	parent managedRouteParent,
+	purpose routeSnapshotPurpose,
+	inputs *routeModelInputs,
+) (routeValidationSnapshot, error) {
 	if inputs == nil {
 		routes, err := r.liveGraphRoutes(ctx, controller.GatewayIdentity(r.Config, snapshot.gateway))
 		if err != nil {

@@ -130,6 +130,9 @@ func TestControllerEnvtest(t *testing.T) {
 	if err := apiClient.Create(t.Context(), namespace); err != nil {
 		t.Fatalf("create test Namespace: %v", err)
 	}
+	t.Run("Cleanup UID precondition", func(t *testing.T) {
+		testCleanupUIDPrecondition(t, apiClient, namespace.Name)
+	})
 
 	// These phases share one API server scenario. Each phase leaves the durable
 	// state that the next phase needs to exercise.
@@ -156,6 +159,9 @@ func TestControllerEnvtest(t *testing.T) {
 	testFinalizersWithNewReconciler(t, apiClient, cacheClient, config, gatewayClass, gateway)
 	t.Run("GatewayClass topology isolation", func(t *testing.T) {
 		testGatewayClassTopologyIsolation(t, apiClient, cacheClient, config)
+	})
+	t.Run("Gateway dependency watches", func(t *testing.T) {
+		testGatewayDependencyWatches(t, restConfig)
 	})
 }
 
