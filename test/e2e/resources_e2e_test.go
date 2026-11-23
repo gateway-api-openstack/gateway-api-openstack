@@ -69,7 +69,7 @@ func (s *openStackSuite) createBackend(ctx context.Context) error {
 
 	service := s.backendService()
 	if err := s.client.Create(ctx, service); err != nil {
-		return fmt.Errorf("create backend NodePort Service: %w", err)
+		return fmt.Errorf("create backend Service: %w", err)
 	}
 	s.backendServiceUID = service.UID
 
@@ -128,7 +128,7 @@ func (s *openStackSuite) backendDeployment(replicas int32) *appsv1.Deployment {
 }
 
 func (s *openStackSuite) backendService() *corev1.Service {
-	return &corev1.Service{
+	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: s.config.Namespace, Name: backendName, Annotations: map[string]string{runAnnotation: s.config.RunID}},
 		Spec: corev1.ServiceSpec{
 			Type:                  corev1.ServiceTypeNodePort,
@@ -142,6 +142,11 @@ func (s *openStackSuite) backendService() *corev1.Service {
 			}},
 		},
 	}
+	if s.config.BackendMemberMode == configv1alpha1.MemberModeEndpoint {
+		service.Spec.Type = corev1.ServiceTypeClusterIP
+		service.Spec.ExternalTrafficPolicy = ""
+	}
+	return service
 }
 
 func (s *openStackSuite) waitForBackend(ctx context.Context, deployment *appsv1.Deployment, service *corev1.Service, replicas int32) error {
@@ -165,7 +170,7 @@ func (s *openStackSuite) backendReady(ctx context.Context, deployment *appsv1.De
 	if currentService.Spec.ExternalTrafficPolicy != s.config.BackendExternalTrafficPolicy {
 		return false, fmt.Errorf("backend Service external traffic policy changed")
 	}
-	if len(currentService.Spec.Ports) != 1 || currentService.Spec.Ports[0].NodePort == 0 {
+	if len(currentService.Spec.Ports) != 1 || s.config.BackendMemberMode != configv1alpha1.MemberModeEndpoint && currentService.Spec.Ports[0].NodePort == 0 {
 		return false, nil
 	}
 	return s.backendEndpointsReady(ctx, replicas)
@@ -436,13 +441,18 @@ func (s *openStackSuite) verifyExternalTraffic(ctx context.Context) error {
 }
 
 func (s *openStackSuite) probeExternalTraffic(ctx context.Context, address string) bool {
+	return s.probeRoutingTraffic(ctx, address, s.hostname)
+}
+
+func (s *openStackSuite) probeRoutingTraffic(ctx context.Context, address, hostname string) bool {
 	expectedBody := "gateway-api-openstack-e2e-" + s.config.RunID
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"http://"+net.JoinHostPort(address, "80")+"/echo?msg="+expectedBody, nil)
 	if err != nil {
 		return false
 	}
-	request.Host = s.hostname
+	request.Host = hostname
+	request.Header.Set("X-E2E-Route", s.config.RunID)
 	// Sample new connections so an existing keep-alive connection cannot hide
 	// a broken member transition.
 	request.Close = true

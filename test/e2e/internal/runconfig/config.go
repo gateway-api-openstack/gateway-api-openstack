@@ -33,6 +33,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 )
 
 const (
@@ -100,6 +102,8 @@ type Kubernetes struct {
 
 // Scenarios selects additional checks within the approved E2E resource scope.
 type Scenarios struct {
+	HTTPRouting        bool `json:"httpRouting,omitempty"`
+	EndpointBackends   bool `json:"endpointBackends,omitempty"`
 	LocalLifecycle     bool `json:"localLifecycle,omitempty"`
 	FloatingIPRecovery bool `json:"floatingIPRecovery,omitempty"`
 	FloatingIPDeletion bool `json:"floatingIPDeletion,omitempty"`
@@ -134,6 +138,7 @@ type Controller struct {
 
 // Backend identifies the immutable artifact and placement used by the run.
 type Backend struct {
+	MemberMode            configv1alpha1.MemberMode           `json:"memberMode,omitempty"`
 	Image                 string                              `json:"image"`
 	Replicas              int32                               `json:"replicas,omitempty"`
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
@@ -249,6 +254,9 @@ func newRuntime(
 		FloatingIPRecovery:           config.Scenarios.FloatingIPRecovery,
 		FloatingIPDeletion:           config.Scenarios.FloatingIPDeletion,
 		MemberTransitions:            config.Scenarios.MemberTransitions,
+		HTTPRouting:                  config.Scenarios.HTTPRouting,
+		EndpointBackends:             config.Scenarios.EndpointBackends,
+		BackendMemberMode:            config.Backend.MemberMode,
 		ControllerName:               identity.controllerName,
 		ControllerNamespace:          controllerNamespacePrefix + identity.runID,
 		ControllerDeployment:         controllerDeploymentName,
@@ -261,7 +269,7 @@ func newRuntime(
 		LeaderLease:                  controllerLeaseName,
 		BackendImage:                 artifacts.backendImage,
 		BackendReplicas:              backendReplicas(config.Backend.Replicas),
-		BackendExternalTrafficPolicy: backendTrafficPolicy(config.Backend.ExternalTrafficPolicy),
+		BackendExternalTrafficPolicy: resolvedBackendTrafficPolicy(config.Backend),
 		BackendNodeSelector:          maps.Clone(config.Backend.NodeSelector),
 		ExpectedWorkers:              slices.Clone(config.Backend.ExpectedWorkers),
 		ArtifactDirectory:            filepath.Join(filepath.Clean(artifacts.artifactsRoot), identity.runID),
@@ -331,7 +339,7 @@ func validateFilePolicy(config File) error {
 	if err := validateProjectAcknowledgement(config.OpenStack); err != nil {
 		return err
 	}
-	if err := validateBackendProfile(backendTrafficPolicy(config.Backend.ExternalTrafficPolicy), config.Backend.NodeSelector, config.OpenStack.ProjectMode, config.OpenStack.AllowSharedNetworkTests); err != nil {
+	if err := validateBackendMode(config.Backend.MemberMode, resolvedBackendTrafficPolicy(config.Backend), config.Backend.NodeSelector, config.OpenStack.ProjectMode, config.OpenStack.AllowSharedNetworkTests); err != nil {
 		return err
 	}
 	for _, item := range []struct {

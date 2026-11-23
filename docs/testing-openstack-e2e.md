@@ -1,6 +1,6 @@
 # Run the OpenStack controller E2E checks
 
-This guide covers end-to-end checks for the current HTTP and NodePort implementation.
+This guide covers HTTP lifecycle checks with NodePort or opt-in IPv4 Endpoint backends.
 The checks use a real Kubernetes API server and an OpenStack Amphora data plane.
 They do not run the Gateway API conformance suite and they do not establish general OpenStack compatibility.
 See [compatibility evidence](providers/compatibility.md) for recorded coverage and its limits.
@@ -24,10 +24,11 @@ Prepare all of the following:
   The optional backend Node selector also requires permission to list Nodes.
   It deletes the current leader Pod, updates the controller Deployment, uses the `pods/proxy` subresource for metrics, and lists Gateways and HTTPRoutes for the audit.
   The optional lifecycle checks also update their GatewayClass references, class configuration, and backend Deployment.
+  HTTP routing checks manage an additional run-owned Namespace and ReferenceGrant, while Endpoint checks manage their own Services and manual EndpointSlices.
 - An OpenStack project with Amphora and enough quota for the Gateway graph and an optional Floating IP.
 - A controller image built from the revision under test and an `agnhost` backend image, both available to the cluster and pinned by digest.
 - An approved VIP subnet, member subnet, and explicit choice about using an external network.
-- A path from Amphora to the selected Node `InternalIP` addresses and NodePorts.
+- A path from Amphora to the selected worker NodePorts, or to backend Pod addresses with working return routing in Endpoint mode.
 - A path from the runner to the Kubernetes API, the OpenStack API endpoints used by the controller and audit credentials, and the resulting VIP or Floating IP.
 - A redacted project-wide inventory recorded before the run.
 
@@ -59,7 +60,7 @@ Check these paths separately:
 | Runner to Kubernetes and OpenStack APIs | Create test objects, observe reconciliation, and audit ownership. |
 | Controller to Kubernetes and OpenStack APIs | Reconcile the test Gateway graph. |
 | Runner to Gateway VIP or Floating IP | Verify the HTTP response through Amphora. |
-| Amphora to worker NodePort and backend Pod | Forward requests and perform health checks. |
+| Amphora to worker NodePort or direct backend endpoint | Forward requests and perform health checks using the selected member mode. |
 
 Kubernetes API access does not imply access to worker NodePorts or a private VIP.
 Run any NodePort diagnostic from the relevant network, then verify the complete path through the VIP.
@@ -85,7 +86,9 @@ Select subsequent coverage by the boundary being changed:
 | --- | --- |
 | NodePort member selection or endpoint handling | Add `scenarios.memberTransitions` with two workers to verify traffic and preservation of surviving member and parent resource identities. Local permits an approved shared project run. Shared Cluster runs require the network test opt-in and two pinned workers. |
 | Referenced security or address handling | Add the relevant existing group settings or explicitly approved Floating IP scenarios. Rule repair and quota faults still need a separate reviewed test mechanism. |
-| Service forwarding or certificate ownership | Prove endpoint connectivity or safe Barbican creation and discovery before committing to the new design. These are design experiments, not scenarios supported by the current runner. |
+| Direct endpoint forwarding | Select Endpoint mode and `scenarios.endpointBackends` after approving the Pod network path. Verify ClusterIP, headless, and manually managed EndpointSlice backends. |
+| Listener and reference handling | Add `scenarios.httpRouting` for shared-port listeners, same-Gateway parent changes, invalid listener isolation, and Service ReferenceGrant transitions. |
+| Certificate ownership | Use a separate design experiment to prove safe Barbican creation and discovery. The E2E runner does not publish certificates. |
 | A new listener, route, reference, HTTP action, or TLS behavior | Add a reusable E2E scenario with the implementation. Verify requests, status, input changes, affected existing traffic, and cleanup, then run the applicable upstream tests. |
 
 The current runner always executes its foundation checks and selected optional scenarios.
@@ -189,7 +192,8 @@ The runner authenticates the controller and audit configurations independently b
 The generated artifacts and public report must not contain the project ID.
 
 Set `openstack.cloud` to the selected cloud entry and `openstack.region` to the exact region under test.
-The runner fixes the provider to Amphora, the member mode to NodePort, and the Node address type to `InternalIP`.
+The runner fixes the provider to Amphora and defaults to NodePort members using `InternalIP`.
+Set `backend.memberMode: Endpoint` explicitly for direct Pod addresses.
 `openstack.microversion` defaults to `2.5` and must be at least `2.29` when frontend groups are referenced.
 
 Set `openstack.vipSubnetID` and `openstack.memberSubnetID` to the approved network IDs.
@@ -263,7 +267,7 @@ backend:
 
 Replace the example label with one applied only to the intended worker Nodes, and keep those labels stable throughout the run.
 The runner reads Node labels but does not change them.
-Shared project mode requires Local traffic policy unless the network test opt-in is enabled.
+For NodePort members, shared project mode requires Local traffic policy unless the network test opt-in is enabled.
 Dedicated mode also allows Cluster, but Pod placement alone does not restrict its cloud members.
 
 The suite requires at least as many matching Ready, schedulable worker Nodes as `backend.replicas` before it creates the backend.
@@ -273,6 +277,43 @@ Local mode registers only Nodes with eligible local endpoints.
 The operator must still verify the Amphora-to-NodePort path for the selected Nodes.
 
 Validate each traffic policy separately when making a support claim.
+
+### Exercise HTTP listener and reference changes
+
+Set `scenarios.httpRouting: true` with both `kubernetes.expectedAPIServer` and `kubernetes.expectedClusterUID`.
+The scenario reuses one Gateway and its existing physical listener port.
+It adds logical hostnames, exact headers and match alternatives, and an unsupported listener, then checks parent status, traffic, and unchanged load balancer, listener, and Floating IP identities.
+Removing one section ParentRef must preserve the other section's traffic.
+This covers several parents on the same Gateway, not simultaneous Gateway graphs.
+
+The scenario then replaces the Route in a run-owned namespace and exercises namespace selection and a Service ReferenceGrant through deny, allow, revoke, and allow again.
+It restores the original Route before later recovery checks and includes temporary objects in normal cleanup.
+It checks that unauthorized requests stop forwarding, without claiming the required HTTP 500 response is implemented.
+Approve the additional L7 resource changes even though the scenario adds no load balancer.
+
+### Exercise direct Endpoint backends
+
+Use the existing configuration with these fields:
+
+```yaml
+backend:
+  memberMode: Endpoint
+  replicas: 2
+  nodeSelector:
+    e2e.example.test/backend: "true"
+scenarios:
+  endpointBackends: true
+```
+
+Provide both cluster identity fields and an approved Amphora-to-Pod network path before starting.
+Omit `externalTrafficPolicy`, worker backend security groups, and the shared NodePort network test opt-in.
+Do not combine this profile with `memberTransitions` or `localLifecycle`, which test worker NodePort behavior.
+The Node selector controls workload placement rather than cloud member selection.
+
+Endpoint mode uses a ClusterIP Service for the foundation checks.
+The optional scenario reuses those Pods through headless and manually managed EndpointSlice Services, checks endpoint termination and restoration, and restores the initial backend before recovery tests.
+It uses the same load balancer and does not modify tenant routing, security groups, user Services, or existing EndpointSlices.
+A local helper test does not establish that the selected CNI and return path work in OpenStack.
 
 ### Enable Local lifecycle checks
 
@@ -404,7 +445,7 @@ Deletion uses UID preconditions.
 The automated run covers the following checks:
 
 1. Validate the pinned Gateway API bundle and the run-scoped controller installation.
-2. Create an isolated NodePort backend.
+2. Create an isolated backend using the configured member mode.
 3. Wait for the expected GatewayClass, Gateway, listener, and HTTPRoute status.
 4. Require the active ownership audit to find both durable bindings and only matched OpenStack resources.
 5. Send HTTP traffic through the address published in Gateway status.

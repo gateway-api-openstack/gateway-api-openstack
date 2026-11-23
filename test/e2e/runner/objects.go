@@ -135,6 +135,7 @@ func buildControllerObjects(base baseObjects, config resolvedConfig, cloudsYAML 
 		configMap:          configMap,
 		secret:             secret,
 		classConfig: controllercontract.TopologySettings{
+			MemberMode:               config.BackendMemberMode,
 			VIPSubnetID:              config.Project.ExpectedVIPSubnetID,
 			MemberSubnetID:           config.Project.ExpectedMemberSubnetID,
 			ExternalNetworkID:        config.Project.ExpectedExternalNetworkID,

@@ -26,13 +26,17 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 )
 
 const reportFormatVersion = "v1alpha1"
 
 const (
+	checkHTTPRouting        = "HTTP listener attachments and cross-namespace references"
+	checkEndpointBackends   = "Endpoint Service inputs and manual EndpointSlice lifecycle"
 	checkPreflight          = "preflight safety validation"
-	checkBackend            = "isolated NodePort backend"
+	checkBackend            = "isolated Service backend"
 	checkGatewayClass       = "GatewayClass status"
 	checkGateway            = "Gateway status"
 	checkHTTPRoute          = "HTTPRoute status"
@@ -78,6 +82,12 @@ func configuredChecks(config e2eConfig) []string {
 		checkHTTPRoute,
 		checkActiveAudit,
 		checkTraffic,
+	}
+	if config.HTTPRouting {
+		checks = append(checks, checkHTTPRouting)
+	}
+	if config.EndpointBackends {
+		checks = append(checks, checkEndpointBackends)
 	}
 	if len(config.Project.FrontendSecurityGroupIDs) > 0 || len(config.Project.BackendSecurityGroupIDs) > 0 {
 		checks = append(checks, checkReferencedSecurity)
@@ -140,6 +150,7 @@ type metricsEvidence struct {
 }
 
 type backendEvidence struct {
+	MemberMode             string                              `json:"memberMode"`
 	Replicas               int32                               `json:"replicas"`
 	ExternalTrafficPolicy  corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy"`
 	NodeSelectorConfigured bool                                `json:"nodeSelectorConfigured"`
@@ -172,6 +183,10 @@ type e2eReport struct {
 }
 
 func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
+	memberMode := config.BackendMemberMode
+	if memberMode == "" {
+		memberMode = configv1alpha1.MemberModeNodePort
+	}
 	report := &e2eReport{
 		FormatVersion:         reportFormatVersion,
 		Suite:                 "OpenStack E2E foundations",
@@ -189,6 +204,7 @@ func newE2EReport(startedAt time.Time, config e2eConfig) *e2eReport {
 		MemberTransitions:     config.MemberTransitions,
 		ReferencedSecurity:    len(config.Project.FrontendSecurityGroupIDs) > 0 || len(config.Project.BackendSecurityGroupIDs) > 0,
 		Backend: backendEvidence{
+			MemberMode:             string(memberMode),
 			Replicas:               config.BackendReplicas,
 			ExternalTrafficPolicy:  config.BackendExternalTrafficPolicy,
 			NodeSelectorConfigured: len(config.BackendNodeSelector) != 0,
@@ -313,7 +329,10 @@ func renderMarkdownReportHeader(output *bytes.Buffer, report *e2eReport) {
 	_, _ = fmt.Fprintf(output, "Controller image digest: `%s`\n\n", report.ControllerImageDigest)
 	_, _ = fmt.Fprintf(output, "OpenStack project mode: %s\n\n", report.ProjectMode)
 	_, _ = fmt.Fprintf(output, "Restart mode: %s\n\n", report.RestartMode)
-	_, _ = fmt.Fprintf(output, "Backend external traffic policy: %s\n\n", report.Backend.ExternalTrafficPolicy)
+	_, _ = fmt.Fprintf(output, "Backend member mode: %s\n\n", report.Backend.MemberMode)
+	if report.Backend.ExternalTrafficPolicy != "" {
+		_, _ = fmt.Fprintf(output, "Backend external traffic policy: %s\n\n", report.Backend.ExternalTrafficPolicy)
+	}
 	_, _ = fmt.Fprintf(output, "Backend Node selector configured: %t\n\n", report.Backend.NodeSelectorConfigured)
 	_, _ = fmt.Fprintf(output, "Backend replicas: %d\n\n", report.Backend.Replicas)
 	if report.LocalLifecycle {
