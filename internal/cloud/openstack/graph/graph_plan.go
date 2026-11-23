@@ -19,6 +19,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
@@ -37,8 +38,8 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 			result.Outcome = p.progressingOutcome(plan[0].message)
 			result.Gateway.Outcome = result.Outcome
 		}
-		for _, route := range desired.routes {
-			result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: route.spec.Identity, Result: cloud.RouteResult{Outcome: result.Outcome}})
+		for _, node := range desired.spec.Routes {
+			result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: node.Spec.Identity, Result: cloud.RouteResult{Outcome: result.Outcome}})
 		}
 		return plan, result, nil
 	}
@@ -48,69 +49,131 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 	}
 	externalAddressReady := actual.floatingIP == nil && desired.spec.Gateway.Spec.ExternalNetworkID == "" ||
 		actual.floatingIP != nil && actual.floatingIP.PortID != ""
-	gatewayReady := actual.loadBalancer != nil && actual.listener != nil && actual.loadBalancer.AdminStateUp && actual.listener.AdminStateUp && externalAddressReady && len(plan) == 0
+	gatewayReady := actual.loadBalancer != nil && actual.loadBalancer.AdminStateUp && gatewayListenersReady(desired.spec.Gateway.Spec, actual) && externalAddressReady && len(plan) == 0
 	if !gatewayReady {
 		result.Gateway.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
 	}
-	deletions := make([]graphMutation, 0)
-	ensures := make([]graphMutation, 0)
+	var deletions, ensures []graphMutation
 	canRestoreTraffic := true
-	for index, route := range desired.routes {
-		observed := observedRouteGraph{}
-		if index < len(actual.routes) {
-			observed = actual.routes[index]
+	preservedListeners := make(map[cloud.ListenerKey]bool)
+	for _, node := range desired.spec.Routes {
+		if node.Disposition != cloud.GraphPreserve {
+			continue
 		}
-		routeResult := cloud.RouteReadyResult(routeStateFromObservation(observed))
-		var routePlan []routeMutation
-		node := desired.spec.Routes[index]
-		switch node.Disposition {
-		case cloud.GraphDelete:
-			routePlan = buildRouteDeletionPlan(observed)
-		case cloud.GraphPreserve:
-			// An unresolved attached fragment may be observed, but it cannot
-			// authorize reopening traffic through a disabled parent.
+		for _, observed := range actual.routes[node.Spec.Identity.RouteUID] {
 			if observed.pool != nil || len(observed.policies) != 0 {
 				canRestoreTraffic = false
 			}
-		case cloud.GraphEnsure:
-			// Desired routes share the validated Gateway requirements. Their
-			// recorded IDs must still match this observation before planning.
-			if route.spec.Gateway.LoadBalancerID != "" && actual.state.LoadBalancerID != "" && route.spec.Gateway.LoadBalancerID != actual.state.LoadBalancerID ||
-				route.spec.Gateway.ListenerID != "" && actual.state.ListenerID != "" && route.spec.Gateway.ListenerID != actual.state.ListenerID {
-				return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: fmt.Errorf("%w: route Gateway IDs differ from the observed graph", cloud.ErrOwnershipConflict)}
-			}
-			route.spec.Gateway = actual.state
-			routePlan, routeResult.State, err = buildRouteEnsurePlan(route, observed)
-			if err != nil {
-				return nil, result, &cloud.GraphError{Identity: route.spec.Identity, Err: err}
-			}
-			if actual.listener == nil || actual.loadBalancer == nil {
-				// The desired route has been validated, but its resources cannot
-				// be created until both prerequisites have been observed.
-				routePlan = nil
-			}
-			if !gatewayReady {
-				routeResult.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
+			for _, policy := range observed.policies {
+				preservedListeners[policy.key.Listener] = true
 			}
 		}
-		if len(routePlan) != 0 {
-			routeResult.Outcome = p.progressingOutcome(routePlan[0].message())
+	}
+	for routeIndex, node := range desired.spec.Routes {
+		id := node.Spec.Identity
+		observations := actual.routes[id.RouteUID]
+		wanted := make(map[int]desiredRoute, len(desired.routes[routeIndex]))
+		indices := make(map[int]struct{})
+		for _, route := range desired.routes[routeIndex] {
+			wanted[route.rule.Index] = route
+			indices[route.rule.Index] = struct{}{}
 		}
-		for _, step := range routePlan {
-			mutation := graphMutation{kind: graphRouteMutation, routeIndex: index, route: step, message: step.message()}
-			if node.Disposition == cloud.GraphDelete {
-				deletions = append(deletions, mutation)
-			} else {
-				ensures = append(ensures, mutation)
+		for index := range observations {
+			indices[index] = struct{}{}
+		}
+		ordered := make([]int, 0, len(indices))
+		for index := range indices {
+			ordered = append(ordered, index)
+		}
+		sort.Ints(ordered)
+		routeResult := cloud.RouteReadyResult(cloud.RouteState{})
+		for _, ruleIndex := range ordered {
+			observed := observedRouteGraph{index: ruleIndex}
+			if observations[ruleIndex] != nil {
+				observed = *observations[ruleIndex]
 			}
+			ruleState := ruleStateFromObservation(observed)
+			route, exists := wanted[ruleIndex]
+			var rulePlan []routeMutation
+			deleting := node.Disposition == cloud.GraphDelete || node.Disposition == cloud.GraphEnsure && !exists
+			switch {
+			case deleting:
+				rulePlan = buildRouteDeletionPlan(observed)
+			case node.Disposition == cloud.GraphEnsure:
+				if err := validateRecordedGateway(node.Spec.Gateway, actual.state); err != nil {
+					return nil, result, &cloud.GraphError{Identity: id, Err: err}
+				}
+				route.spec.Gateway = actual.state
+				rulePlan, ruleState, err = buildRouteEnsurePlan(route, observed)
+				if err != nil {
+					return nil, result, &cloud.GraphError{Identity: id, Err: err}
+				}
+				blocked := false
+				for _, policy := range route.policies {
+					blocked = blocked || preservedListeners[policy.key.Listener] || actual.listeners[policy.key.Listener] == nil
+				}
+				if blocked || actual.loadBalancer == nil {
+					rulePlan = nil
+					routeResult.Outcome = p.progressingOutcome("Waiting for the complete listener graph")
+				}
+				if !gatewayReady {
+					routeResult.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
+				}
+			}
+			if len(rulePlan) != 0 {
+				routeResult.Outcome = p.progressingOutcome(rulePlan[0].message())
+			}
+			for stepIndex, step := range rulePlan {
+				mutation := graphMutation{kind: graphRouteMutation, routeIndex: routeIndex, ruleIndex: ruleIndex, route: step, message: step.message()}
+				mutation.priority = routeStepPriority(route, observed, step)
+				if deleting {
+					if node.Disposition == cloud.GraphEnsure {
+						result.Gateway.Outcome = p.progressingOutcome("Removing obsolete forwarding resources")
+					}
+					deletions = append(deletions, mutation)
+				} else if stepIndex == 0 {
+					ensures = append(ensures, mutation)
+				}
+			}
+			routeResult.State.Rules = append(routeResult.State.Rules, ruleState)
 		}
-		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: route.spec.Identity, Result: routeResult})
+		if node.Disposition == cloud.GraphEnsure && !gatewayReady {
+			routeResult.Outcome = p.progressingOutcome("Waiting for the Gateway infrastructure")
+		}
+		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: id, Result: routeResult})
 		if routeResult.Outcome.State == cloud.OutcomeProgressing {
 			result.Outcome = routeResult.Outcome
 		}
 	}
+	// Each rule contributes its first dependency-safe mutation. Prioritize the
+	// target match, not the containing Route: matches from different rules can
+	// interleave, and Octavia clamps positions beyond the existing policy count.
+	sort.SliceStable(ensures, func(i, j int) bool { return ensures[i].priority < ensures[j].priority })
 	plan = append(plan, deletions...)
 	plan = append(plan, ensures...)
+	if desired.spec.Gateway.Disposition == cloud.GraphEnsure {
+		wantedListeners := make(map[cloud.ListenerKey]bool)
+		for _, listener := range desired.spec.Gateway.Spec.Listeners {
+			wantedListeners[listener.Key] = true
+		}
+		for _, listener := range actual.state.Listeners {
+			if wantedListeners[listener.Key] {
+				continue
+			}
+			result.Gateway.Outcome = p.progressingOutcome("Removing obsolete listeners")
+			busy := false
+			for _, rules := range actual.routes {
+				for _, rule := range rules {
+					for _, policy := range rule.policies {
+						busy = busy || policy.key.Listener == listener.Key
+					}
+				}
+			}
+			if !busy {
+				plan = append(plan, graphMutation{kind: graphDeleteChild, deletion: gatewayDeletionStep{resource: gatewayDeletionListener, resourceID: listener.ID}, message: "Deleted obsolete Octavia listener"})
+			}
+		}
+	}
 	if canRestoreTraffic {
 		restore, err := buildGatewayTrafficRestorationPlan(desired, actual)
 		if err != nil {
@@ -124,6 +187,54 @@ func (p *Provider) buildGatewayGraphPlan(desired desiredGatewayGraph, actual obs
 		result.Outcome = result.Gateway.Outcome
 	}
 	return plan, result, nil
+}
+
+func routeStepPriority(route desiredRoute, observed observedRouteGraph, step routeMutation) int32 {
+	if step.policy.position != 0 {
+		return step.policy.position
+	}
+	key := step.rule.key
+	if key.Kind == cloud.ResourcePredicate {
+		key.Kind, key.Predicate = cloud.ResourcePolicy, ""
+	}
+	for _, policy := range observed.policies {
+		if policy.policy.ID == step.id || policy.policy.ID == step.parentID {
+			key = policy.key
+			break
+		}
+	}
+	priority := int32(0)
+	for _, policy := range route.policies {
+		if policy.key == key {
+			return policy.position
+		}
+		if priority == 0 || policy.position < priority {
+			priority = policy.position
+		}
+	}
+	return priority
+}
+
+func validateRecordedGateway(recorded, actual cloud.GatewayState) error {
+	if recorded.LoadBalancerID != "" && actual.LoadBalancerID != "" && recorded.LoadBalancerID != actual.LoadBalancerID {
+		return fmt.Errorf("%w: route Gateway ID differs from the observed graph", cloud.ErrOwnershipConflict)
+	}
+	for _, listener := range recorded.Listeners {
+		if id := actual.ListenerID(listener.Key); id != "" && listener.ID != "" && id != listener.ID {
+			return fmt.Errorf("%w: route listener ID differs from the observed graph", cloud.ErrOwnershipConflict)
+		}
+	}
+	return nil
+}
+
+func gatewayListenersReady(spec cloud.GatewaySpec, actual observedGatewayGraph) bool {
+	for _, listener := range spec.Listeners {
+		observed := actual.listeners[listener.Key]
+		if observed == nil || !observed.AdminStateUp {
+			return false
+		}
+	}
+	return len(spec.Listeners) > 0
 }
 
 func buildGatewayPrerequisitePlan(desired desiredGatewayGraph, actual observedGatewayGraph) ([]graphMutation, error) {
@@ -141,14 +252,16 @@ func buildGatewayPrerequisitePlan(desired desiredGatewayGraph, actual observedGa
 	if networkID == "" && actual.floatingIP != nil {
 		plan = append(plan, graphMutation{kind: graphDeleteFloatingIP, message: "Removed a no-longer-configured Floating IP"})
 	}
-	if actual.listener == nil {
-		plan = append(plan, graphMutation{kind: graphCreateListener, message: "Created Octavia listener"})
+	for _, listener := range desired.spec.Gateway.Spec.Listeners {
+		if actual.listeners[listener.Key] == nil {
+			plan = append(plan, graphMutation{kind: graphCreateListener, listener: listener.Key, message: "Created Octavia listener"})
+		}
 	}
 	return plan, nil
 }
 
 func buildGatewayTrafficRestorationPlan(desired desiredGatewayGraph, actual observedGatewayGraph) ([]graphMutation, error) {
-	if desired.spec.Gateway.Disposition != cloud.GraphEnsure || actual.loadBalancer == nil || actual.listener == nil {
+	if desired.spec.Gateway.Disposition != cloud.GraphEnsure || actual.loadBalancer == nil || len(actual.listeners) == 0 {
 		return nil, nil
 	}
 	var plan []graphMutation
@@ -164,8 +277,10 @@ func buildGatewayTrafficRestorationPlan(desired desiredGatewayGraph, actual obse
 		}
 		plan = append(plan, mutation)
 	}
-	if !actual.listener.AdminStateUp {
-		plan = append(plan, graphMutation{kind: graphEnableListener, message: "Enabled Octavia listener after validating the Gateway graph"})
+	for _, listener := range desired.spec.Gateway.Spec.Listeners {
+		if observed := actual.listeners[listener.Key]; observed != nil && !observed.AdminStateUp {
+			plan = append(plan, graphMutation{kind: graphEnableListener, listener: listener.Key, resourceID: observed.ID, message: "Enabled Octavia listener after validating the Gateway graph"})
+		}
 	}
 	if !actual.loadBalancer.AdminStateUp {
 		plan = append(plan, graphMutation{kind: graphEnableLoadBalancer, message: "Enabled Octavia load balancer after validating the Gateway graph"})
@@ -176,7 +291,11 @@ func buildGatewayTrafficRestorationPlan(desired desiredGatewayGraph, actual obse
 func gatewayGraphDeletionPlan(actual observedGatewayGraph) []graphMutation {
 	plan := make([]graphMutation, 0)
 	for _, step := range actual.deletion.orderedSteps() {
-		plan = append(plan, graphMutation{kind: graphDeleteChild, deletion: step, message: fmt.Sprintf("Deleting controller-owned %s", step.resource)})
+		message := fmt.Sprintf("Deleting controller-owned %s", step.resource)
+		if step.resource == gatewayDeletionDisablePolicy {
+			message = "Disabled Octavia L7 policy before deletion"
+		}
+		plan = append(plan, graphMutation{kind: graphDeleteChild, deletion: step, message: message})
 	}
 	if actual.floatingIP != nil {
 		plan = append(plan, graphMutation{kind: graphDeleteFloatingIP, message: "Deleting controller-owned Floating IP"})
@@ -187,8 +306,8 @@ func gatewayGraphDeletionPlan(actual observedGatewayGraph) []graphMutation {
 	return plan
 }
 
-func routeStateFromObservation(actual observedRouteGraph) cloud.RouteState {
-	state := cloud.RouteState{}
+func ruleStateFromObservation(actual observedRouteGraph) cloud.RouteRuleState {
+	state := cloud.RouteRuleState{Index: actual.index}
 	if actual.pool != nil {
 		state.PoolID = actual.pool.ID
 	}
@@ -243,20 +362,27 @@ func (p *Provider) executeGraphMutation(ctx context.Context, desired desiredGate
 		}
 		return nil
 	case graphCreateListener:
-		tags, tagErr := desired.identity.GatewayTags(roleListener)
+		tags, tagErr := desired.identity.ChildTags(roleListener, cloud.ResourceKey{Kind: cloud.ResourceListener, Listener: step.listener})
 		if tagErr != nil {
 			return tagErr
 		}
 		_, err = p.octavia.CreateListener(ctx, listeners.CreateOpts{
-			LoadbalancerID: actual.state.LoadBalancerID, Protocol: listeners.ProtocolHTTP, ProtocolPort: spec.ListenerPort,
-			Name: spec.ListenerName, Description: desired.identity.Description(roleListener), AdminStateUp: boolPointer(true), Tags: tags,
+			LoadbalancerID: actual.state.LoadBalancerID, Protocol: listeners.ProtocolHTTP, ProtocolPort: step.listener.Port,
+			Name: resourceName(spec.Identity, step.listener.String()), Description: desired.identity.Description(roleListener), AdminStateUp: boolPointer(true), Tags: tags,
 		})
 	case graphRouteMutation:
-		route := desired.routes[step.routeIndex]
+		node := desired.spec.Routes[step.routeIndex]
+		route := desiredRoute{identity: desired.identities[step.routeIndex], spec: node.Spec, rule: cloud.RouteRuleSpec{Index: step.ruleIndex}}
+		for _, wanted := range desired.routes[step.routeIndex] {
+			if wanted.rule.Index == step.ruleIndex {
+				route = wanted
+				break
+			}
+		}
 		route.spec.Gateway = actual.state
 		return p.executeRouteMutation(ctx, route, step.route)
 	case graphEnableListener:
-		return p.enableListener(ctx, actual.state.ListenerID)
+		return p.enableListener(ctx, step.resourceID)
 	case graphEnableLoadBalancer:
 		return p.enableLoadBalancer(ctx, actual.state.LoadBalancerID)
 	case graphDeleteChild:

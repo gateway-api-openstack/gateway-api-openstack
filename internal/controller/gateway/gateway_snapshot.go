@@ -21,9 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -33,6 +33,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/classconfig"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 type gatewayBindingRequirement int
@@ -48,7 +49,7 @@ const (
 type gatewayMutationSnapshot struct {
 	gateway      *gatewayv1.Gateway
 	gatewayClass *gatewayv1.GatewayClass
-	listener     *gatewayv1.Listener
+	listeners    []gatewayv1.Listener
 	binding      gatewayBindingRequirement
 	topology     classconfig.Resolved
 }
@@ -60,7 +61,6 @@ func (r *Reconciler) observeGatewayMutationSnapshot(
 	ctx context.Context,
 	expected *gatewayv1.Gateway,
 	binding gatewayBindingRequirement,
-	expectedListenerPort string,
 ) (*gatewayMutationSnapshot, error) {
 	if r.APIReader == nil {
 		return nil, controller.ErrAPIReaderRequired
@@ -92,20 +92,17 @@ func (r *Reconciler) observeGatewayMutationSnapshot(
 	if binding == gatewayBindingRequired && !controllerutil.ContainsFinalizer(&gateway, r.Config.GatewayFinalizer()) {
 		return nil, errGatewayChanged
 	}
+	if binding == gatewayBindingRequired && !gatewayStatusEvaluated(&gateway) {
+		// Child replacement may delete listeners. Both reconciler entry points
+		// must observe the new generation's durable status before graph mutation.
+		return nil, errGatewayChanged
+	}
 	if err := controller.ValidateGatewayBinding(r.Config, &gateway); err != nil {
 		return nil, errors.Join(errGatewayChanged, err)
 	}
 
-	listener, validationErr := Validate(&gateway)
+	listeners, validationErr := Validate(&gateway)
 	if validationErr != nil {
-		return nil, errGatewayChanged
-	}
-	listenerPort := strconv.Itoa(int(listener.Port))
-	if expectedListenerPort != "" && listenerPort != expectedListenerPort {
-		return nil, errGatewayChanged
-	}
-	if binding == gatewayBindingRequired &&
-		gateway.Annotations[r.Config.GatewayListenerPortAnnotation()] != listenerPort {
 		return nil, errGatewayChanged
 	}
 
@@ -125,7 +122,7 @@ func (r *Reconciler) observeGatewayMutationSnapshot(
 		gateway:      &gateway,
 		topology:     topology,
 		gatewayClass: &gatewayClass,
-		listener:     listener,
+		listeners:    listeners,
 		binding:      binding,
 	}, nil
 }
@@ -152,7 +149,6 @@ func (r *Reconciler) sealGatewayMutationSnapshot(
 	}
 	if snapshot.binding == gatewayBindingRequired {
 		if !controllerutil.ContainsFinalizer(&gateway, r.Config.GatewayFinalizer()) ||
-			gateway.Annotations[r.Config.GatewayListenerPortAnnotation()] == "" ||
 			gateway.Annotations[r.Config.GatewayClusterIDAnnotation()] == "" ||
 			gateway.Annotations[r.Config.GatewayProjectIDAnnotation()] == "" ||
 			controller.ValidateGatewayBinding(r.Config, &gateway) != nil {
@@ -200,7 +196,7 @@ const (
 	gatewayPhaseUnsupportedVersion
 	gatewayPhaseInvalidBinding
 	gatewayPhaseInvalidSpec
-	gatewayPhaseReplaceGraph
+	gatewayPhaseCheckpoint
 	gatewayPhaseBind
 	gatewayPhaseEnsure
 )
@@ -209,10 +205,9 @@ const (
 // normal reconciliation. Mutation helpers build their own live snapshots and
 // do not treat this decision as mutation authority.
 type gatewayPhaseDecision struct {
-	phase        gatewayReconcilePhase
-	listener     *gatewayv1.Listener
-	listenerPort string
-	validation   error
+	phase      gatewayReconcilePhase
+	listeners  []gatewayv1.Listener
+	validation error
 }
 
 func (r *Reconciler) decideGatewayPhase(scope *gatewayScope) gatewayPhaseDecision {
@@ -230,26 +225,31 @@ func (r *Reconciler) decideGatewayPhase(scope *gatewayScope) gatewayPhaseDecisio
 		return gatewayPhaseDecision{phase: gatewayPhaseInvalidBinding, validation: err}
 	}
 
-	listener, err := Validate(gateway)
-	if err != nil {
-		return gatewayPhaseDecision{phase: gatewayPhaseInvalidSpec, validation: err}
+	evaluation := scope.listeners
+	if evaluation == nil {
+		fallback := evaluateGatewayListeners(model.Input{Gateway: gateway})
+		evaluation = &fallback
 	}
-	listenerPort := strconv.Itoa(int(listener.Port))
-	storedListenerPort := gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
-	if storedListenerPort != "" && storedListenerPort != listenerPort {
-		return gatewayPhaseDecision{
-			phase: gatewayPhaseReplaceGraph, listener: listener, listenerPort: listenerPort,
-		}
+	if evaluation.err != nil {
+		return gatewayPhaseDecision{phase: gatewayPhaseInvalidSpec, validation: evaluation.err}
 	}
+	listeners := evaluation.listeners
 	if !r.gatewayBindingComplete(gateway) {
-		return gatewayPhaseDecision{phase: gatewayPhaseBind, listener: listener, listenerPort: listenerPort}
+		return gatewayPhaseDecision{phase: gatewayPhaseBind, listeners: listeners}
 	}
-	return gatewayPhaseDecision{phase: gatewayPhaseEnsure, listener: listener, listenerPort: listenerPort}
+	if !gatewayStatusEvaluated(gateway) {
+		return gatewayPhaseDecision{phase: gatewayPhaseCheckpoint, listeners: listeners}
+	}
+	return gatewayPhaseDecision{phase: gatewayPhaseEnsure, listeners: listeners}
+}
+
+func gatewayStatusEvaluated(gateway *gatewayv1.Gateway) bool {
+	condition := meta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+	return condition != nil && condition.ObservedGeneration == gateway.Generation
 }
 
 func (r *Reconciler) gatewayBindingComplete(gateway *gatewayv1.Gateway) bool {
 	return controllerutil.ContainsFinalizer(gateway, r.Config.GatewayFinalizer()) &&
-		gateway.Annotations[r.Config.GatewayListenerPortAnnotation()] != "" &&
 		gateway.Annotations[r.Config.GatewayClusterIDAnnotation()] != "" &&
 		gateway.Annotations[r.Config.GatewayProjectIDAnnotation()] != ""
 }
@@ -265,9 +265,8 @@ const (
 // gatewayCleanupSnapshot records the live binding and the cleanup authority
 // derived from the current Gateway and GatewayClass lifecycle.
 type gatewayCleanupSnapshot struct {
-	identity     cloud.Identity
-	disposition  gatewayCleanupDisposition
-	listenerPort string
+	identity    cloud.Identity
+	disposition gatewayCleanupDisposition
 }
 
 func (r *Reconciler) observeGatewayCleanupSnapshot(
@@ -322,15 +321,8 @@ func (r *Reconciler) observeGatewayCleanupSnapshot(
 	if err := controller.ValidateInstalledGatewayAPIVersion(ctx, r.APIReader); err != nil {
 		return nil, err
 	}
-	listener, validationErr := Validate(&gateway)
-	if validationErr != nil {
+	if _, validationErr := Validate(&gateway); validationErr != nil {
 		snapshot.disposition = gatewayCleanupRebuild
-		return snapshot, nil
-	}
-	storedListenerPort := gateway.Annotations[r.Config.GatewayListenerPortAnnotation()]
-	if storedListenerPort != "" && storedListenerPort != strconv.Itoa(int(listener.Port)) {
-		snapshot.disposition = gatewayCleanupRebuild
-		snapshot.listenerPort = strconv.Itoa(int(listener.Port))
 		return snapshot, nil
 	}
 

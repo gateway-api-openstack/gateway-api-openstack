@@ -190,7 +190,7 @@ func TestRouteModelPreservesPendingServiceDeletion(t *testing.T) {
 
 func TestRouteBindingFenceDetectsNewCandidate(t *testing.T) {
 	f := newRouteModelInputFixture(t)
-	f.reconciler.clearRouteBinding(f.route)
+	_ = controller.RemoveRouteBinding(f.reconciler.Config, f.route, string(f.gateway.UID))
 	if err := f.client.Update(t.Context(), f.route); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestRouteGraphCleanupDoesNotReadBackendDependencies(t *testing.T) {
 	for _, action := range []graph.Action{graph.DeleteRoute, graph.DeleteGateway} {
 		t.Run(string(action), func(t *testing.T) {
 			f := newRouteModelInputFixture(t)
-			f.route.Annotations[testConfig().RouteLifecycleAnnotation()] = controller.RouteDetaching
+			updateBindingFixture(t, testConfig(), f.route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 			if err := f.client.Update(t.Context(), f.route); err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +247,9 @@ func newRouteModelInputFixture(t *testing.T) *routeModelInputFixture {
 	class, gateway, route, service, endpoints := endpointRouteFixture(t)
 	endpoints.UID = "slice-uid"
 	r := &Reconciler{Config: testConfig()}
-	r.applyRouteBinding(route, gateway)
+	if err := r.applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), r.Config).WithObjects(class, gateway, route, service, endpoints).Build()
 	for _, object := range []client.Object{gateway, route, service, endpoints} {
 		if err := kubeClient.Get(t.Context(), client.ObjectKeyFromObject(object), object); err != nil {

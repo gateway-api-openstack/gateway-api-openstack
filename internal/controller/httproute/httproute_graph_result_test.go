@@ -54,7 +54,7 @@ func TestHTTPRouteRequiresItsComponentOutcome(t *testing.T) {
 			return cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome(), Routes: []cloud.RouteGraphResult{component, component}}
 		}},
 		{name: "ready component", wantState: cloud.OutcomeReady, result: func(id cloud.Identity) cloud.GatewayGraphResult {
-			return cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome(), Routes: []cloud.RouteGraphResult{{Identity: id, Result: cloud.RouteReadyResult(cloud.RouteState{PoolID: "pool-1"})}}}
+			return cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome(), Routes: []cloud.RouteGraphResult{{Identity: id, Result: cloud.RouteReadyResult(cloud.RouteState{Rules: []cloud.RouteRuleState{{Index: 0, PoolID: "pool-1"}}})}}}
 		}},
 	}
 	for _, test := range tests {
@@ -66,7 +66,9 @@ func TestHTTPRouteRequiresItsComponentOutcome(t *testing.T) {
 			route.UID = "route-uid"
 			route.Generation = 1
 			seed := &Reconciler{Config: cfg}
-			seed.applyRouteBinding(route, gateway)
+			if err := seed.applyRouteBinding(route, gateway); err != nil {
+				t.Fatal(err)
+			}
 			service, endpoints, node := validNodePortBackend("default", "backend")
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(class, gateway, route, service, endpoints, node).Build()
 			expectedIdentity := controller.RouteIdentity(cfg, gateway, route)

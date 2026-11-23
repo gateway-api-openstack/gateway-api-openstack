@@ -37,10 +37,12 @@ func TestRouteGraphInventoryRetainsBoundFragmentsWithoutParentRefs(t *testing.T)
 	cfg := testConfig()
 	boundGateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-1"}}
 	binder := &Reconciler{Config: cfg}
-	boundRoute := func(name, lifecycle string) *gatewayv1.HTTPRoute {
-		route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: boundGateway.Namespace, Name: name, UID: types.UID(name + "-uid"), Generation: 1}}
-		binder.applyRouteBinding(route, boundGateway)
-		route.Annotations[cfg.RouteLifecycleAnnotation()] = lifecycle
+	boundRoute := func(name string, lifecycle controller.RouteLifecycle) *gatewayv1.HTTPRoute {
+		route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: boundGateway.Namespace, Name: string(name), UID: types.UID(name + "-uid"), Generation: 1}}
+		if err := binder.applyRouteBinding(route, boundGateway); err != nil {
+			t.Fatal(err)
+		}
+		updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteLifecycle(lifecycle) })
 		return route
 	}
 	detaching := boundRoute("a-detaching", controller.RouteDetaching)
@@ -75,8 +77,10 @@ func TestRouteGraphInventoryFenceDetectsNewCandidatesAndLifecycleChanges(t *test
 			gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-1"}}
 			route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "route", UID: "route-1", Generation: 1}}
 			r := &Reconciler{Config: cfg}
-			r.applyRouteBinding(route, gateway)
-			route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+			if err := r.applyRouteBinding(route, gateway); err != nil {
+				t.Fatal(err)
+			}
+			updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 			kubeClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(route).Build()
 			r.APIReader = kubeClient
 			input, err := r.ObserveRouteGraph(ctx, graph.Request{Identity: controller.RouteIdentity(cfg, gateway, route), Action: graph.DeleteRoute, Route: route}, nil)
@@ -89,7 +93,7 @@ func TestRouteGraphInventoryFenceDetectsNewCandidatesAndLifecycleChanges(t *test
 				if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(route), current); err != nil {
 					t.Fatal(err)
 				}
-				current.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteAttached
+				updateBindingFixture(t, cfg, current.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteAttached })
 				if err := kubeClient.Update(ctx, current); err != nil {
 					t.Fatal(err)
 				}
@@ -99,7 +103,9 @@ func TestRouteGraphInventoryFenceDetectsNewCandidatesAndLifecycleChanges(t *test
 				switch change {
 				case "bound fragment":
 					created.Spec.ParentRefs = nil
-					r.applyRouteBinding(created, gateway)
+					if err := r.applyRouteBinding(created, gateway); err != nil {
+						t.Fatal(err)
+					}
 				case "unrelated route":
 					created.Spec.ParentRefs[0].Name = "other"
 				}
@@ -124,8 +130,10 @@ func TestRouteGraphRejectsUnknownBoundFragmentLifecycle(t *testing.T) {
 	gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-1"}}
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "route", UID: "route-1", Generation: 1}}
 	r := &Reconciler{Config: cfg}
-	r.applyRouteBinding(route, gateway)
-	delete(route.Annotations, cfg.RouteLifecycleAnnotation())
+	if err := r.applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
+	updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = "" })
 	r.APIReader = fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(route).Build()
 	_, err := r.ObserveRouteGraph(context.Background(), graph.Request{Identity: controller.RouteIdentity(cfg, gateway, route), Action: graph.DeleteRoute, Route: route}, nil)
 	if !errors.Is(err, cloud.ErrOwnershipConflict) {

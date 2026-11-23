@@ -24,49 +24,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-// legacyTestProvider preserves existing component assertions while the tests
-// exercise the complete production graph writer and its Kubernetes fences.
-type legacyTestProvider interface {
-	EnsureGateway(context.Context, cloud.GatewaySpec) (cloud.GatewayResult, error)
-	DeleteGateway(context.Context, cloud.Identity) (cloud.Outcome, error)
-	EnsureRoute(context.Context, cloud.RouteSpec) (cloud.RouteResult, error)
-	DeleteRoute(context.Context, cloud.Identity) (cloud.Outcome, error)
-}
-
-func fakeGraphResult(ctx context.Context, p legacyTestProvider, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
-	result := cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome(), Gateway: cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-1", VIPAddress: "192.0.2.10", ListenerID: "listener-1"})}
-	var err error
-	if spec.Gateway.Disposition == cloud.GraphDelete {
-		result.Outcome, err = p.DeleteGateway(ctx, spec.Identity)
-		return result, err
-	}
-	for _, node := range spec.Routes {
-		component := cloud.RouteReadyResult(cloud.RouteState{})
-		switch node.Disposition {
-		case cloud.GraphEnsure:
-			component, err = p.EnsureRoute(ctx, node.Spec)
-		case cloud.GraphDelete:
-			component.Outcome, err = p.DeleteRoute(ctx, node.Spec.Identity)
-		}
-		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: node.Spec.Identity, Result: component})
-		if err != nil {
-			return result, &cloud.GraphError{Identity: node.Spec.Identity, Err: err}
-		}
-		if component.Outcome.State == cloud.OutcomeProgressing {
-			result.Outcome = component.Outcome
-		}
-	}
-	if len(spec.Routes) == 0 && spec.Gateway.Disposition == cloud.GraphEnsure {
-		result.Gateway, err = p.EnsureGateway(ctx, spec.Gateway.Spec)
-		result.Outcome = result.Gateway.Outcome
-	}
-	return result, err
-}
-
-func (p *recordingProvider) ReconcileGatewayGraph(ctx context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
-	return fakeGraphResult(ctx, p, spec)
-}
-
 func newTestReconciler(value Reconciler, provider cloud.GraphProvider) *Reconciler {
 	r := &value
 	if r.TopologyResolver == nil {

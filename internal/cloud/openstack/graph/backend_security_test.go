@@ -34,7 +34,7 @@ func TestBackendSecurityFailureRetainsRouteRetryAndRecovers(t *testing.T) {
 	identity := safetyTestIdentity(t)
 	spec := completeGraphSpec(identity)
 	spec.Routes[0].Spec.BackendSecurityGroupIDs = []string{"sg-a"}
-	spec.Routes[0].Spec.Members[0].ProviderID = "openstack:///" + serverID
+	spec.Routes[0].Spec.Rules[0].Members[0].ProviderID = "openstack:///" + serverID
 	requests := &gatewayTransitionRequests{}
 	allowed := false
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -108,12 +108,12 @@ func TestDesiredRouteRejectsConflictingMemberProviderIDs(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			spec := routeTransitionSpec(identity)
-			spec.Members = []cloud.Member{
+			spec.Rules[0].Members = []cloud.Member{
 				{Address: "2001:db8::7", Port: 30080, ProviderID: "openstack:///server-a"},
 				{Address: "2001:0db8::7", Port: 30080, ProviderID: test.providerID},
 			}
 			for range 2 {
-				desired, err := provider.buildDesiredRoute(spec)
+				desired, err := provider.buildDesiredRule(spec, spec.Rules[0])
 				if test.conflict {
 					if !errors.Is(err, cloud.ErrTerminalValidation) {
 						t.Fatalf("ambiguous member provider identity was accepted: %v", err)
@@ -121,7 +121,7 @@ func TestDesiredRouteRejectsConflictingMemberProviderIDs(t *testing.T) {
 				} else if err != nil || len(desired.members) != 1 || desired.members[0].ProviderID != "openstack:///server-a" {
 					t.Fatalf("identical normalized member tuples did not deduplicate: %v, %v", desired.members, err)
 				}
-				slices.Reverse(spec.Members)
+				slices.Reverse(spec.Rules[0].Members)
 			}
 		})
 	}
@@ -172,7 +172,7 @@ func TestRouteCleanupDoesNotRequireReferencedSecurityGroups(t *testing.T) {
 					writer.WriteHeader(http.StatusNotFound)
 					return
 				}
-				routeTransitionEmptyFloatingIPHandler(t, requests).ServeHTTP(writer, request)
+				emptyFloatingIPHandler(t, requests).ServeHTTP(writer, request)
 			})
 			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(handler), Network: safetyServiceClient(network), ProjectID: "project-a"}, ProviderConfig{})
 			// The production DeleteRoute action preserves the Gateway and carries

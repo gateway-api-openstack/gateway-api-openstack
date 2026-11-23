@@ -269,7 +269,7 @@ func (s *openStackSuite) verifyFloatingIPDeletion(ctx context.Context) error {
 				return false, nil
 			}
 			replacement = observed.State
-			if replacement.FloatingIPID == state.FloatingIPID || replacement.LoadBalancerID != state.LoadBalancerID || replacement.ListenerID != state.ListenerID ||
+			if replacement.FloatingIPID == state.FloatingIPID || replacement.LoadBalancerID != state.LoadBalancerID || !slices.Equal(replacement.Listeners, state.Listeners) ||
 				replacement.VIPPortID != state.VIPPortID || replacement.VIPAddress != state.VIPAddress {
 				return false, fmt.Errorf("floating IP replacement changed the parent graph or reused the deleted identity")
 			}
@@ -357,7 +357,7 @@ func (s *openStackSuite) verifyReferencedSecurity(ctx context.Context) error {
 		return err
 	}
 	return topology.NewResolver(*clients, cloudObservationTimeout).ValidateGatewaySecurity(ctx, cloud.GatewaySpec{
-		VIPSubnetID: resolved.VIPSubnetID, VIPSecurityGroupIDs: resolved.VIPSecurityGroupIDs, ListenerPort: listenerPort,
+		VIPSubnetID: resolved.VIPSubnetID, VIPSecurityGroupIDs: resolved.VIPSecurityGroupIDs, Listeners: []cloud.ListenerSpec{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: listenerPort}}},
 	}, routes)
 }
 
@@ -401,6 +401,7 @@ func (s *openStackSuite) referencedBackendModels(ctx context.Context, clients *o
 		return nil, err
 	}
 	model := cloud.RouteSpec{Identity: id, MemberSubnetID: resolved.MemberSubnetID, BackendSecurityGroupIDs: resolved.BackendSecurityGroupIDs}
+	var members []cloud.Member
 	for _, resource := range report.Resources {
 		if resource.Service != "Octavia" || resource.Type != "Member" {
 			continue
@@ -413,10 +414,11 @@ func (s *openStackSuite) referencedBackendModels(ctx context.Context, clients *o
 		if member.ID != resource.ID || !identity.MatchesRoute(member.Tags, cloudidentity.RoleMember) || providerID == "" {
 			return nil, fmt.Errorf("test member does not map to the expected route and worker")
 		}
-		model.Members = append(model.Members, cloud.Member{Address: member.Address, Port: member.ProtocolPort, ProviderID: providerID})
+		members = append(members, cloud.Member{Address: member.Address, Port: member.ProtocolPort, ProviderID: providerID})
 	}
-	if len(model.Members) == 0 {
+	if len(members) == 0 {
 		return nil, fmt.Errorf("test route has no observed members for security validation")
 	}
+	model.Rules = []cloud.RouteRuleSpec{{Members: members}}
 	return []cloud.RouteSpec{model}, nil
 }

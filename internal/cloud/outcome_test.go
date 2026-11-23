@@ -123,8 +123,8 @@ func TestProviderResultConstructorsKeepProgressSeparateFromErrors(t *testing.T) 
 	if readyGateway.Outcome.State != OutcomeReady || readyGateway.State.LoadBalancerID != "lb-1" {
 		t.Fatalf("Gateway ready result = %#v", readyGateway)
 	}
-	readyRoute := RouteReadyResult(RouteState{PoolID: "pool-1"})
-	if readyRoute.Outcome.State != OutcomeReady || readyRoute.State.PoolID != "pool-1" {
+	readyRoute := RouteReadyResult(RouteState{Rules: []RouteRuleState{{PoolID: "pool-1"}}})
+	if readyRoute.Outcome.State != OutcomeReady || readyRoute.State.Rules[0].PoolID != "pool-1" {
 		t.Fatalf("Route ready result = %#v", readyRoute)
 	}
 }

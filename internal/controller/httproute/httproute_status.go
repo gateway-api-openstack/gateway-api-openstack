@@ -62,7 +62,7 @@ func (r *Reconciler) setRouteStatusesAndDetach(
 	if checkpointNeeded {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	result, cleanupErr := r.detachRoute(ctx, route)
+	result, cleanupErr := r.finalizeRoute(ctx, scope)
 	if cleanupErr == nil {
 		if providerStatusPublished {
 			scope.setStatuses(updates)
@@ -70,7 +70,7 @@ func (r *Reconciler) setRouteStatusesAndDetach(
 		return result, nil
 	}
 	if errors.Is(cleanupErr, controller.ErrUnsupportedGatewayAPIVersion) {
-		_, present, bindingErr := r.storedRouteIdentity(route)
+		_, present, bindingErr := r.storedRouteIdentity(route, scope.identity.GatewayUID)
 		if bindingErr != nil {
 			return ctrl.Result{}, bindingErr
 		}
@@ -84,7 +84,7 @@ func (r *Reconciler) setRouteStatusesAndDetach(
 		return ctrl.Result{}, cleanupErr
 	}
 	policy = controller.ProviderCleanupFailurePolicy(policy, "HTTPRoute")
-	diagnosticTransitioned, diagnosticErr := r.setRouteCleanupFailure(ctx, route, policy.Reason)
+	diagnosticTransitioned, diagnosticErr := r.patchRouteCleanupFailure(ctx, route, scope.identity.GatewayUID, policy.Reason)
 	providerUpdates := routeProviderFailureUpdates(updates, policy)
 	if len(providerUpdates) == 0 {
 		scope.setStatuses(nil)
@@ -209,10 +209,10 @@ func (r *Reconciler) handleRouteFinalizationFailure(
 	}
 	route := scope.route
 	policy = controller.ProviderCleanupFailurePolicy(policy, "HTTPRoute")
-	diagnosticTransitioned, diagnosticErr := r.setRouteCleanupFailure(ctx, route, policy.Reason)
+	diagnosticTransitioned, diagnosticErr := r.patchRouteCleanupFailure(ctx, route, identity.GatewayUID, policy.Reason)
 	parent, found := parentRefForStoredGateway(route, identity)
 	if found {
-		scope.setDeletingFailureStatus(parent, policy)
+		scope.setDeletingFailureStatus(parent, identity, policy)
 	}
 	if diagnosticErr != nil {
 		return ctrl.Result{}, errors.Join(
@@ -271,6 +271,8 @@ func statusForRouteBuildError(err error) routeReconcileStatus {
 			return unresolvedRouteStatus(string(gatewayv1.RouteReasonRefNotPermitted), buildError.message)
 		case routeErrorUnsupportedProtocol:
 			return unresolvedRouteStatus(string(gatewayv1.RouteReasonUnsupportedProtocol), buildError.message)
+		case routeErrorNoMatchingHostname:
+			return rejectedRouteStatus(string(gatewayv1.RouteReasonNoMatchingListenerHostname), buildError.message)
 		case routeErrorNoMatchingParent:
 			return rejectedRouteStatus(string(gatewayv1.RouteReasonNoMatchingParent), buildError.message)
 		case routeErrorNotAllowed:

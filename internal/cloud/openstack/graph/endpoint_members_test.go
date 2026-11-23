@@ -123,7 +123,7 @@ func TestEndpointMemberLifecyclePreservesRouteGraph(t *testing.T) {
 		{name: "repopulate", members: []cloud.Member{first}, mutations: 1, ids: []string{"member-new-1"}, weight: 1},
 	} {
 		t.Run(step.name, func(t *testing.T) {
-			spec.Routes[0].Spec.Members = step.members
+			spec.Routes[0].Spec.Rules[0].Members = step.members
 			before := len(requests.mutationPaths())
 			// Reconstruct the adapter on every pass to prove that cloud observation,
 			// rather than an in-memory plan, drives the next transition.
@@ -133,7 +133,7 @@ func TestEndpointMemberLifecyclePreservesRouteGraph(t *testing.T) {
 					t.Fatal(err)
 				}
 				state := result.Routes[0].Result.State
-				if state.PoolID != "pool-1" || state.MonitorID != "monitor-1" || !reflect.DeepEqual(state.L7PolicyIDs, []string{"policy-1"}) {
+				if state.Rules[0].PoolID != "pool-1" || state.Rules[0].MonitorID != "monitor-1" || !reflect.DeepEqual(state.Rules[0].L7PolicyIDs, []string{"policy-1"}) {
 					t.Fatalf("member transition replaced stable route resources: %+v", state)
 				}
 				if attempt == step.mutations && result.Outcome.State != cloud.OutcomeReady {
@@ -164,21 +164,21 @@ func TestEndpointMemberValidationPrecedesCloudAccess(t *testing.T) {
 		change func(*cloud.RouteSpec)
 	}{
 		{name: "unknown mode", change: func(spec *cloud.RouteSpec) { spec.MemberMode = "unknown" }},
-		{name: "IPv6", change: func(spec *cloud.RouteSpec) { spec.Members[0].Address = "2001:db8::1" }},
-		{name: "mapped IPv4", change: func(spec *cloud.RouteSpec) { spec.Members[0].Address = "::ffff:192.0.2.1" }},
-		{name: "loopback", change: func(spec *cloud.RouteSpec) { spec.Members[0].Address = "127.0.0.1" }},
-		{name: "link local", change: func(spec *cloud.RouteSpec) { spec.Members[0].Address = "169.254.169.254" }},
-		{name: "multicast", change: func(spec *cloud.RouteSpec) { spec.Members[0].Address = "224.0.0.1" }},
+		{name: "IPv6", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].Address = "2001:db8::1" }},
+		{name: "mapped IPv4", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].Address = "::ffff:192.0.2.1" }},
+		{name: "loopback", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].Address = "127.0.0.1" }},
+		{name: "link local", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].Address = "169.254.169.254" }},
+		{name: "multicast", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].Address = "224.0.0.1" }},
 		{name: "backend security", change: func(spec *cloud.RouteSpec) { spec.BackendSecurityGroupIDs = []string{"group"} }},
-		{name: "worker identity", change: func(spec *cloud.RouteSpec) { spec.Members[0].ProviderID = "openstack:///server" }},
+		{name: "worker identity", change: func(spec *cloud.RouteSpec) { spec.Rules[0].Members[0].ProviderID = "openstack:///server" }},
 		{name: "conflicting duplicate", change: func(spec *cloud.RouteSpec) {
-			duplicate := spec.Members[0]
+			duplicate := spec.Rules[0].Members[0]
 			duplicate.Draining = true
-			spec.Members = append(spec.Members, duplicate)
+			spec.Rules[0].Members = append(spec.Rules[0].Members, duplicate)
 		}},
-		{name: "NodePort empty", change: func(spec *cloud.RouteSpec) { spec.MemberMode, spec.Members = cloud.MemberModeNodePort, nil }},
+		{name: "NodePort empty", change: func(spec *cloud.RouteSpec) { spec.MemberMode, spec.Rules[0].Members = cloud.MemberModeNodePort, nil }},
 		{name: "NodePort draining", change: func(spec *cloud.RouteSpec) {
-			spec.MemberMode, spec.Members[0].Draining = cloud.MemberModeNodePort, true
+			spec.MemberMode, spec.Rules[0].Members[0].Draining = cloud.MemberModeNodePort, true
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

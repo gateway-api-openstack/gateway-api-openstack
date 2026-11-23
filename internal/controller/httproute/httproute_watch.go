@@ -157,6 +157,9 @@ func (r *Reconciler) enqueueHTTPRoutesForNode(ctx context.Context, object client
 		}
 		backend := route.Spec.Rules[0].BackendRefs[0]
 		serviceKey := types.NamespacedName{Namespace: route.Namespace, Name: string(backend.Name)}
+		if backend.Namespace != nil {
+			serviceKey.Namespace = string(*backend.Namespace)
+		}
 		service, err := inputs.service(ctx, r.Client, serviceKey)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {

@@ -54,6 +54,15 @@ func (r *Reconciler) setRouteUnsupportedVersion(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if scope.identity.GatewayUID != "" {
+		selected := parents[:0]
+		for _, parent := range parents {
+			if string(parent.gateway.UID) == scope.identity.GatewayUID {
+				selected = append(selected, parent)
+			}
+		}
+		parents = selected
+	}
 	if len(parents) == 0 {
 		scope.skipPatch = true
 		return ctrl.Result{}, nil

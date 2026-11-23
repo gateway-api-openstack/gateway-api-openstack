@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,7 +42,6 @@ type cachedRouteDisposition int
 
 const (
 	cachedRouteUnknown cachedRouteDisposition = iota
-	cachedRouteUnsupportedVersion
 	cachedRouteDetach
 	cachedRouteReady
 )
@@ -50,11 +50,9 @@ const (
 // lifecycle routing. Provider mutations build and seal a separate live
 // routeValidationSnapshot while holding the Gateway graph lock.
 type cachedRouteDecision struct {
-	parent         managedRouteParent
-	storedIdentity cloud.Identity
-	bindingPresent bool
-	statusUpdates  []parentStatusUpdate
-	disposition    cachedRouteDisposition
+	parent        managedRouteParent
+	statusUpdates []parentStatusUpdate
+	disposition   cachedRouteDisposition
 }
 
 // Reconciler owns the route-scoped Octavia resources for the current
@@ -119,60 +117,98 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, scope *httpRouteScope)
 }
 
 func (r *Reconciler) reconcileNormal(ctx context.Context, scope *httpRouteScope) (ctrl.Result, error) {
-	if scope.route.Annotations[r.Config.RouteLifecycleAnnotation()] == controller.RouteDetaching {
-		return r.finalizeRoute(ctx, scope)
-	}
-
-	decision, err := r.buildCachedRouteDecision(ctx, scope.route)
+	parents, err := r.managedParents(ctx, scope.route)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	bindings, err := controller.StoredRouteBindings(r.Config, scope.route)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(parents) == 0 && len(bindings) == 0 {
+		scope.skipPatch = true
+		return ctrl.Result{}, nil
+	}
+	groups := make(map[string]*httpRouteScope)
+	for _, binding := range bindings {
+		groups[binding.Identity.GatewayUID] = &httpRouteScope{route: scope.route, identity: binding.Identity}
+	}
+	for _, parent := range parents {
+		uid := string(parent.gateway.UID)
+		child := groups[uid]
+		if child == nil {
+			child = &httpRouteScope{route: scope.route, identity: controller.RouteIdentity(r.Config, parent.gateway, scope.route)}
+			groups[uid] = child
+		}
+		child.parents = append(child.parents, parent)
+	}
+	ids := make([]string, 0, len(groups))
+	for uid := range groups {
+		ids = append(ids, uid)
+	}
+	sort.Strings(ids)
+	// An empty plan removes status for ParentRefs that disappeared while
+	// preserving every current parent that this pass does not evaluate.
+	scope.setStatuses(nil)
+	var result ctrl.Result
+	var resultErr error
+	for _, uid := range ids {
+		child := groups[uid]
+		scope.children = append(scope.children, child)
+		current, err := r.reconcileGatewayParents(ctx, child)
+		result = mergeRouteResults(result, current)
+		resultErr = errors.Join(resultErr, err)
+	}
+	return result, resultErr
+}
 
-	switch decision.disposition {
-	case cachedRouteUnsupportedVersion:
+func (r *Reconciler) reconcileGatewayParents(ctx context.Context, scope *httpRouteScope) (ctrl.Result, error) {
+	binding, present, err := controller.StoredRouteBinding(r.Config, scope.route, scope.identity.GatewayUID)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if present && binding.Lifecycle == controller.RouteDetaching {
+		return r.finalizeRoute(ctx, scope)
+	}
+	if len(scope.parents) == 0 {
+		return r.setRouteStatusesAndDetach(ctx, scope, nil)
+	}
+	if err := r.observeParentAttachments(ctx, scope); err != nil {
+		return ctrl.Result{}, err
+	}
+	decision := cachedRouteDecision{}
+	if !managedParentsSupportInstalledVersion(scope.parents) {
 		return r.setRouteUnsupportedVersion(ctx, scope)
+	}
+	parent := scope.parents[0]
+	for _, candidate := range scope.parents {
+		if scope.parentAttachmentError(candidate.ref) == nil {
+			parent = candidate
+			break
+		}
+	}
+	decision, err = r.validateCachedRouteDecision(ctx, scope.route, parent, decision)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	switch decision.disposition {
 	case cachedRouteDetach:
 		return r.setRouteStatusesAndDetach(ctx, scope, decision.statusUpdates)
 	case cachedRouteReady:
-		return r.reconcileSelectedRoute(ctx, scope, decision)
+		return r.reconcileSelectedRouteGraph(ctx, scope, decision.parent)
 	default:
 		return ctrl.Result{}, fmt.Errorf("invalid cached HTTPRoute decision disposition %d", decision.disposition)
 	}
 }
 
-func (r *Reconciler) buildCachedRouteDecision(
-	ctx context.Context,
-	route *gatewayv1.HTTPRoute,
-) (cachedRouteDecision, error) {
-	parents, err := r.managedParents(ctx, route)
-	if err != nil {
-		if _, _, bindingErr := r.storedRouteIdentity(route); bindingErr != nil {
-			return cachedRouteDecision{}, bindingErr
-		}
-		return cachedRouteDecision{}, err
+func mergeRouteResults(left, right ctrl.Result) ctrl.Result {
+	if left == (ctrl.Result{Requeue: true}) || right == (ctrl.Result{Requeue: true}) {
+		return ctrl.Result{Requeue: true}
 	}
-	storedIdentity, bindingPresent, err := r.storedRouteIdentity(route)
-	if err != nil {
-		return cachedRouteDecision{}, err
+	if left.RequeueAfter == 0 || right.RequeueAfter > 0 && right.RequeueAfter < left.RequeueAfter {
+		return right
 	}
-	base := cachedRouteDecision{
-		storedIdentity: storedIdentity,
-		bindingPresent: bindingPresent,
-	}
-	if !managedParentsSupportInstalledVersion(parents) {
-		base.disposition = cachedRouteUnsupportedVersion
-		return base, nil
-	}
-	if len(parents) == 0 {
-		base.disposition = cachedRouteDetach
-		return base, nil
-	}
-	if len(route.Spec.ParentRefs) != 1 || len(parents) != 1 {
-		base.disposition = cachedRouteDetach
-		base.statusUpdates = unsupportedParentCountUpdates(parents)
-		return base, nil
-	}
-	return r.validateCachedRouteDecision(ctx, route, parents[0], base)
+	return left
 }
 
 func (r *Reconciler) validateCachedRouteDecision(
@@ -182,6 +218,11 @@ func (r *Reconciler) validateCachedRouteDecision(
 	decision cachedRouteDecision,
 ) (cachedRouteDecision, error) {
 	decision.parent = parent
+	if err := validateRuntimeRouteProfile(route); err != nil {
+		decision.disposition = cachedRouteDetach
+		decision.statusUpdates = []parentStatusUpdate{{parent: parent.ref, status: statusForRouteBuildError(err)}}
+		return decision, nil
+	}
 	if validationErr := validateRouteParent(route, parent); validationErr != nil {
 		decision.disposition = cachedRouteDetach
 		decision.statusUpdates = []parentStatusUpdate{{
@@ -232,56 +273,6 @@ func managedParentsSupportInstalledVersion(parents []managedRouteParent) bool {
 	return true
 }
 
-func unsupportedParentCountUpdates(parents []managedRouteParent) []parentStatusUpdate {
-	status := rejectedRouteStatus(
-		string(gatewayv1.RouteReasonUnsupportedValue),
-		"exactly one Gateway parentRef is supported",
-	)
-	updates := make([]parentStatusUpdate, 0, len(parents))
-	for _, parent := range parents {
-		updates = append(updates, parentStatusUpdate{parent: parent.ref, status: status})
-	}
-	return updates
-}
-
-func (r *Reconciler) reconcileSelectedRoute(
-	ctx context.Context,
-	scope *httpRouteScope,
-	decision cachedRouteDecision,
-) (ctrl.Result, error) {
-	httpRoute := scope.route
-	parent := decision.parent
-	if decision.bindingPresent && !controller.SameGatewayIdentity(
-		decision.storedIdentity,
-		controller.RouteIdentity(r.Config, parent.gateway, httpRoute),
-	) {
-		updates := []parentStatusUpdate{{
-			parent: parent.ref,
-			status: pendingRouteStatus("OpenStack resources for the previous Gateway are being removed"),
-		}}
-		checkpointNeeded, err := r.routeCleanupStatusCheckpointNeeded(ctx, scope, updates)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if checkpointNeeded {
-			return ctrl.Result{Requeue: true}, nil
-		}
-	}
-	detachResult, err := r.detachPreviousGateway(ctx, httpRoute, parent.gateway)
-	if err != nil {
-		if errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
-			return r.setRouteUnsupportedVersion(ctx, scope)
-		}
-		return r.handleRouteProviderFailure(scope, parent.ref, false, err, "DeleteHTTPRoute")
-	}
-	if detachResult.RequeueAfter > 0 {
-		status := pendingRouteStatus("OpenStack resources for the previous Gateway are being removed")
-		scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: status}})
-		return detachResult, nil
-	}
-	return r.reconcileSelectedRouteGraph(ctx, scope, parent)
-}
-
 func (r *Reconciler) reconcileSelectedRouteGraph(
 	ctx context.Context,
 	scope *httpRouteScope,
@@ -309,6 +300,9 @@ func (r *Reconciler) reconcileSelectedRouteGraph(
 	}
 	switch graphResult.bindingState {
 	case routeBindingPersisted:
+		return ctrl.Result{Requeue: true}, nil
+	case routeBindingStatusPending:
+		scope.setStatuses([]parentStatusUpdate{{parent: parent.ref, status: pendingRouteStatus("HTTPRoute changes are being reconciled")}})
 		return ctrl.Result{Requeue: true}, nil
 	case routeBindingGatewayPending:
 		status := pendingRouteStatus("Controller-owned Octavia load balancer or listener is not ready")

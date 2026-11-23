@@ -86,7 +86,7 @@ func TestGatewayBindingHandlesTopologyProviderFailures(t *testing.T) {
 			if err := kubeClient.Get(t.Context(), request.NamespacedName, current); err != nil {
 				t.Fatal(err)
 			}
-			if len(current.Finalizers) != 0 || controller.HasGatewayTopologyBinding(cfg, current) || len(provider.gatewaySpecs) != 0 {
+			if len(current.Finalizers) != 0 || controller.HasGatewayTopologyBinding(cfg, current) || len(provider.GatewaySpecs()) != 0 {
 				t.Fatal("failed topology resolution acquired a binding or mutated the cloud")
 			}
 			programmed := meta.FindStatusCondition(current.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
@@ -110,7 +110,7 @@ func TestGatewaySpecCopiesFrozenSecurityGroups(t *testing.T) {
 	topology := testBoundTopology()
 	topology.Topology.VIPSecurityGroupIDs = []string{"33333333-3333-3333-3333-333333333333"}
 	r := &Reconciler{Config: testConfig()}
-	spec := r.gatewaySpec(&gatewayv1.Gateway{}, &gatewayv1.Listener{Name: "http", Port: 80}, topology)
+	spec := r.gatewaySpec(&gatewayv1.Gateway{}, []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}, topology)
 	if len(spec.VIPSecurityGroupIDs) != 1 || spec.VIPSecurityGroupIDs[0] != topology.Topology.VIPSecurityGroupIDs[0] {
 		t.Fatalf("Gateway security groups=%v", spec.VIPSecurityGroupIDs)
 	}

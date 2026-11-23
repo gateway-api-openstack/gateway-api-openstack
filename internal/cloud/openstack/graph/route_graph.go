@@ -22,6 +22,9 @@ import (
 	"net/http"
 	"net/netip"
 	"sort"
+	"strings"
+
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
@@ -34,15 +37,18 @@ const routeMonitorExpectedCodes = "200-399"
 type observedRoutePolicy struct {
 	policy l7policies.L7Policy
 	role   string
+	key    cloud.ResourceKey
 	rules  []observedRouteRule
 }
 
 type observedRouteRule struct {
 	rule l7policies.Rule
 	role string
+	key  cloud.ResourceKey
 }
 
 type observedRouteGraph struct {
+	index    int
 	pool     *pools.Pool
 	members  []pools.Member
 	monitor  *monitors.Monitor
@@ -51,66 +57,125 @@ type observedRouteGraph struct {
 
 // observeGatewayRoutes reads every child once and assigns it to an exact route
 // identity. An unaccounted child blocks the entire graph before any mutation.
-func (p *Provider) observeGatewayRoutes(ctx context.Context, identities []Identity, gateway cloud.GatewayState) ([]observedRouteGraph, error) {
-	graphs := make([]observedRouteGraph, len(identities))
-	poolItems, err := p.octavia.ListPools(ctx, pools.ListOpts{
-		LoadbalancerID: gateway.LoadBalancerID,
-		ProjectID:      p.projectID,
+type observedRoutes map[string]map[int]*observedRouteGraph
+
+func (graphs observedRoutes) rule(uid string, index int) *observedRouteGraph {
+	if graphs[uid] == nil {
+		graphs[uid] = make(map[int]*observedRouteGraph)
+	}
+	if graphs[uid][index] == nil {
+		graphs[uid][index] = &observedRouteGraph{index: index}
+	}
+	return graphs[uid][index]
+}
+
+type routeOwnerResolver func([]string, ...string) (Identity, error)
+
+func (p *Provider) observeGatewayRoutes(ctx context.Context, identities []Identity, gateway cloud.GatewayState) (observedRoutes, error) {
+	return p.observeRoutes(ctx, gateway, func(tags []string, roles ...string) (Identity, error) {
+		index, err := routeOwnerIndex(identities, tags, roles...)
+		if err != nil {
+			return Identity{}, err
+		}
+		return identities[index], nil
 	})
+}
+
+func (p *Provider) observeOwnedGatewayRoutes(ctx context.Context, identity Identity, gateway cloud.GatewayState) (observedRoutes, error) {
+	owners := make(map[string]cloud.Identity)
+	return p.observeRoutes(ctx, gateway, func(tags []string, roles ...string) (Identity, error) {
+		owner, err := identity.RouteIdentity(tags)
+		if err != nil {
+			return Identity{}, fmt.Errorf("%w: invalid Route identity during Gateway finalization", cloud.ErrOwnershipConflict)
+		}
+		for _, role := range roles {
+			if !owner.MatchesRoute(tags, role) {
+				continue
+			}
+			value := owner.Value()
+			if existing, found := owners[value.RouteUID]; found && existing != value {
+				return Identity{}, fmt.Errorf("%w: conflicting Route tuples during Gateway finalization", cloud.ErrOwnershipConflict)
+			}
+			owners[value.RouteUID] = value
+			return owner, nil
+		}
+		return Identity{}, fmt.Errorf("%w: foreign Route resource during Gateway finalization", cloud.ErrOwnershipConflict)
+	})
+}
+
+func (p *Provider) observeRoutes(ctx context.Context, gateway cloud.GatewayState, owner routeOwnerResolver) (observedRoutes, error) {
+	graphs := make(observedRoutes)
+	poolItems, err := p.octavia.ListPools(ctx, pools.ListOpts{LoadbalancerID: gateway.LoadBalancerID, ProjectID: p.projectID})
 	if err != nil {
 		return nil, fmt.Errorf("list pools beneath Gateway: %w", err)
 	}
 	sort.Slice(poolItems, func(i, j int) bool { return poolItems[i].ID < poolItems[j].ID })
 	for index := range poolItems {
 		pool := &poolItems[index]
-		routeIndex, err := routeOwnerIndex(identities, pool.Tags, rolePool)
+		identity, err := owner(pool.Tags, rolePool)
 		if err != nil {
 			return nil, fmt.Errorf("validate pool %s: %w", pool.ID, err)
 		}
-		identity := identities[routeIndex]
 		if err := p.validateGatewayDeletionPool(identity, *pool, gateway.LoadBalancerID); err != nil {
 			return nil, &cloud.GraphError{Identity: identity.Value(), Err: err}
 		}
-		graph := &graphs[routeIndex]
+		key, err := validatedChildKey(pool.Tags, cloud.ResourceRule)
+		if err != nil {
+			return nil, err
+		}
+		graph := graphs.rule(identity.Value().RouteUID, key.RuleIndex)
 		if graph.pool != nil {
-			return nil, &cloud.GraphError{Identity: identity.Value(), Err: fmt.Errorf("%w: found multiple pools for one HTTPRoute", cloud.ErrOwnershipConflict)}
+			return nil, &cloud.GraphError{Identity: identity.Value(), Err: fmt.Errorf("%w: duplicate pool rule key", cloud.ErrOwnershipConflict)}
 		}
 		graph.pool = pool
 		if err := p.observeRoutePoolChildren(ctx, identity, graph); err != nil {
 			return nil, &cloud.GraphError{Identity: identity.Value(), Err: err}
 		}
 	}
-	if gateway.ListenerID == "" {
-		return graphs, nil
-	}
-	items, err := p.octavia.ListPolicies(ctx, l7policies.ListOpts{ListenerID: gateway.ListenerID, ProjectID: p.projectID})
-	if err != nil {
-		return nil, fmt.Errorf("list Gateway L7 policies: %w", err)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Position == items[j].Position {
-			return items[i].ID < items[j].ID
-		}
-		return items[i].Position < items[j].Position
-	})
-	for _, item := range items {
-		routeIndex, err := routeOwnerIndex(identities, item.Tags, rolePolicyExact, rolePolicyPrefix)
+	for _, listener := range gateway.Listeners {
+		items, err := p.octavia.ListPolicies(ctx, l7policies.ListOpts{ListenerID: listener.ID, ProjectID: p.projectID})
 		if err != nil {
-			return nil, fmt.Errorf("validate L7 policy %s: %w", item.ID, err)
+			return nil, fmt.Errorf("list Gateway L7 policies: %w", err)
 		}
-		observed, err := p.observeRoutePolicy(ctx, identities[routeIndex], item, gateway.ListenerID)
-		if err != nil {
-			return nil, &cloud.GraphError{Identity: identities[routeIndex].Value(), Err: err}
-		}
-		graph := &graphs[routeIndex]
-		for _, policy := range graph.policies {
-			if policy.role == observed.role {
-				return nil, &cloud.GraphError{Identity: identities[routeIndex].Value(), Err: fmt.Errorf("%w: duplicate %s policies %s and %s", cloud.ErrOwnershipConflict, observed.role, policy.policy.ID, item.ID)}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Position == items[j].Position {
+				return items[i].ID < items[j].ID
 			}
+			return items[i].Position < items[j].Position
+		})
+		for _, item := range items {
+			identity, err := owner(item.Tags, rolePolicyExact, rolePolicyPrefix)
+			if err != nil {
+				return nil, fmt.Errorf("validate L7 policy %s: %w", item.ID, err)
+			}
+			observed, err := p.observeRoutePolicy(ctx, identity, item, listener.ID)
+			if err != nil {
+				return nil, &cloud.GraphError{Identity: identity.Value(), Err: err}
+			}
+			if observed.key.Listener != listener.Key {
+				return nil, fmt.Errorf("%w: policy child key differs from its physical listener", cloud.ErrOwnershipConflict)
+			}
+			graph := graphs.rule(identity.Value().RouteUID, observed.key.RuleIndex)
+			for _, policy := range graph.policies {
+				if policy.key == observed.key {
+					return nil, fmt.Errorf("%w: duplicate policy child key", cloud.ErrOwnershipConflict)
+				}
+			}
+			if item.RedirectPoolID != "" && (graph.pool == nil || item.RedirectPoolID != graph.pool.ID) {
+				return nil, fmt.Errorf("%w: policy references a pool outside its rule", cloud.ErrOwnershipConflict)
+			}
+			graph.policies = append(graph.policies, observed)
 		}
-		graph.policies = append(graph.policies, observed)
 	}
 	return graphs, nil
+}
+
+func validatedChildKey(tags []string, kind cloud.ResourceKind) (cloud.ResourceKey, error) {
+	key, err := openstackidentity.ChildKey(tags)
+	if err != nil || key.Kind != kind {
+		return cloud.ResourceKey{}, fmt.Errorf("%w: invalid or missing child resource key", cloud.ErrOwnershipConflict)
+	}
+	return key, nil
 }
 
 func routeOwnerIndex(identities []Identity, tags []string, roles ...string) (int, error) {
@@ -150,6 +215,10 @@ func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identi
 		if !identity.MatchesRoute(member.Tags, roleMember) {
 			return fmt.Errorf("%w: pool %s contains member %s not owned by the selected HTTPRoute", cloud.ErrOwnershipConflict, graph.pool.ID, member.ID)
 		}
+		key, err := validatedChildKey(member.Tags, cloud.ResourceRule)
+		if err != nil || key.RuleIndex != graph.index {
+			return fmt.Errorf("%w: member child key differs from its pool", cloud.ErrOwnershipConflict)
+		}
 		if member.PoolID != "" && member.PoolID != graph.pool.ID {
 			return fmt.Errorf("%w: member %s reports pool %s instead of %s", cloud.ErrOwnershipConflict, member.ID, member.PoolID, graph.pool.ID)
 		}
@@ -158,11 +227,11 @@ func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identi
 			return fmt.Errorf("%w: member %s has invalid address or port %s:%d", cloud.ErrOwnershipConflict, member.ID, member.Address, member.ProtocolPort)
 		}
 		member.Address = address.String()
-		key := memberKey(member.Address, member.ProtocolPort)
-		if existingID := memberKeys[key]; existingID != "" {
+		memberID := memberKey(member.Address, member.ProtocolPort)
+		if existingID := memberKeys[memberID]; existingID != "" {
 			return fmt.Errorf("%w: pool %s has duplicate members %s and %s for %s", cloud.ErrOwnershipConflict, graph.pool.ID, existingID, member.ID, key)
 		}
-		memberKeys[key] = member.ID
+		memberKeys[memberID] = member.ID
 	}
 
 	monitorItems, err := p.octavia.ListMonitors(ctx, monitors.ListOpts{
@@ -180,6 +249,10 @@ func (p *Provider) observeRoutePoolChildren(ctx context.Context, identity Identi
 		}
 		if !identity.MatchesRoute(monitor.Tags, roleMonitor) {
 			return fmt.Errorf("%w: pool %s contains health monitor %s not owned by the selected HTTPRoute", cloud.ErrOwnershipConflict, graph.pool.ID, monitor.ID)
+		}
+		key, err := validatedChildKey(monitor.Tags, cloud.ResourceRule)
+		if err != nil || key.RuleIndex != graph.index {
+			return fmt.Errorf("%w: monitor child key differs from its pool", cloud.ErrOwnershipConflict)
 		}
 		for _, parent := range monitor.Pools {
 			if parent.ID != graph.pool.ID {
@@ -202,6 +275,10 @@ func (p *Provider) observeRoutePolicy(ctx context.Context, identity Identity, it
 	if err != nil {
 		return observedRoutePolicy{}, fmt.Errorf("validate L7 policy %s: %w", item.ID, err)
 	}
+	key, err := validatedChildKey(item.Tags, cloud.ResourcePolicy)
+	if err != nil || key.Variant == "exact" && role != rolePolicyExact || key.Variant == "prefix" && role != rolePolicyPrefix {
+		return observedRoutePolicy{}, fmt.Errorf("%w: policy role differs from its child key", cloud.ErrOwnershipConflict)
+	}
 	if item.ListenerID != "" && item.ListenerID != listenerID {
 		return observedRoutePolicy{}, fmt.Errorf("%w: L7 policy %s reports listener %s instead of %s", cloud.ErrOwnershipConflict, item.ID, item.ListenerID, listenerID)
 	}
@@ -211,7 +288,7 @@ func (p *Provider) observeRoutePolicy(ctx context.Context, identity Identity, it
 	}
 	sort.Slice(ruleItems, func(i, j int) bool { return ruleItems[i].ID < ruleItems[j].ID })
 	observedRules := make([]observedRouteRule, 0, len(ruleItems))
-	ruleRoles := make(map[string]string, len(ruleItems))
+	ruleKeys := make(map[cloud.ResourceKey]string, len(ruleItems))
 	for _, rule := range ruleItems {
 		if err := p.validateOptionalProject("L7 rule", rule.ID, rule.ProjectID); err != nil {
 			return observedRoutePolicy{}, err
@@ -220,13 +297,23 @@ func (p *Provider) observeRoutePolicy(ctx context.Context, identity Identity, it
 		if err != nil {
 			return observedRoutePolicy{}, fmt.Errorf("validate L7 rule %s beneath policy %s: %w", rule.ID, item.ID, err)
 		}
-		if existingID := ruleRoles[ruleRole]; existingID != "" {
+		ruleKey, err := validatedChildKey(rule.Tags, cloud.ResourcePredicate)
+		if err != nil {
+			return observedRoutePolicy{}, err
+		}
+		parentKey := ruleKey
+		parentKey.Kind = cloud.ResourcePolicy
+		parentKey.Predicate = ""
+		if parentKey != key || !predicateRoleMatches(ruleKey.Predicate, ruleRole) {
+			return observedRoutePolicy{}, fmt.Errorf("%w: predicate child key differs from its policy or role", cloud.ErrOwnershipConflict)
+		}
+		if existingID := ruleKeys[ruleKey]; existingID != "" {
 			return observedRoutePolicy{}, fmt.Errorf("%w: policy %s has duplicate %s rules %s and %s", cloud.ErrOwnershipConflict, item.ID, ruleRole, existingID, rule.ID)
 		}
-		ruleRoles[ruleRole] = rule.ID
-		observedRules = append(observedRules, observedRouteRule{rule: rule, role: ruleRole})
+		ruleKeys[ruleKey] = rule.ID
+		observedRules = append(observedRules, observedRouteRule{rule: rule, role: ruleRole, key: ruleKey})
 	}
-	return observedRoutePolicy{policy: item, role: role, rules: observedRules}, nil
+	return observedRoutePolicy{policy: item, role: role, key: key, rules: observedRules}, nil
 }
 
 func routePolicyRole(identity Identity, tags []string) (string, error) {
@@ -242,7 +329,7 @@ func routePolicyRole(identity Identity, tags []string) (string, error) {
 }
 
 func routeRuleRole(identity Identity, tags []string) (string, error) {
-	for _, role := range []string{roleRulePath, roleRuleHost} {
+	for _, role := range []string{roleRulePath, roleRuleHost, roleRuleHeader} {
 		if identity.MatchesRoute(tags, role) {
 			return role, nil
 		}
@@ -251,6 +338,11 @@ func routeRuleRole(identity Identity, tags []string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: rule is not owned by the selected HTTPRoute", cloud.ErrOwnershipConflict)
+}
+
+func predicateRoleMatches(predicate, role string) bool {
+	return predicate == "path" && role == roleRulePath || predicate == "host" && role == roleRuleHost ||
+		strings.HasPrefix(predicate, "header-") && role == roleRuleHeader
 }
 
 type routeMutationKind uint8
@@ -325,9 +417,9 @@ func (s routeMutation) message() string {
 	}
 }
 
-func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]routeMutation, cloud.RouteState, error) {
+func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]routeMutation, cloud.RouteRuleState, error) {
 	nonPolicyPlan := make([]routeMutation, 0)
-	state := cloud.RouteState{}
+	state := cloud.RouteRuleState{Index: desired.rule.Index}
 	poolID := ""
 	if actual.pool == nil {
 		nonPolicyPlan = append(nonPolicyPlan, routeMutation{kind: routeMutationCreatePool})
@@ -336,7 +428,7 @@ func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]ro
 		poolID = pool.ID
 		state.PoolID = pool.ID
 		if pool.Protocol != string(pools.ProtocolHTTP) {
-			return nil, cloud.RouteState{}, fmt.Errorf("%w: pool %s has protocol %s", cloud.ErrOwnershipConflict, pool.ID, pool.Protocol)
+			return nil, cloud.RouteRuleState{}, fmt.Errorf("%w: pool %s has protocol %s", cloud.ErrOwnershipConflict, pool.ID, pool.Protocol)
 		}
 		if pool.LBMethod != string(pools.LBMethodRoundRobin) || !pool.AdminStateUp {
 			nonPolicyPlan = append(nonPolicyPlan, routeMutation{kind: routeMutationUpdatePool, id: pool.ID})
@@ -380,7 +472,7 @@ func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]ro
 			monitor := actual.monitor
 			state.MonitorID = monitor.ID
 			if monitor.Type != monitors.TypeHTTP {
-				return nil, cloud.RouteState{}, fmt.Errorf("%w: health monitor %s has type %s", cloud.ErrOwnershipConflict, monitor.ID, monitor.Type)
+				return nil, cloud.RouteRuleState{}, fmt.Errorf("%w: health monitor %s has type %s", cloud.ErrOwnershipConflict, monitor.ID, monitor.Type)
 			}
 			if monitor.Delay != desired.healthMonitor.Delay || monitor.Timeout != desired.healthMonitor.Timeout ||
 				monitor.MaxRetries != desired.healthMonitor.MaxRetries || monitor.MaxRetriesDown != desired.healthMonitor.MaxRetriesDown ||
@@ -395,9 +487,18 @@ func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]ro
 	state.L7PolicyIDs = policyState.L7PolicyIDs
 	state.L7RuleIDs = policyState.L7RuleIDs
 	if semanticDiff {
+		changedPolicies := make(map[string]struct{})
+		for _, step := range policyPlan {
+			switch step.kind {
+			case routeMutationUpdatePolicy, routeMutationDeletePolicy:
+				changedPolicies[step.id] = struct{}{}
+			case routeMutationCreateRule, routeMutationUpdateRule, routeMutationDeleteRule:
+				changedPolicies[step.parentID] = struct{}{}
+			}
+		}
 		disablePlan := make([]routeMutation, 0, len(actual.policies))
 		for _, policy := range actual.policies {
-			if policy.policy.AdminStateUp {
+			if _, changed := changedPolicies[policy.policy.ID]; changed && policy.policy.AdminStateUp {
 				disablePlan = append(disablePlan, routeMutation{kind: routeMutationDisablePolicy, id: policy.policy.ID})
 			}
 		}
@@ -409,7 +510,7 @@ func buildRouteEnsurePlan(desired desiredRoute, actual observedRouteGraph) ([]ro
 	}
 	for _, wantedPolicy := range desired.policies {
 		for _, policy := range actual.policies {
-			if policy.role == wantedPolicy.role && !policy.policy.AdminStateUp {
+			if policy.key == wantedPolicy.key && !policy.policy.AdminStateUp {
 				return []routeMutation{{kind: routeMutationEnablePolicy, id: policy.policy.ID}}, state, nil
 			}
 		}
@@ -421,16 +522,16 @@ func buildRoutePolicyPlan(
 	desired desiredRoute,
 	actual []observedRoutePolicy,
 	poolID string,
-) ([]routeMutation, cloud.RouteState, bool) {
+) ([]routeMutation, cloud.RouteRuleState, bool) {
 	plan := make([]routeMutation, 0)
-	state := cloud.RouteState{}
+	state := cloud.RouteRuleState{Index: desired.rule.Index}
 	semanticDiff := false
-	desiredPolicies := make(map[string]desiredPolicy, len(desired.policies))
+	desiredPolicies := make(map[cloud.ResourceKey]desiredPolicy, len(desired.policies))
 	for _, policy := range desired.policies {
-		desiredPolicies[policy.role] = policy
+		desiredPolicies[policy.key] = policy
 	}
 	for _, policy := range actual {
-		if _, wanted := desiredPolicies[policy.role]; wanted {
+		if _, wanted := desiredPolicies[policy.key]; wanted {
 			continue
 		}
 		semanticDiff = true
@@ -440,12 +541,12 @@ func buildRoutePolicyPlan(
 		plan = append(plan, routeMutation{kind: routeMutationDeletePolicy, id: policy.policy.ID})
 	}
 
-	actualPolicies := make(map[string]observedRoutePolicy, len(actual))
+	actualPolicies := make(map[cloud.ResourceKey]observedRoutePolicy, len(actual))
 	for _, policy := range actual {
-		actualPolicies[policy.role] = policy
+		actualPolicies[policy.key] = policy
 	}
 	for _, wantedPolicy := range desired.policies {
-		observedPolicy, exists := actualPolicies[wantedPolicy.role]
+		observedPolicy, exists := actualPolicies[wantedPolicy.key]
 		if !exists {
 			semanticDiff = true
 			plan = append(plan, routeMutation{kind: routeMutationCreatePolicy, parentID: poolID, policy: wantedPolicy})
@@ -459,13 +560,13 @@ func buildRoutePolicyPlan(
 			plan = append(plan, routeMutation{kind: routeMutationUpdatePolicy, id: policy.ID, parentID: poolID, policy: wantedPolicy})
 		}
 
-		wantedRules := rulesFor(wantedPolicy, desired.spec.Hostname)
-		actualRules := make(map[string]observedRouteRule, len(observedPolicy.rules))
+		wantedRules := rulesFor(wantedPolicy)
+		actualRules := make(map[cloud.ResourceKey]observedRouteRule, len(observedPolicy.rules))
 		for _, rule := range observedPolicy.rules {
-			actualRules[rule.role] = rule
+			actualRules[rule.key] = rule
 		}
 		for _, wantedRule := range wantedRules {
-			observedRule, exists := actualRules[wantedRule.role]
+			observedRule, exists := actualRules[wantedRule.key]
 			if !exists {
 				semanticDiff = true
 				plan = append(plan, routeMutation{kind: routeMutationCreateRule, parentID: policy.ID, rule: wantedRule})
@@ -474,11 +575,11 @@ func buildRoutePolicyPlan(
 			rule := observedRule.rule
 			state.L7RuleIDs = append(state.L7RuleIDs, rule.ID)
 			if rule.RuleType != string(wantedRule.ruleType) || rule.CompareType != string(wantedRule.compareType) ||
-				rule.Value != wantedRule.value || rule.Invert || !rule.AdminStateUp {
+				rule.Key != wantedRule.header || rule.Value != wantedRule.value || rule.Invert || !rule.AdminStateUp {
 				semanticDiff = true
 				plan = append(plan, routeMutation{kind: routeMutationUpdateRule, id: rule.ID, parentID: policy.ID, rule: wantedRule})
 			}
-			delete(actualRules, wantedRule.role)
+			delete(actualRules, wantedRule.key)
 		}
 		staleRules := make([]observedRouteRule, 0, len(actualRules))
 		for _, rule := range actualRules {
@@ -524,7 +625,7 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 	var err error
 	switch step.kind {
 	case routeMutationCreatePool:
-		tags, tagErr := desired.identity.RouteTags(rolePool)
+		tags, tagErr := desired.identity.ChildTags(rolePool, cloud.ResourceKey{Kind: cloud.ResourceRule, RuleIndex: desired.rule.Index})
 		if tagErr != nil {
 			return tagErr
 		}
@@ -545,7 +646,7 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 	case routeMutationDeleteMember:
 		err = p.octavia.DeleteMember(ctx, step.parentID, step.id)
 	case routeMutationCreateMember:
-		tags, tagErr := desired.identity.RouteTags(roleMember)
+		tags, tagErr := desired.identity.ChildTags(roleMember, cloud.ResourceKey{Kind: cloud.ResourceRule, RuleIndex: desired.rule.Index})
 		if tagErr != nil {
 			return tagErr
 		}
@@ -564,7 +665,7 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			Weight:       desiredMemberWeight(desired.spec.MemberMode, step.member),
 		})
 	case routeMutationCreateMonitor:
-		tags, tagErr := desired.identity.RouteTags(roleMonitor)
+		tags, tagErr := desired.identity.ChildTags(roleMonitor, cloud.ResourceKey{Kind: cloud.ResourceRule, RuleIndex: desired.rule.Index})
 		if tagErr != nil {
 			return tagErr
 		}
@@ -602,13 +703,13 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 	case routeMutationDeletePolicy:
 		err = p.octavia.DeletePolicy(ctx, step.id)
 	case routeMutationCreatePolicy:
-		tags, tagErr := desired.identity.RouteTags(step.policy.role)
+		tags, tagErr := desired.identity.ChildTags(step.policy.role, step.policy.key)
 		if tagErr != nil {
 			return tagErr
 		}
 		_, err = p.octavia.CreatePolicy(ctx, l7policies.CreateOpts{
 			Name:           resourceName(desired.spec.Identity, step.policy.role),
-			ListenerID:     desired.spec.Gateway.ListenerID,
+			ListenerID:     desired.spec.Gateway.ListenerID(step.policy.key.Listener),
 			Action:         l7policies.ActionRedirectToPool,
 			Position:       step.policy.position,
 			Description:    desired.identity.Description(step.policy.role),
@@ -624,13 +725,14 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 			AdminStateUp:   boolPointer(false),
 		})
 	case routeMutationCreateRule:
-		tags, tagErr := desired.identity.RouteTags(step.rule.role)
+		tags, tagErr := desired.identity.ChildTags(step.rule.role, step.rule.key)
 		if tagErr != nil {
 			return tagErr
 		}
 		_, err = p.octavia.CreateRule(ctx, step.parentID, l7policies.CreateRuleOpts{
 			RuleType:     step.rule.ruleType,
 			CompareType:  step.rule.compareType,
+			Key:          step.rule.header,
 			Value:        step.rule.value,
 			AdminStateUp: boolPointer(true),
 			Tags:         tags,
@@ -639,6 +741,7 @@ func (p *Provider) executeRouteMutation(ctx context.Context, desired desiredRout
 		_, err = p.octavia.UpdateRule(ctx, step.parentID, step.id, l7policies.UpdateRuleOpts{
 			RuleType:     step.rule.ruleType,
 			CompareType:  step.rule.compareType,
+			Key:          &step.rule.header,
 			Value:        step.rule.value,
 			Invert:       boolPointer(false),
 			AdminStateUp: boolPointer(true),

@@ -16,14 +16,17 @@ limitations under the License.
 
 package controller
 
+// RouteLifecycle identifies durable route fragment intent.
+type RouteLifecycle string
+
 const (
 	// RouteAttached identifies a durably bound desired route fragment.
-	RouteAttached = "Attached"
+	RouteAttached RouteLifecycle = "Attached"
 	// RouteDetaching records cleanup authority that survives spec changes and restart.
-	RouteDetaching = "Detaching"
+	RouteDetaching RouteLifecycle = "Detaching"
 )
 
-// RouteLifecycleAnnotation identifies the durable route fragment lifecycle.
-func (c Config) RouteLifecycleAnnotation() string {
-	return c.Domain() + "/route-lifecycle-" + c.controllerKey()
+// RouteBindingsAnnotation identifies the controller-owned per-Gateway binding list.
+func (c Config) RouteBindingsAnnotation() string {
+	return c.Domain() + "/route-bindings-" + c.controllerKey()
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
 )
 
 const (
@@ -130,6 +131,12 @@ func classifyAuditCandidate(
 		return auditFinding(finding, audit.DispositionOwnershipConflict, auditReasonInvalidIdentity, err.Error())
 	}
 	finding.Role = role
+	if candidate.resourceType != auditTypeLoadBalancer {
+		key, err := openstackidentity.ChildKey(candidate.tags)
+		if err != nil || openstackidentity.ValidateChildRole(role, key) != nil {
+			return auditFinding(finding, audit.DispositionOwnershipConflict, auditReasonInvalidIdentity, "Resource has an invalid child key or role")
+		}
+	}
 	if err := validateAuditIdentityTags(candidate.tags, routeScoped); err != nil {
 		return auditFinding(finding, audit.DispositionOwnershipConflict, auditReasonInvalidIdentity, err.Error())
 	}
@@ -341,7 +348,7 @@ func auditCandidateRole(resourceType string, tags []string) (string, bool, error
 	case auditTypeL7Policy:
 		valid, routeScoped = role == rolePolicyExact || role == rolePolicyPrefix, true
 	case auditTypeL7Rule:
-		valid, routeScoped = role == roleRulePath || role == roleRuleHost, true
+		valid, routeScoped = role == roleRulePath || role == roleRuleHost || role == roleRuleHeader, true
 	}
 	if !valid {
 		return "", false, fmt.Errorf("resource role does not match its OpenStack type")
@@ -528,6 +535,26 @@ func validateAuditParentIdentity(candidates auditCandidateSet, child *auditCandi
 	if !auditTagValuesEqual(child.tags, parent.tags, keys) {
 		return fmt.Errorf("resource identity does not match its scoped parent")
 	}
+	if child.resourceType == auditTypeMember || child.resourceType == auditTypeMonitor || child.resourceType == auditTypeL7Policy || child.resourceType == auditTypeL7Rule {
+		childKey, childErr := openstackidentity.ChildKey(child.tags)
+		parentKey, parentErr := openstackidentity.ChildKey(parent.tags)
+		if childErr != nil || parentErr != nil {
+			return fmt.Errorf("resource or parent has an invalid child key")
+		}
+		valid := false
+		switch child.resourceType {
+		case auditTypeMember, auditTypeMonitor:
+			valid = childKey == parentKey
+		case auditTypeL7Policy:
+			valid = childKey.Listener == parentKey.Listener
+		case auditTypeL7Rule:
+			childKey.Kind, childKey.Predicate = cloud.ResourcePolicy, ""
+			valid = childKey == parentKey
+		}
+		if !valid {
+			return fmt.Errorf("resource child key does not match its scoped parent")
+		}
+	}
 	return nil
 }
 
@@ -548,6 +575,11 @@ func validateAuditPolicyPool(candidates auditCandidateSet, policy *auditCandidat
 	}
 	if !auditTagValuesEqual(policy.tags, pool.tags, keys) {
 		return fmt.Errorf("policy identity does not match its redirect pool")
+	}
+	policyKey, policyErr := openstackidentity.ChildKey(policy.tags)
+	poolKey, poolErr := openstackidentity.ChildKey(pool.tags)
+	if policyErr != nil || poolErr != nil || policyKey.RuleIndex != poolKey.RuleIndex {
+		return fmt.Errorf("policy child key does not match its redirect pool")
 	}
 	return nil
 }
@@ -681,6 +713,9 @@ func auditCardinalityKey(candidate *auditCandidate, finding audit.ResourceFindin
 		return candidate.resourceType + "\x00" + description
 	}
 	stableKeys := []string{"cluster", "controller", "namespace", "name", "role"}
+	if candidate.resourceType != auditTypeLoadBalancer {
+		stableKeys = append(stableKeys, "resource-key")
+	}
 	switch candidate.resourceType {
 	case auditTypePool, auditTypeMonitor, auditTypeL7Policy, auditTypeL7Rule:
 		stableKeys = append(stableKeys, "route-namespace", "route-name")

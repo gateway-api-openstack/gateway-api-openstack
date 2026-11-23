@@ -104,7 +104,7 @@ func TestUnsupportedAmphoraActionsDoNotBindOrProvision(t *testing.T) {
 					t.Fatalf("unsupported action status=%#v", parent)
 				}
 			}
-			if len(provider.gatewaySpecs)+len(provider.routeSpecs)+len(provider.deletedGateways)+len(provider.deletedRoutes) != 0 {
+			if len(provider.GatewaySpecs())+len(provider.RouteSpecs())+len(provider.DeletedGateways())+len(provider.DeletedRoutes()) != 0 {
 				t.Fatal("unsupported action called the cloud provider")
 			}
 		})

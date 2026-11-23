@@ -32,7 +32,6 @@ type managedRouteParent struct {
 	ref          gatewayv1.ParentReference
 	gateway      *gatewayv1.Gateway
 	gatewayClass *gatewayv1.GatewayClass
-	listener     *gatewayv1.Listener
 }
 
 func (r *Reconciler) managedParents(ctx context.Context, route *gatewayv1.HTTPRoute) ([]managedRouteParent, error) {
@@ -70,53 +69,35 @@ func (r *Reconciler) managedParentsWithReader(
 		if class.Spec.ControllerName != r.Config.ControllerName {
 			continue
 		}
-		var listener *gatewayv1.Listener
-		if len(gateway.Spec.Listeners) == 1 {
-			listener = &gateway.Spec.Listeners[0]
-		}
-		parents = append(parents, managedRouteParent{ref: parentRef, gateway: &gateway, gatewayClass: &class, listener: listener})
+		parents = append(parents, managedRouteParent{ref: parentRef, gateway: &gateway, gatewayClass: &class})
 	}
 	return parents, nil
 }
 
-func validateRouteParent(route *gatewayv1.HTTPRoute, parent managedRouteParent) error {
-	if parent.gateway.DeletionTimestamp != nil {
+// validateRouteParent checks whether the requested listener exists and has an
+// implemented protocol. Attachment authorization, including namespace selectors
+// and hostname intersection, uses the complete logical input before binding.
+func validateRouteParent(_ *gatewayv1.HTTPRoute, parent managedRouteParent) error {
+	if !parent.gateway.DeletionTimestamp.IsZero() {
 		return newRouteBuildError(routeErrorPending, "parent Gateway is being deleted")
 	}
-	if parent.gateway.Namespace != route.Namespace {
-		return newRouteBuildError(routeErrorNotAllowed, "cross-namespace parentRefs are not supported")
-	}
-	if parent.listener == nil {
-		return newRouteBuildError(routeErrorUnsupported, "parent Gateway must have exactly one listener")
-	}
-	listener := parent.listener
-	if listener.Protocol != gatewayv1.HTTPProtocolType || listener.TLS != nil {
-		return newRouteBuildError(routeErrorUnsupported, "parent listener is not a supported plain HTTP listener")
-	}
-	if parent.ref.SectionName != nil && *parent.ref.SectionName != listener.Name {
-		return newRouteBuildError(routeErrorNoMatchingParent, "parentRef sectionName %q does not select listener %q", *parent.ref.SectionName, listener.Name)
-	}
-	if parent.ref.Port != nil && *parent.ref.Port != listener.Port {
-		return newRouteBuildError(routeErrorNoMatchingParent, "parentRef port %d does not select listener port %d", *parent.ref.Port, listener.Port)
-	}
-	if listener.AllowedRoutes != nil {
-		allowsHTTPRoute := len(listener.AllowedRoutes.Kinds) == 0
-		for _, kind := range listener.AllowedRoutes.Kinds {
-			group := gatewayv1.Group(gatewayv1.GroupName)
-			if kind.Group != nil {
-				group = *kind.Group
-			}
-			if group == gatewayv1.Group(gatewayv1.GroupName) && kind.Kind == gatewayv1.Kind("HTTPRoute") {
-				allowsHTTPRoute = true
-			}
+	selected := false
+	for i := range parent.gateway.Spec.Listeners {
+		listener := &parent.gateway.Spec.Listeners[i]
+		if !selectsListener(parent.ref, listener) {
+			continue
 		}
-		if !allowsHTTPRoute {
-			return newRouteBuildError(routeErrorNotAllowed, "listener allowedRoutes does not include HTTPRoute")
-		}
-		if listener.AllowedRoutes.Namespaces != nil && listener.AllowedRoutes.Namespaces.From != nil &&
-			*listener.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
-			return newRouteBuildError(routeErrorNotAllowed, "listeners only allow same-namespace HTTPRoutes")
+		selected = true
+		if listener.Protocol == gatewayv1.HTTPProtocolType && listener.TLS == nil {
+			return nil
 		}
 	}
-	return nil
+	if !selected {
+		return newRouteBuildError(routeErrorNoMatchingParent, "parentRef does not select a listener")
+	}
+	return newRouteBuildError(routeErrorUnsupported, "selected listeners do not support plain HTTP forwarding")
+}
+
+func selectsListener(parent gatewayv1.ParentReference, listener *gatewayv1.Listener) bool {
+	return (parent.SectionName == nil || *parent.SectionName == listener.Name) && (parent.Port == nil || *parent.Port == listener.Port)
 }

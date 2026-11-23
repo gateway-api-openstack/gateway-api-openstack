@@ -155,7 +155,7 @@ func TestEndpointRouteResolvesServiceInputsWithoutNodes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if desired.MemberMode != cloud.MemberModeEndpoint || !slices.Equal(desired.Members, test.want) || desired.Members == nil {
+			if desired.MemberMode != cloud.MemberModeEndpoint || !slices.Equal(desired.Rules[0].Members, test.want) || desired.Rules[0].Members == nil {
 				t.Fatalf("desired = %#v, want members %#v", desired, test.want)
 			}
 			if reader.gets != 1 || reader.lists != 1 {
@@ -175,8 +175,8 @@ func TestEndpointRouteKeepsPerSlicePortsAndStableMemberOrdering(t *testing.T) {
 	r := &Reconciler{Config: testConfig()}
 	desired, err := r.buildRouteModelWithReader(t.Context(), reader, route, gateway)
 	want := []cloud.Member{{Address: "192.0.2.10", Port: 9090}, {Address: "192.0.2.20", Port: 8080}, {Address: "192.0.2.20", Port: 9090}}
-	if err != nil || !slices.Equal(desired.Members, want) {
-		t.Fatalf("members = %#v, error = %v, want %#v", desired.Members, err, want)
+	if err != nil || !slices.Equal(desired.Rules[0].Members, want) {
+		t.Fatalf("members = %#v, error = %v, want %#v", desired.Rules[0].Members, err, want)
 	}
 }
 

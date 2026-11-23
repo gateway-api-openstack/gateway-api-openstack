@@ -52,7 +52,7 @@ func TestEnsureGatewayRepairsDisabledLoadBalancerFirst(t *testing.T) {
 		t.Fatalf("EnsureGateway() outcome = %#v, want Progressing after 7s", result.Outcome)
 	}
 	want := []string{"/lbaas/loadbalancers/load-balancer-1"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -275,7 +275,7 @@ func TestEnsureGatewayRepairsDisabledListenerFirst(t *testing.T) {
 		t.Fatalf("EnsureGateway() outcome = %#v, want Progressing after 7s", result.Outcome)
 	}
 	want := []string{"/lbaas/listeners/listener-1"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -300,7 +300,7 @@ func TestEnsureGatewayRecreatesDeletedListener(t *testing.T) {
 		t.Fatalf("EnsureGateway() outcome = %#v, want Progressing after 7s", result.Outcome)
 	}
 	want := []string{"/lbaas/listeners"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -491,7 +491,7 @@ func TestDeleteGatewayExecutesOnlyFirstValidatedStep(t *testing.T) {
 		t.Fatalf("DeleteGateway() outcome = %#v, want Progressing", outcome)
 	}
 	want := []string{"/lbaas/l7policies/policy-1/rules/rule-1"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 	if got := requests.count(http.MethodGet, "/lbaas/loadbalancers/load-balancer-1"); got != 1 {
@@ -501,11 +501,9 @@ func TestDeleteGatewayExecutesOnlyFirstValidatedStep(t *testing.T) {
 
 func gatewayTransitionSpec(identity Identity) cloud.GatewaySpec {
 	return cloud.GatewaySpec{
-		Identity:     identity.Value(),
-		Provider:     "amphora",
-		VIPSubnetID:  "vip-subnet",
-		ListenerName: "http",
-		ListenerPort: 80,
+		Identity:    identity.Value(),
+		Provider:    "amphora",
+		VIPSubnetID: "vip-subnet", Listeners: []cloud.ListenerSpec{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}}},
 	}
 }
 
@@ -603,19 +601,6 @@ func gatewayDriftHandler(
 	})
 }
 
-func emptyFloatingIPHandler(t *testing.T, requests *gatewayTransitionRequests) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		requests.record(request)
-		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
-			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{}})
-			return
-		}
-		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
-		http.Error(w, "unexpected request", http.StatusNotFound)
-	})
-}
-
 type gatewayTransitionRequest struct {
 	method string
 	path   string
@@ -654,16 +639,4 @@ func (r *gatewayTransitionRequests) mutationPaths() []string {
 		}
 	}
 	return paths
-}
-
-func equalGatewayTransitionPaths(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for index := range want {
-		if got[index] != want[index] {
-			return false
-		}
-	}
-	return true
 }

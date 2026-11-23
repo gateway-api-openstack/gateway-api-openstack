@@ -66,19 +66,19 @@ func benchmarkGatewayGraph(b *testing.B, count int) (*Provider, cloud.GatewayGra
 		b.Fatal(err)
 	}
 	spec := completeGraphSpec(identity)
-	spec.Routes[0].Spec.Hostname = ""
-	spec.Routes[0].Spec.Members = nil
+	spec.Routes[0].Spec.Rules[0].Matches[0].Hostname = ""
+	spec.Routes[0].Spec.Rules[0].Members = nil
 	_, route := convergedRoutePlanFixture()
 	route.members = nil
 	for index := range count {
 		address := fmt.Sprintf("10.%d.%d.%d", index/(254*254), (index/254)%254, index%254+1)
-		spec.Routes[0].Spec.Members = append(spec.Routes[0].Spec.Members, cloud.Member{Address: address, Port: 30080})
+		spec.Routes[0].Spec.Rules[0].Members = append(spec.Routes[0].Spec.Rules[0].Members, cloud.Member{Address: address, Port: 30080})
 		route.members = append(route.members, pools.Member{ID: fmt.Sprintf("member-%d", index), Address: address, ProtocolPort: 30080, SubnetID: "member-subnet", AdminStateUp: true})
 	}
 	actual := observedGatewayGraph{
 		loadBalancer: &octavia.LoadBalancer{LoadBalancer: loadbalancers.LoadBalancer{ID: "load-balancer-1", Provider: "amphora", VipSubnetID: "vip-subnet", AdminStateUp: true}},
-		listener:     &listeners.Listener{ID: "listener-1", ProtocolPort: 80, AdminStateUp: true},
-		state:        spec.Routes[0].Spec.Gateway, routes: []observedRouteGraph{route},
+
+		state: spec.Routes[0].Spec.Gateway, routes: observedRoutes{spec.Routes[0].Spec.Identity.RouteUID: {0: &route}}, listeners: map[cloud.ListenerKey]*listeners.Listener{{Protocol: cloud.HTTPProtocol, Port: 80}: {ID: "listener-1", ProtocolPort: 80, AdminStateUp: true}},
 	}
 	return &Provider{projectID: "project-a"}, spec, actual
 }

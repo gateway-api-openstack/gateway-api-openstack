@@ -172,6 +172,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "orphan candidate",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.keepOnlyLoadBalancers()
 			},
 			wantDisposition:  audit.DispositionOrphanCandidate,
@@ -181,6 +182,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "stale Gateway UID",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.keepOnlyLoadBalancers()
 				stale := current.Value()
 				stale.GatewayUID = "deleted-gateway-uid"
@@ -197,6 +199,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "wrong load balancer provider",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.keepOnlyLoadBalancers()
 				fixture.loadBalancers[0]["provider"] = "ovn"
 			},
@@ -211,6 +214,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "resource reports another project",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.keepOnlyLoadBalancers()
 				fixture.loadBalancers[0]["project_id"] = "foreign-project"
 			},
@@ -221,6 +225,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "descendant lost scope identity",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.pools = nil
 				fixture.members = nil
 				fixture.monitors = nil
@@ -240,6 +245,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "duplicate logical identity",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.keepOnlyLoadBalancers()
 				duplicate := auditCloneMap(fixture.loadBalancers[0])
 				duplicate["id"] = "load-balancer-2"
@@ -253,6 +259,7 @@ func TestScanClassifiesOwnershipFindings(t *testing.T) {
 		{
 			name: "detached Floating IP",
 			configure: func(t *testing.T, fixture *auditScanFixture) {
+				t.Helper()
 				fixture.loadBalancers = nil
 				fixture.listeners = nil
 				fixture.pools = nil

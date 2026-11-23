@@ -84,7 +84,7 @@ func TestWriterObservesFreshInputsAfterAcquiringGateway(t *testing.T) {
 		current := generation.Load()
 		return GatewayInput{
 			Object: &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Generation: current}},
-			Node:   cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure, Spec: cloud.GatewaySpec{ListenerPort: int(80 + current)}},
+			Node:   cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure, Spec: cloud.GatewaySpec{Listeners: []cloud.ListenerSpec{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: int(80 + current)}}}}},
 		}, nil
 	})
 	w.Routes = routeSourceFunc(func(_ context.Context, _ Request, gateway *gatewayv1.Gateway) (RouteInputs, error) {
@@ -94,8 +94,8 @@ func TestWriterObservesFreshInputsAfterAcquiringGateway(t *testing.T) {
 		return RouteInputs{}, nil
 	})
 	w.Provider = graphProviderFunc(func(_ context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
-		ports <- spec.Gateway.Spec.ListenerPort
-		if spec.Gateway.Spec.ListenerPort == 81 {
+		ports <- spec.Gateway.Spec.Listeners[0].Key.Port
+		if spec.Gateway.Spec.Listeners[0].Key.Port == 81 {
 			close(entered)
 			<-continueFirst
 		}

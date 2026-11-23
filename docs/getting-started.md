@@ -72,6 +72,9 @@ kubectl -n openstack-gateway-system create secret generic openstack-clouds \
 ```
 
 The Secret is mounted read-only and credentials are not copied into ConfigMaps, Gateway API status, or examples.
+The controller role also permits reading certificate Secrets for listener diagnostics.
+It watches metadata and reads referenced payloads only after checking controller ownership and any required ReferenceGrant.
+This does not enable HTTPS or publish certificates to Barbican.
 
 ## Configure and install
 

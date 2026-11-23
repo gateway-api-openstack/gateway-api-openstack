@@ -143,8 +143,10 @@ func (r *Resolver) ValidateGatewaySecurity(ctx context.Context, gateway cloud.Ga
 		if err != nil {
 			return err
 		}
-		if !allowsTCPIngress(frontend, subnet.IPVersion, gateway.ListenerPort) {
-			return invalid("referenced frontend groups do not allow the listener protocol and port for the VIP IP family")
+		for _, listener := range gateway.Listeners {
+			if !allowsTCPIngress(frontend, subnet.IPVersion, listener.Key.Port) {
+				return invalid("referenced frontend groups do not allow the listener protocol and port for the VIP IP family")
+			}
 		}
 	}
 	for _, route := range routes {
@@ -155,20 +157,22 @@ func (r *Resolver) ValidateGatewaySecurity(ctx context.Context, gateway cloud.Ga
 		if err != nil {
 			return &cloud.GraphError{Identity: route.Identity, Err: err}
 		}
-		for _, member := range route.Members {
-			address, err := netip.ParseAddr(member.Address)
-			if err != nil || address.Is4In6() {
-				return &cloud.GraphError{Identity: route.Identity, Err: invalid("backend member address is invalid")}
-			}
-			family := 6
-			if address.Is4() {
-				family = 4
-			}
-			if !allowsTCPIngress(backend, family, member.Port) {
-				return &cloud.GraphError{Identity: route.Identity, Err: invalid("referenced backend groups do not allow the member protocol and port for its IP family")}
-			}
-			if err := r.ValidateMemberPort(ctx, member.ProviderID, member.Address, route.MemberSubnetID, route.BackendSecurityGroupIDs); err != nil {
-				return &cloud.GraphError{Identity: route.Identity, Err: err}
+		for _, rule := range route.Rules {
+			for _, member := range rule.Members {
+				address, err := netip.ParseAddr(member.Address)
+				if err != nil || address.Is4In6() {
+					return &cloud.GraphError{Identity: route.Identity, Err: invalid("backend member address is invalid")}
+				}
+				family := 6
+				if address.Is4() {
+					family = 4
+				}
+				if !allowsTCPIngress(backend, family, member.Port) {
+					return &cloud.GraphError{Identity: route.Identity, Err: invalid("referenced backend groups do not allow the member protocol and port for its IP family")}
+				}
+				if err := r.ValidateMemberPort(ctx, member.ProviderID, member.Address, route.MemberSubnetID, route.BackendSecurityGroupIDs); err != nil {
+					return &cloud.GraphError{Identity: route.Identity, Err: err}
+				}
 			}
 		}
 	}

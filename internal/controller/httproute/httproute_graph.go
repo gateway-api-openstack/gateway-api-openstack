@@ -20,6 +20,9 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
@@ -33,6 +36,7 @@ const (
 	routeBindingUnknown routeBindingState = iota
 	routeBindingGatewayPending
 	routeBindingPersisted
+	routeBindingStatusPending
 	routeBindingReady
 )
 
@@ -70,6 +74,9 @@ func (r *Reconciler) ensureRouteGraph(
 	}
 	if bindingState != routeBindingReady {
 		return routeGraphResult{bindingState: bindingState}, nil
+	}
+	if routeProgrammedCheckpointNeeded(r.Config, expectedRoute, expectedGateway) {
+		return routeGraphResult{bindingState: routeBindingStatusPending}, nil
 	}
 	expectedIdentity := controller.RouteIdentity(r.Config, expectedGateway, expectedRoute)
 	result, err := r.Writer.ReconcileGraph(ctx, graph.Request{
@@ -126,4 +133,19 @@ func (r *Reconciler) prepareRouteGraphBinding(ctx context.Context, route *gatewa
 	default:
 		return routeBindingUnknown, fmt.Errorf("invalid HTTPRoute validation disposition %d", snapshot.disposition)
 	}
+}
+
+// A changed spec must stop reporting successful programming before old child
+// resources can be removed by the provider's desired-state diff.
+func routeProgrammedCheckpointNeeded(config controller.Config, route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway) bool {
+	for _, parent := range route.Status.Parents {
+		if parent.ControllerName != config.ControllerName || !parentTargetsGateway(parent.ParentRef, route.Namespace, gateway) {
+			continue
+		}
+		condition := meta.FindStatusCondition(parent.Conditions, config.Domain()+"/Programmed")
+		if condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration != route.Generation {
+			return true
+		}
+	}
+	return false
 }

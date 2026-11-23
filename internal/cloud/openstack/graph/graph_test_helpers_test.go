@@ -41,6 +41,19 @@ func newTestProvider(t *testing.T, clients ServiceClients, config ProviderConfig
 	return NewProvider(clients, config)
 }
 
+func emptyFloatingIPHandler(t *testing.T, requests *gatewayTransitionRequests) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests.record(request)
+		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
+			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{}})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
+		http.Error(w, "unexpected request", http.StatusNotFound)
+	})
+}
+
 func gatewayIdentity(id cloud.Identity) cloud.Identity {
 	id.RouteNamespace, id.RouteName, id.RouteUID = "", "", ""
 	return id
@@ -63,7 +76,7 @@ func (p *Provider) EnsureRoute(ctx context.Context, spec cloud.RouteSpec) (cloud
 	requirements := spec.GatewayRequirements
 	graph := cloud.GatewayGraphSpec{Identity: id, Gateway: cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure, Spec: cloud.GatewaySpec{
 		Identity: id, Provider: requirements.Provider, VIPSubnetID: requirements.VIPSubnetID, ExternalNetworkID: requirements.ExternalNetworkID,
-		FlavorID: requirements.FlavorID, AvailabilityZone: requirements.AvailabilityZone, ListenerPort: requirements.ListenerPort,
+		FlavorID: requirements.FlavorID, AvailabilityZone: requirements.AvailabilityZone, Listeners: []cloud.ListenerSpec{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: spec.Rules[0].Matches[0].Listener.Port}}},
 	}}, Routes: []cloud.RouteGraphNode{{Disposition: cloud.GraphEnsure, Spec: spec}}}
 	result, err := p.ReconcileGatewayGraph(ctx, graph)
 	if len(result.Routes) == 0 {

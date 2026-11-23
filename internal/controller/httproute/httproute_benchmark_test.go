@@ -88,12 +88,12 @@ func (c *fanoutCountingClient) List(ctx context.Context, list client.ObjectList,
 	return c.Client.List(ctx, list, options...)
 }
 
-func nodeFanoutFixture(t testing.TB, count int, policy corev1.ServiceExternalTrafficPolicy) (*Reconciler, *fanoutCountingClient, *corev1.Node) {
-	t.Helper()
+func nodeFanoutFixture(tb testing.TB, count int, policy corev1.ServiceExternalTrafficPolicy) (*Reconciler, *fanoutCountingClient, *corev1.Node) {
+	tb.Helper()
 	scheme := runtime.NewScheme()
 	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, discoveryv1.AddToScheme, gatewayv1.Install} {
 		if err := install(scheme); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 	cfg := testConfig()
@@ -101,7 +101,7 @@ func nodeFanoutFixture(t testing.TB, count int, policy corev1.ServiceExternalTra
 	service.Spec.ExternalTrafficPolicy = policy
 	gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge"}, Spec: gatewayv1.GatewaySpec{GatewayClassName: "managed"}}
 	if err := controller.BindGatewayTopology(cfg, gateway, testBoundTopology()); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	objects := []client.Object{
 		service, endpoints, node,

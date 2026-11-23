@@ -84,8 +84,8 @@ func TestGatewayClassVersionConditionFailsClosed(t *testing.T) {
 			if controller.GatewayHasControllerBinding(cfg, &got) {
 				t.Fatalf("Gateway received a binding with GatewayClass conditions %#v", test.conditions)
 			}
-			if len(provider.gatewaySpecs) != 0 || len(provider.deletedGateways) != 0 {
-				t.Fatalf("provider calls = ensures %d, deletes %d; want none", len(provider.gatewaySpecs), len(provider.deletedGateways))
+			if len(provider.GatewaySpecs()) != 0 || len(provider.DeletedGateways()) != 0 {
+				t.Fatalf("provider calls = ensures %d, deletes %d; want none", len(provider.GatewaySpecs()), len(provider.DeletedGateways()))
 			}
 		})
 	}

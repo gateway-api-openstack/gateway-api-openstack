@@ -40,10 +40,10 @@ func TestHTTPRouteRequestsForGatewayUseParentAndStoredBinding(t *testing.T) {
 		Namespace: &parentNamespace,
 	}, "backend")
 	bound := mapperTestHTTPRoute("routes", "bound", gatewayv1.ParentReference{Name: "other"}, "backend")
-	bound.Annotations = map[string]string{
-		config.RouteGatewayNamespaceAnnotation(): gateway.Namespace,
-		config.RouteGatewayNameAnnotation():      gateway.Name,
-		config.RouteGatewayUIDAnnotation():       "gateway-uid",
+	gateway.UID = "gateway-uid"
+	bound.UID = "bound-route-uid"
+	if err := (&Reconciler{Config: config}).applyRouteBinding(bound, gateway); err != nil {
+		t.Fatal(err)
 	}
 	status := mapperTestHTTPRoute("routes", "status", gatewayv1.ParentReference{Name: "other"}, "backend")
 	status.Status.Parents = []gatewayv1.RouteParentStatus{{
@@ -115,8 +115,11 @@ func TestHTTPRouteRequestsForServicePreserveContendersAndDetachedBindings(t *tes
 	other := mapperTestHTTPRoute("default", "other", gatewayv1.ParentReference{Name: "other-edge"}, "changed")
 	otherPeer := mapperTestHTTPRoute("default", "other-peer", gatewayv1.ParentReference{Name: "other-edge"}, "stable")
 	detaching := mapperTestHTTPRoute("default", "detaching", gatewayv1.ParentReference{Name: "removed"}, "changed")
-	(&Reconciler{Config: cfg}).applyRouteBinding(detaching, &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "removed", UID: "old-gateway"}})
-	detaching.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	detaching.UID = "detaching-route-uid"
+	if err := (&Reconciler{Config: cfg}).applyRouteBinding(detaching, &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "removed", UID: "old-gateway"}}); err != nil {
+		t.Fatal(err)
+	}
+	updateBindingFixture(t, cfg, detaching.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 	detaching.Spec.ParentRefs = nil
 	unrelated := mapperTestHTTPRoute("default", "unrelated", gatewayv1.ParentReference{Name: "unrelated"}, "stable")
 	base := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(direct, second, peer, other, otherPeer, detaching, unrelated).Build()

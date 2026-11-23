@@ -58,7 +58,9 @@ func (r *endpointOnlyReader) List(ctx context.Context, list client.ObjectList, o
 func TestEndpointMembershipChangesPreserveAttachedRoute(t *testing.T) {
 	cfg := testConfig()
 	class, gateway, route, service, endpointSlice := endpointRouteFixture(t)
-	(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+	if err := (&Reconciler{Config: cfg}).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithStatusSubresource(gateway, route).WithObjects(class, gateway, route, service, endpointSlice).Build()
 	reader := &endpointOnlyReader{Client: kubeClient}
 	provider := &recordingProvider{}
@@ -83,22 +85,22 @@ func TestEndpointMembershipChangesPreserveAttachedRoute(t *testing.T) {
 			if err := kubeClient.Update(t.Context(), &currentSlice); err != nil {
 				t.Fatal(err)
 			}
-			before := len(provider.routeSpecs)
+			before := len(provider.RouteSpecs())
 			if _, err := r.Reconcile(t.Context(), request); err != nil {
 				t.Fatal(err)
 			}
-			if len(provider.routeSpecs) != before+1 || len(provider.deletedRoutes) != 0 {
-				t.Fatalf("route was detached or not ensured: ensures=%d deletes=%d", len(provider.routeSpecs), len(provider.deletedRoutes))
+			if len(provider.RouteSpecs()) != before+1 || len(provider.DeletedRoutes()) != 0 {
+				t.Fatalf("route was detached or not ensured: ensures=%d deletes=%d", len(provider.RouteSpecs()), len(provider.DeletedRoutes()))
 			}
-			desired := provider.routeSpecs[before]
-			if desired.MemberMode != cloud.MemberModeEndpoint || !slices.Equal(desired.Members, step.want) {
+			desired := provider.RouteSpecs()[before]
+			if desired.MemberMode != cloud.MemberModeEndpoint || !slices.Equal(desired.Rules[0].Members, step.want) {
 				t.Fatalf("desired = %#v, want members %#v", desired, step.want)
 			}
 			var current gatewayv1.HTTPRoute
 			if err := kubeClient.Get(t.Context(), request.NamespacedName, &current); err != nil {
 				t.Fatal(err)
 			}
-			if current.Annotations[cfg.RouteLifecycleAnnotation()] != controller.RouteAttached || len(current.Status.Parents) != 1 ||
+			if bindingFixture(t, cfg, current.Annotations).Lifecycle != controller.RouteAttached || len(current.Status.Parents) != 1 ||
 				!meta.IsStatusConditionTrue(current.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs)) ||
 				!meta.IsStatusConditionTrue(current.Status.Parents[0].Conditions, cfg.Domain()+"/Programmed") {
 				t.Fatalf("membership change altered route attachment: %#v", current)
@@ -124,7 +126,7 @@ func TestEndpointSelectionUsesFrozenGatewayMode(t *testing.T) {
 	// already frozen Endpoint mode on this Gateway.
 	reader := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(older, newer, service, endpointSlice, nodePort).Build()
 	r := &Reconciler{Config: cfg, Client: reader}
-	parent := managedRouteParent{ref: newer.Spec.ParentRefs[0], gateway: gateway, listener: &gateway.Spec.Listeners[0]}
+	parent := managedRouteParent{ref: newer.Spec.ParentRefs[0], gateway: gateway}
 	selected, err := r.isSelectedRoute(t.Context(), newer, parent)
 	if err != nil || selected {
 		t.Fatalf("older valid ClusterIP route lost its Endpoint slot: selected=%t, error=%v", selected, err)
@@ -141,7 +143,9 @@ func TestEndpointServiceMutationFence(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			cfg := testConfig()
 			class, gateway, route, service, endpointSlice := endpointRouteFixture(t)
-			(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+			if err := (&Reconciler{Config: cfg}).applyRouteBinding(route, gateway); err != nil {
+				t.Fatal(err)
+			}
 			reader := indexedFakeClientBuilder(testScheme(t), cfg).WithStatusSubresource(gateway, route).WithObjects(class, gateway, route, service, endpointSlice).Build()
 			r := &Reconciler{Config: cfg, Client: reader, APIReader: reader}
 			snapshot, err := r.buildRouteValidationSnapshot(t.Context(), route, gateway, routeSnapshotForEnsure)

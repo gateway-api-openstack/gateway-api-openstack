@@ -35,6 +35,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/internal/controllertest"
 )
 
 func TestGatewayProviderFailureCategories(t *testing.T) {
@@ -73,7 +74,8 @@ func TestGatewayProviderFailureCategories(t *testing.T) {
 				Build()
 			cause := errors.New("token=secret-token project=private-project response=private-body")
 			providerErr := cloud.NewProviderError(test.category, cause)
-			provider := &recordingProvider{gatewayErr: providerErr}
+			provider := &recordingProvider{}
+			provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 			recorder := events.NewFakeRecorder(2)
 			reconciler := *newTestReconciler(Reconciler{
 				Client: kubeClient, APIReader: kubeClient,
@@ -126,9 +128,9 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 		WithStatusSubresource(gateway).
 		WithObjects(class, gateway).
 		Build()
-	provider := &recordingProvider{
-		gatewayErr: cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("secret-token")),
-	}
+	providerErr := cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("secret-token"))
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 	recorder := events.NewFakeRecorder(3)
 	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
@@ -147,7 +149,8 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 	}
 	assertNoEvent(t, recorder)
 
-	provider.gatewayErr = cloud.NewProviderError(cloud.ErrorCategoryAuthorization, errors.New("different-secret-token"))
+	providerErr = cloud.NewProviderError(cloud.ErrorCategoryAuthorization, errors.New("different-secret-token"))
+	provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("third Reconcile() error = %v", err)
 	}
@@ -160,7 +163,7 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := &gatewayScope{gateway: current, original: current.DeepCopy()}
-	if _, err := reconciler.handleGatewayDeleteFailure(scope, provider.gatewayErr); err != nil {
+	if _, err := reconciler.handleGatewayDeleteFailure(scope, providerErr); err != nil {
 		t.Fatalf("handleGatewayDeleteFailure() error = %v", err)
 	}
 	if err := reconciler.patchGateway(context.Background(), scope); err != nil {
@@ -174,7 +177,7 @@ func TestGatewayProviderEventsFollowConditionTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope = &gatewayScope{gateway: current, original: current.DeepCopy()}
-	if _, err := reconciler.handleGatewayDeleteFailure(scope, provider.gatewayErr); err != nil {
+	if _, err := reconciler.handleGatewayDeleteFailure(scope, providerErr); err != nil {
 		t.Fatalf("second handleGatewayDeleteFailure() error = %v", err)
 	}
 	if err := reconciler.patchGateway(context.Background(), scope); err != nil {
@@ -195,14 +198,17 @@ func TestGatewayProviderFailurePreservesProviderAndStatusErrors(t *testing.T) {
 		WithObjects(class, gateway).
 		Build()
 	statusErr := errors.New("forced status patch failure")
-	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	injectedStatusErr := statusErr
+	kubeClient := controllertest.WithStatusPatchError(baseClient, &injectedStatusErr)
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("token=secret-token"))
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 	recorder := events.NewFakeRecorder(1)
 	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
 
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}, &recordingProvider{gatewayErr: providerErr})
+	}, provider)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)})
 	if !errors.Is(err, providerErr) || !errors.Is(err, statusErr) {
@@ -229,14 +235,17 @@ func TestGatewayWarningIsRecordedAfterStatusPatch(t *testing.T) {
 		WithObjects(class, gateway).
 		Build()
 	statusErr := errors.New("forced status patch failure")
-	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	injectedStatusErr := statusErr
+	kubeClient := controllertest.WithStatusPatchError(baseClient, &injectedStatusErr)
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryAuthentication, errors.New("token=secret-token"))
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 	recorder := events.NewFakeRecorder(2)
 	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
 
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
-	}, &recordingProvider{gatewayErr: providerErr})
+	}, provider)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 
 	result, err := reconciler.Reconcile(context.Background(), request)
@@ -251,7 +260,7 @@ func TestGatewayWarningIsRecordedAfterStatusPatch(t *testing.T) {
 	}
 	assertNoEvent(t, recorder)
 
-	kubeClient.patchErr = nil
+	injectedStatusErr = nil
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	}
@@ -272,12 +281,14 @@ func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
 	}
 	gateway := programmedTestGateway(cfg)
 	gateway.Spec.Listeners[0].Port = 8080
+	gateway.Generation++
 	baseClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway).
 		WithObjects(class, gateway).
 		Build()
 	statusErr := errors.New("forced status patch failure")
-	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	injectedStatusErr := statusErr
+	kubeClient := controllertest.WithStatusPatchError(baseClient, &injectedStatusErr)
 	provider := &recordingProvider{}
 	reconciler := *newTestReconciler(Reconciler{
 		Client: kubeClient, APIReader: kubeClient,
@@ -292,8 +303,8 @@ func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
 	if result != (ctrl.Result{}) {
 		t.Fatalf("first Reconcile() result = %#v, want zero result", result)
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Delete requests before status checkpoint = %d, want 0", len(provider.DeletedGateways()))
 	}
 	current := &gatewayv1.Gateway{}
 	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
@@ -307,14 +318,14 @@ func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
 		t.Fatalf("Programmed condition after failed checkpoint = %#v", programmed)
 	}
 
-	kubeClient.patchErr = nil
+	injectedStatusErr = nil
 	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	} else if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("second Reconcile() result = %#v, want status checkpoint", result)
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls while publishing status = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Delete requests while publishing status = %d, want 0", len(provider.DeletedGateways()))
 	}
 	if err := baseClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), current); err != nil {
 		t.Fatal(err)
@@ -327,8 +338,8 @@ func TestGatewayListenerReplacementWaitsForStatusCheckpoint(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("third Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 1 {
-		t.Fatalf("DeleteGateway calls after status checkpoint = %d, want 1", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 1 {
+		t.Fatalf("listener replacement after status checkpoint: whole graph deletes=%d ensures=%d", len(provider.DeletedGateways()), len(provider.GatewaySpecs()))
 	}
 }
 
@@ -363,7 +374,7 @@ func TestGatewayProviderFailureObservedGeneration(t *testing.T) {
 			providerErr := cloud.NewProviderError(test.category, errors.New("provider failure"))
 
 			scope := &gatewayScope{gateway: gateway, original: gateway.DeepCopy()}
-			_, _ = reconciler.handleGatewayProviderFailure(context.Background(), scope, &gateway.Spec.Listeners[0], providerErr)
+			_, _ = reconciler.handleGatewayProviderFailure(context.Background(), scope, gateway.Spec.Listeners, providerErr)
 			if err := reconciler.patchGateway(context.Background(), scope); err != nil {
 				t.Fatalf("patchGateway() error = %v", err)
 			}
@@ -432,7 +443,8 @@ func TestGatewayProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 		WithObjects(class, gateway).
 		Build()
 	providerResult := cloud.GatewayProgressingResult("Octavia load balancer is PENDING_UPDATE", time.Hour)
-	provider := &recordingProvider{gatewayResult: &providerResult}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(providerResult, nil)
 	reconciler := *newTestReconciler(Reconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
@@ -449,8 +461,8 @@ func TestGatewayProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 	if result.RequeueAfter != wantRequeue {
 		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
-	if len(provider.gatewaySpecs) != 1 {
-		t.Fatalf("EnsureGateway calls = %d, want 1", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 1 {
+		t.Fatalf("Gateway Ensure requests = %d, want 1", len(provider.GatewaySpecs()))
 	}
 	current := &gatewayv1.Gateway{}
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, current); err != nil {
@@ -498,7 +510,8 @@ func TestGatewayProviderErrorTakesPrecedenceOverProgress(t *testing.T) {
 		Build()
 	providerResult := cloud.GatewayProgressingResult("this progress must be ignored", time.Second)
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("Octavia is unavailable"))
-	provider := &recordingProvider{gatewayResult: &providerResult, gatewayErr: providerErr}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(providerResult, providerErr)
 	reconciler := *newTestReconciler(Reconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
@@ -538,7 +551,8 @@ func TestGatewayProviderFailureDuringFinalizationKeepsBinding(t *testing.T) {
 		},
 	}}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, errors.New("token=secret-token"))
-	provider := &recordingProvider{gatewayDeleteErr: providerErr}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, providerErr)
 	recorder := events.NewFakeRecorder(1)
 	kubeClient := indexedFakeClientBuilder(scheme, cfg).
 		WithStatusSubresource(gateway).
@@ -572,30 +586,4 @@ func TestGatewayProviderFailureDuringFinalizationKeepsBinding(t *testing.T) {
 	if event := receiveEvent(t, recorder); !strings.Contains(event, "InvalidProviderConfiguration") || strings.Contains(event, "secret-token") {
 		t.Fatalf("Event = %q", event)
 	}
-}
-
-type patchFailingStatusClient struct {
-	client.Client
-	patchErr error
-}
-
-func (c *patchFailingStatusClient) Status() client.StatusWriter {
-	return &patchFailingStatusWriter{SubResourceWriter: c.Client.Status(), patchErr: c.patchErr}
-}
-
-type patchFailingStatusWriter struct {
-	client.SubResourceWriter
-	patchErr error
-}
-
-func (w *patchFailingStatusWriter) Patch(
-	ctx context.Context,
-	object client.Object,
-	patch client.Patch,
-	options ...client.SubResourcePatchOption,
-) error {
-	if w.patchErr != nil {
-		return w.patchErr
-	}
-	return w.SubResourceWriter.Patch(ctx, object, patch, options...)
 }

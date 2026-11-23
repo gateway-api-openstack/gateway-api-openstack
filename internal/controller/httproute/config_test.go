@@ -45,10 +45,3 @@ func TestStatusForRouteBuildError(t *testing.T) {
 		t.Fatalf("rejected status = %#v", rejected)
 	}
 }
-
-func TestSupportedMatchDefaultsToRootPrefix(t *testing.T) {
-	pathType, value, err := supportedMatch(nil)
-	if err != nil || pathType != "PathPrefix" || value != "/" {
-		t.Fatalf("supportedMatch(nil) = %q %q, %v", pathType, value, err)
-	}
-}

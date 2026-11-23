@@ -20,18 +20,21 @@ import (
 	"context"
 	"errors"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 func (r *Reconciler) gatewayRequestsForHTTPRoute(_ context.Context, object client.Object) []reconcile.Request {
@@ -60,11 +63,11 @@ func (r *Reconciler) gatewayRequestsForHTTPRoute(_ context.Context, object clien
 		}
 		addParent(parentStatus.ParentRef)
 	}
-	boundNamespace := route.Annotations[r.Config.RouteGatewayNamespaceAnnotation()]
-	boundName := route.Annotations[r.Config.RouteGatewayNameAnnotation()]
-	boundUID := route.Annotations[r.Config.RouteGatewayUIDAnnotation()]
-	if boundNamespace != "" && boundName != "" && boundUID != "" {
-		keys[types.NamespacedName{Namespace: boundNamespace, Name: boundName}] = struct{}{}
+	bindings, err := controller.StoredRouteBindings(r.Config, route)
+	if err == nil {
+		for _, binding := range bindings {
+			keys[types.NamespacedName{Namespace: binding.Identity.GatewayNamespace, Name: binding.Identity.GatewayName}] = struct{}{}
+		}
 	}
 	return controller.SortedRequests(keys)
 }
@@ -113,8 +116,88 @@ func (r *Reconciler) SetupWithManager(manager ctrl.Manager) error {
 			builder.WithPredicates(controller.GatewayClassForGatewayPredicate()),
 		).
 		Watches(&configv1alpha1.OpenStackGatewayClassConfig{}, handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForParameters), builder.WithPredicates(controller.GenerationOrDeletionChangedPredicate())).
+		// Secret data is read through APIReader only after reference authorization.
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForCertificateSecret), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&gatewayv1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.gatewayRequestsForCertificateGrant), builder.WithPredicates(controller.GenerationOrDeletionChangedPredicate())).
 		Named("gateway").
 		Complete(r)
+}
+
+func (r *Reconciler) gatewayRequestsForCertificateSecret(ctx context.Context, object client.Object) []reconcile.Request {
+	if object == nil {
+		return nil
+	}
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		controller.IndexGatewayByCertificateSecret: controller.ObjectKeyString(client.ObjectKeyFromObject(object)),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "Could not list Gateways for certificate Secret")
+		return nil
+	}
+	return r.managedGatewayRequests(ctx, gateways.Items)
+}
+
+func (r *Reconciler) gatewayRequestsForCertificateGrant(ctx context.Context, object client.Object) []reconcile.Request {
+	grant, ok := object.(*gatewayv1.ReferenceGrant)
+	if !ok {
+		return nil
+	}
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		controller.IndexGatewayByCertificateNamespace: grant.Namespace,
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "Could not list Gateways for certificate ReferenceGrant")
+		return nil
+	}
+	var affected []gatewayv1.Gateway
+	for _, gateway := range gateways.Items {
+		if gatewayCertificateGrantApplies(&gateway, *grant) {
+			affected = append(affected, gateway)
+		}
+	}
+	return r.managedGatewayRequests(ctx, affected)
+}
+
+func gatewayCertificateGrantApplies(gateway *gatewayv1.Gateway, grant gatewayv1.ReferenceGrant) bool {
+	// A deleting grant still identifies the references that must be reevaluated.
+	// This event mapping does not authorize reading certificate payloads.
+	grant.DeletionTimestamp = nil
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType || listener.TLS == nil {
+			continue
+		}
+		for _, reference := range listener.TLS.CertificateRefs {
+			key, supported := model.CertificateSecretReference(gateway.Namespace, reference)
+			if supported && key.Namespace != gateway.Namespace && key.Namespace == grant.Namespace &&
+				model.CertificateReferenceAllowed(gateway.Namespace, reference, []gatewayv1.ReferenceGrant{grant}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *Reconciler) managedGatewayRequests(ctx context.Context, gateways []gatewayv1.Gateway) []reconcile.Request {
+	classes := make(map[gatewayv1.ObjectName]bool)
+	keys := make(map[types.NamespacedName]struct{})
+	for _, gateway := range gateways {
+		if !gateway.DeletionTimestamp.IsZero() {
+			continue
+		}
+		managed, known := classes[gateway.Spec.GatewayClassName]
+		if !known {
+			_, selected, err := r.getGatewayClass(ctx, &gateway)
+			if err != nil {
+				log.FromContext(ctx).Error(err, "Could not read GatewayClass for certificate event", "gatewayClass", gateway.Spec.GatewayClassName)
+			}
+			managed = err == nil && selected
+			classes[gateway.Spec.GatewayClassName] = managed
+		}
+		if managed {
+			keys[client.ObjectKeyFromObject(&gateway)] = struct{}{}
+		}
+	}
+	return controller.SortedRequests(keys)
 }
 
 // Parameter updates can leave GatewayClass conditions unchanged. Wake unbound

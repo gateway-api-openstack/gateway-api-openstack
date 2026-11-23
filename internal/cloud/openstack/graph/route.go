@@ -20,15 +20,26 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 )
 
+// Octavia 19.0.0 validates each L7 key and value at 255 characters and permits
+// at most 50 predicates in one policy. Validate after translation.
+const (
+	octaviaL7ValueLimit    = 255
+	octaviaPolicyRuleLimit = 50
+)
+
 type desiredPolicy struct {
 	role        string
+	key         cloud.ResourceKey
+	match       *cloud.RouteMatchSpec
 	position    int32
 	compareType l7policies.CompareType
 	path        string
@@ -36,6 +47,8 @@ type desiredPolicy struct {
 
 type desiredRule struct {
 	role        string
+	key         cloud.ResourceKey
+	header      string
 	ruleType    l7policies.RuleType
 	compareType l7policies.CompareType
 	value       string
@@ -44,12 +57,13 @@ type desiredRule struct {
 type desiredRoute struct {
 	identity      Identity
 	spec          cloud.RouteSpec
+	rule          cloud.RouteRuleSpec
 	members       []cloud.Member
 	healthMonitor cloud.HealthMonitorConfig
 	policies      []desiredPolicy
 }
 
-func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error) {
+func (p *Provider) buildDesiredRule(spec cloud.RouteSpec, rule cloud.RouteRuleSpec) (desiredRoute, error) {
 	identity, err := p.identity(spec.Identity)
 	if err != nil {
 		return desiredRoute{}, err
@@ -57,27 +71,13 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 	invalid := func(err error) (desiredRoute, error) {
 		return desiredRoute{}, cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, err)
 	}
-	for _, role := range []string{
-		rolePool,
-		roleMember,
-		roleMonitor,
-		rolePolicyExact,
-		rolePolicyPrefix,
-		roleRulePath,
-		roleRuleHost,
-	} {
-		if _, err := identity.RouteTags(role); err != nil {
-			return invalid(fmt.Errorf("build %s identity tags: %w", role, err))
+	if rule.Index < 0 {
+		return invalid(errors.New("route rule index must not be negative"))
+	}
+	for _, role := range []string{rolePool, roleMember, roleMonitor} {
+		if _, err := identity.ChildTags(role, cloud.ResourceKey{Kind: cloud.ResourceRule, RuleIndex: rule.Index}); err != nil {
+			return invalid(err)
 		}
-	}
-	if strings.TrimSpace(spec.GatewayRequirements.Provider) == "" {
-		return invalid(errors.New("gateway provider must not be empty"))
-	}
-	if strings.TrimSpace(spec.GatewayRequirements.VIPSubnetID) == "" {
-		return invalid(errors.New("gateway VIP subnet ID must not be empty"))
-	}
-	if spec.GatewayRequirements.ListenerPort < 1 || spec.GatewayRequirements.ListenerPort > 65535 {
-		return invalid(fmt.Errorf("gateway listener port %d is outside 1-65535", spec.GatewayRequirements.ListenerPort))
 	}
 	switch spec.MemberMode {
 	case "", cloud.MemberModeNodePort:
@@ -89,18 +89,15 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 	default:
 		return invalid(fmt.Errorf("unsupported member mode %q", spec.MemberMode))
 	}
-	if len(spec.Members) == 0 && spec.MemberMode != cloud.MemberModeEndpoint {
+	if len(rule.Members) == 0 && spec.MemberMode != cloud.MemberModeEndpoint {
 		return invalid(errors.New("at least one ready backend member is required"))
 	}
 	if strings.TrimSpace(spec.MemberSubnetID) == "" {
 		return invalid(errors.New("member subnet ID must not be empty"))
 	}
-	if spec.PathType != cloud.PathMatchExact && spec.PathType != cloud.PathMatchPrefix {
-		return invalid(fmt.Errorf("unsupported path match type %q", spec.PathType))
-	}
 
-	membersByKey := make(map[string]cloud.Member, len(spec.Members))
-	for _, member := range spec.Members {
+	membersByKey := make(map[string]cloud.Member, len(rule.Members))
+	for _, member := range rule.Members {
 		if member.Port < 1 || member.Port > 65535 {
 			return invalid(fmt.Errorf("member %s has invalid port %d", member.Address, member.Port))
 		}
@@ -143,50 +140,102 @@ func (p *Provider) buildDesiredRoute(spec cloud.RouteSpec) (desiredRoute, error)
 		monitor.MaxRetries < 1 || monitor.MaxRetries > 10 || monitor.MaxRetriesDown < 1 || monitor.MaxRetriesDown > 10 {
 		return invalid(errors.New("health monitor requires positive intervals, timeout below delay, and retry counts within 1-10"))
 	}
+	policies, err := policiesFor(rule)
+	if err != nil {
+		return invalid(err)
+	}
 	return desiredRoute{
 		identity:      identity,
 		spec:          spec,
+		rule:          rule,
 		members:       members,
 		healthMonitor: monitor,
-		policies:      policiesFor(spec),
+		policies:      policies,
 	}, nil
 }
 
-func policiesFor(spec cloud.RouteSpec) []desiredPolicy {
-	path := spec.PathValue
-	if path == "" {
-		path = "/"
+// policiesFor expands each alternative only after the complete listener order
+// has been calculated by the controller. Key ordinals are independent of values.
+func policiesFor(rule cloud.RouteRuleSpec) ([]desiredPolicy, error) {
+	if len(rule.Matches) == 0 {
+		return nil, errors.New("forwarding rule requires at least one match")
 	}
-	if spec.PathType == cloud.PathMatchExact {
-		return []desiredPolicy{{role: rolePolicyExact, position: 1, compareType: l7policies.CompareTypeEqual, path: path}}
+	var policies []desiredPolicy
+	keys := make(map[cloud.ResourceKey]struct{})
+	for _, match := range rule.Matches {
+		if err := match.Listener.Validate(); err != nil {
+			return nil, err
+		}
+		if match.MatchIndex < 0 || match.HostIndex < 0 || match.Priority < 0 {
+			return nil, errors.New("match ordinals and priority must not be negative")
+		}
+		if match.PathType != cloud.PathMatchExact && match.PathType != cloud.PathMatchPrefix {
+			return nil, fmt.Errorf("unsupported path match type %q", match.PathType)
+		}
+		path := match.PathValue
+		if path == "" {
+			path = "/"
+		}
+		if !strings.HasPrefix(path, "/") {
+			return nil, errors.New("match path must start with /")
+		}
+		key := cloud.ResourceKey{Kind: cloud.ResourcePolicy, Listener: match.Listener, RuleIndex: rule.Index,
+			MatchIndex: match.MatchIndex, HostIndex: match.HostIndex, Variant: "exact"}
+		expanded := []desiredPolicy{{role: rolePolicyExact, key: key, match: &match, compareType: l7policies.CompareTypeEqual, path: path}}
+		if match.PathType == cloud.PathMatchPrefix {
+			path = strings.TrimRight(path, "/")
+			if path == "" {
+				key.Variant = "prefix"
+				expanded = []desiredPolicy{{role: rolePolicyPrefix, key: key, match: &match, compareType: l7policies.CompareTypeStartWith, path: "/"}}
+			} else {
+				expanded[0].path = path
+				key.Variant = "prefix"
+				expanded = append(expanded, desiredPolicy{role: rolePolicyPrefix, key: key, match: &match, compareType: l7policies.CompareTypeStartWith, path: path + "/"})
+			}
+		}
+		for _, policy := range expanded {
+			if _, exists := keys[policy.key]; exists {
+				return nil, errors.New("duplicate policy child key")
+			}
+			keys[policy.key] = struct{}{}
+			rules := rulesFor(policy)
+			if len(rules) > octaviaPolicyRuleLimit {
+				return nil, errors.New("match exceeds the Octavia policy rule limit")
+			}
+			for _, predicate := range rules {
+				if len(predicate.value) == 0 || utf8.RuneCountInString(predicate.value) > octaviaL7ValueLimit || utf8.RuneCountInString(predicate.header) > octaviaL7ValueLimit || strings.ContainsAny(predicate.value, "\r\n\x00") {
+					return nil, errors.New("match exceeds the Octavia L7 key or value representation")
+				}
+			}
+			policies = append(policies, policy)
+		}
 	}
-	path = strings.TrimRight(path, "/")
-	if path == "" {
-		path = "/"
-	}
-	if path == "/" {
-		return []desiredPolicy{{role: rolePolicyPrefix, position: 1, compareType: l7policies.CompareTypeStartWith, path: "/"}}
-	}
-	return []desiredPolicy{
-		{role: rolePolicyExact, position: 1, compareType: l7policies.CompareTypeEqual, path: path},
-		{role: rolePolicyPrefix, position: 2, compareType: l7policies.CompareTypeStartWith, path: path + "/"},
-	}
+	return policies, nil
 }
 
-func rulesFor(policy desiredPolicy, hostname string) []desiredRule {
-	rules := []desiredRule{{
-		role:        roleRulePath,
-		ruleType:    l7policies.TypePath,
-		compareType: policy.compareType,
-		value:       policy.path,
-	}}
-	if hostname != "" {
-		rules = append(rules, desiredRule{
-			role:        roleRuleHost,
-			ruleType:    l7policies.TypeHostName,
-			compareType: l7policies.CompareTypeEqual,
-			value:       hostname,
-		})
+func rulesFor(policy desiredPolicy) []desiredRule {
+	predicate := func(name string) cloud.ResourceKey {
+		key := policy.key
+		key.Kind = cloud.ResourcePredicate
+		key.Predicate = name
+		return key
+	}
+	rules := []desiredRule{{role: roleRulePath, key: predicate("path"), ruleType: l7policies.TypePath,
+		compareType: policy.compareType, value: policy.path}}
+	if hostname := policy.match.Hostname; hostname != "" {
+		// Host is case-insensitive in Amphora. An optional port is not part of
+		// Gateway API hostname matching, including for exact hostnames.
+		value := regexp.QuoteMeta(hostname)
+		if strings.HasPrefix(hostname, "*.") {
+			value = "([^.]+\\.)+" + regexp.QuoteMeta(strings.TrimPrefix(hostname, "*."))
+		}
+		rules = append(rules, desiredRule{role: roleRuleHost, key: predicate("host"), ruleType: l7policies.TypeHostName,
+			compareType: l7policies.CompareTypeRegex, value: "^" + value + "(:[0-9]+)?$"})
+	}
+	for index, header := range policy.match.Headers {
+		rules = append(rules, desiredRule{role: roleRuleHeader, key: predicate(fmt.Sprintf("header-%d", index)),
+			ruleType: l7policies.TypeHeader, compareType: l7policies.CompareTypeEqual,
+			header: header.Name, value: header.Value})
 	}
 	return rules
 }

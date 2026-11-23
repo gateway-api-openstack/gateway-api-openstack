@@ -23,11 +23,11 @@ import (
 	"errors"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/internal/openstacktest"
 	"github.com/gophercloud/gophercloud/v2"
 	tokensv3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
 	"golang.org/x/time/rate"
@@ -142,18 +142,7 @@ func (roundTrip testRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 }
 
 func safetyServiceClient(handler http.Handler) *gophercloud.ServiceClient {
-	providerClient := &gophercloud.ProviderClient{TokenID: "test-token"}
-	providerClient.HTTPClient.Transport = testRoundTripper(func(request *http.Request) (*http.Response, error) {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		result := response.Result()
-		result.Request = request
-		return result, nil
-	})
-	return &gophercloud.ServiceClient{
-		ProviderClient: providerClient,
-		Endpoint:       "http://openstack.test/",
-	}
+	return openstacktest.ServiceClient(handler)
 }
 
 func safetyWriteJSON(t *testing.T, writer http.ResponseWriter, value any) {

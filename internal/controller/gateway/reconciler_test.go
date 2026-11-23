@@ -51,8 +51,11 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if result != (ctrl.Result{Requeue: true}) || len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("binding checkpoint result = %#v, EnsureGateway calls = %d", result, len(provider.gatewaySpecs))
+	if result != (ctrl.Result{Requeue: true}) || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("binding checkpoint result = %#v, Gateway Ensure requests = %d", result, len(provider.GatewaySpecs()))
+	}
+	if result, err := reconciler.Reconcile(context.Background(), request); err != nil || result != (ctrl.Result{Requeue: true}) || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("initial status checkpoint: result=%#v error=%v calls=%d", result, err, len(provider.GatewaySpecs()))
 	}
 	secondResult, err := reconciler.Reconcile(context.Background(), request)
 	if err != nil {
@@ -76,16 +79,16 @@ func TestGatewayReconcileProgramsAddressAndConditions(t *testing.T) {
 	if len(got.Status.Listeners) != 1 || meta.FindStatusCondition(got.Status.Listeners[0].Conditions, "example.net/Custom") == nil {
 		t.Fatalf("custom Listener condition was not preserved: %#v", got.Status.Listeners)
 	}
-	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].Provider != "amphora" {
-		t.Fatalf("gateway specs = %#v", provider.gatewaySpecs)
+	if len(provider.GatewaySpecs()) != 1 || provider.GatewaySpecs()[0].Provider != "amphora" {
+		t.Fatalf("gateway specs = %#v", provider.GatewaySpecs())
 	}
 	resourceVersion := got.ResourceVersion
 	thirdResult, err := reconciler.Reconcile(context.Background(), request)
 	if err != nil {
 		t.Fatalf("third Reconcile() error = %v", err)
 	}
-	if thirdResult.RequeueAfter != wantResync || len(provider.gatewaySpecs) != 2 {
-		t.Fatalf("third Reconcile() result = %#v, EnsureGateway calls = %d", thirdResult, len(provider.gatewaySpecs))
+	if thirdResult.RequeueAfter != wantResync || len(provider.GatewaySpecs()) != 2 {
+		t.Fatalf("third Reconcile() result = %#v, Gateway Ensure requests = %d", thirdResult, len(provider.GatewaySpecs()))
 	}
 	if err := client.Get(context.Background(), request.NamespacedName, &got); err != nil {
 		t.Fatal(err)
@@ -100,7 +103,7 @@ func TestGatewayInvalidSpecCleanupPreservesTopologyForRecovery(t *testing.T) {
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg, "443")},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg)},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
 			Listeners:        []gatewayv1.Listener{{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443}},
@@ -115,14 +118,14 @@ func TestGatewayInvalidSpecCleanupPreservesTopologyForRecovery(t *testing.T) {
 	} else if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("Reconcile() result = %#v, want status checkpoint", result)
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("Gateway Delete requests before status checkpoint = %d, want 0", len(provider.DeletedGateways()))
 	}
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 1 || provider.deletedGateways[0].GatewayUID != string(gateway.UID) {
-		t.Fatalf("deleted Gateway identities = %#v", provider.deletedGateways)
+	if len(provider.DeletedGateways()) != 1 || provider.DeletedGateways()[0].GatewayUID != string(gateway.UID) {
+		t.Fatalf("deleted Gateway identities = %#v", provider.DeletedGateways())
 	}
 	var got gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, &got); err != nil {
@@ -148,8 +151,11 @@ func TestGatewayInvalidSpecCleanupPreservesTopologyForRecovery(t *testing.T) {
 	if _, err := restarted.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("recover Gateway after invalid spec: %v", err)
 	}
-	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].VIPSubnetID != testVIPSubnetID {
-		t.Fatalf("recovered Gateway specs = %#v", provider.gatewaySpecs)
+	if _, err := restarted.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("reconcile after recovered status checkpoint: %v", err)
+	}
+	if len(provider.GatewaySpecs()) != 1 || provider.GatewaySpecs()[0].VIPSubnetID != testVIPSubnetID {
+		t.Fatalf("recovered Gateway specs = %#v", provider.GatewaySpecs())
 	}
 }
 
@@ -158,14 +164,15 @@ func TestGatewayInvalidSpecPublishesStatusBeforeCleanupRetry(t *testing.T) {
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg, "443")},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg)},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
 			Listeners:        []gatewayv1.Listener{{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443}},
 		},
 	}
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
-	provider := &recordingProvider{gatewayDeleteErr: errors.New("temporary delete failure")}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, errors.New("temporary delete failure"))
 	reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Coordinator: &graph.Coordinator{}, APIReader: kubeClient, Config: cfg}, provider)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}
 	if result, err := reconciler.Reconcile(context.Background(), request); err != nil {
@@ -184,8 +191,8 @@ func TestGatewayInvalidSpecPublishesStatusBeforeCleanupRetry(t *testing.T) {
 	if !controllerutil.ContainsFinalizer(&got, cfg.GatewayFinalizer()) {
 		t.Fatal("cleanup failure removed the safety finalizer")
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls before status checkpoint = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("Gateway Delete requests before status checkpoint = %d, want 0", len(provider.DeletedGateways()))
 	}
 	if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
 		t.Fatal("second Reconcile() unexpectedly succeeded")
@@ -197,7 +204,7 @@ func TestGatewayClassHandoffCleansControllerResources(t *testing.T) {
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "other"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: "other.example/controller"}}
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg, "80")},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid", Finalizers: []string{cfg.GatewayFinalizer()}, Annotations: gatewayBindingAnnotations(cfg)},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "other",
 			Listeners:        []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}},
@@ -209,8 +216,8 @@ func TestGatewayClassHandoffCleansControllerResources(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 1 {
-		t.Fatalf("DeleteGateway calls = %d, want 1", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 1 {
+		t.Fatalf("Gateway Delete requests = %d, want 1", len(provider.DeletedGateways()))
 	}
 	var got gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, &got); err != nil {
@@ -221,7 +228,7 @@ func TestGatewayClassHandoffCleansControllerResources(t *testing.T) {
 	}
 }
 
-func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
+func TestGatewayListenerPortChangePreservesLoadBalancerAndTopology(t *testing.T) {
 	scheme := testScheme(t)
 	cfg := testConfig()
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
@@ -229,7 +236,7 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default", Name: "edge", UID: "gateway-uid",
 			Finalizers:  []string{cfg.GatewayFinalizer()},
-			Annotations: gatewayBindingAnnotations(cfg, "80"),
+			Annotations: gatewayBindingAnnotations(cfg),
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
@@ -256,28 +263,28 @@ func TestGatewayListenerPortChangeReplacesOwnedGraph(t *testing.T) {
 	if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("Reconcile() result = %#v, want status checkpoint", result)
 	}
-	if len(provider.deletedGateways) != 0 || len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.deletedGateways), len(provider.gatewaySpecs))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.DeletedGateways()), len(provider.GatewaySpecs()))
 	}
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 1 || len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.deletedGateways), len(provider.gatewaySpecs))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 1 {
+		t.Fatalf("replacement deletes = %d, ensures = %d", len(provider.DeletedGateways()), len(provider.GatewaySpecs()))
 	}
 	var got gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if !controllerutil.ContainsFinalizer(&got, cfg.GatewayFinalizer()) || got.Annotations[cfg.GatewayListenerPortAnnotation()] != "8080" || !controller.GatewayTopologyMetadataEqual(cfg, gateway, &got) {
+	if !controllerutil.ContainsFinalizer(&got, cfg.GatewayFinalizer()) || !controller.GatewayTopologyMetadataEqual(cfg, gateway, &got) {
 		t.Fatalf("Gateway replacement metadata = finalizers %#v, annotations %#v", got.Finalizers, got.Annotations)
 	}
 	restarted := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: &graph.Coordinator{}, APIReader: kubeClient, Config: cfg}, provider)
 	if _, err := restarted.Reconcile(context.Background(), request); err != nil {
 		t.Fatalf("third Reconcile() error = %v", err)
 	}
-	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].ListenerPort != 8080 || provider.gatewaySpecs[0].VIPSubnetID != testVIPSubnetID {
-		t.Fatalf("Gateway ensures = %#v", provider.gatewaySpecs)
+	if len(provider.GatewaySpecs()) != 2 || provider.GatewaySpecs()[0].Listeners[0].Key.Port != 8080 || provider.GatewaySpecs()[0].VIPSubnetID != testVIPSubnetID {
+		t.Fatalf("Gateway ensures = %#v", provider.GatewaySpecs())
 	}
 }
 
@@ -290,9 +297,9 @@ func TestGatewayBindingRejectsClusterIdentityDrift(t *testing.T) {
 			Namespace: "default", Name: "edge", UID: "gateway-uid",
 			Finalizers: []string{cfg.GatewayFinalizer()},
 			Annotations: map[string]string{
-				cfg.GatewayListenerPortAnnotation(): "80",
-				cfg.GatewayClusterIDAnnotation():    "original-cluster",
-				cfg.GatewayProjectIDAnnotation():    cfg.OpenStackProjectID,
+
+				cfg.GatewayClusterIDAnnotation(): "original-cluster",
+				cfg.GatewayProjectIDAnnotation(): cfg.OpenStackProjectID,
 			},
 		},
 		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
@@ -303,8 +310,8 @@ func TestGatewayBindingRejectsClusterIdentityDrift(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.deletedGateways) != 0 {
-		t.Fatalf("provider calls after identity drift: ensures %d, deletes %d", len(provider.gatewaySpecs), len(provider.deletedGateways))
+	if len(provider.GatewaySpecs()) != 0 || len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("provider calls after identity drift: ensures %d, deletes %d", len(provider.GatewaySpecs()), len(provider.DeletedGateways()))
 	}
 	var got gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, &got); err != nil {
@@ -327,7 +334,7 @@ func TestGatewayOpenStackFailurePreservesAttachedRouteCount(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1,
 			Finalizers:  []string{cfg.GatewayFinalizer()},
-			Annotations: gatewayBindingAnnotations(cfg, "80"),
+			Annotations: gatewayBindingAnnotations(cfg),
 		},
 		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack", Listeners: []gatewayv1.Listener{{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80}}},
 	}
@@ -349,8 +356,12 @@ func TestGatewayOpenStackFailurePreservesAttachedRouteCount(t *testing.T) {
 	otherRoute.Name = "wrong-port"
 	otherRoute.Status.Parents[0].ParentRef.Port = &wrongPort
 	kubeClient := indexedFakeClientBuilder(scheme, testConfig()).WithStatusSubresource(gateway, route, otherRoute).WithObjects(class, gateway, route, otherRoute).Build()
-	provider := &recordingProvider{gatewayErr: cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("temporary Octavia failure"))}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{}, cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("temporary Octavia failure")))
 	reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Coordinator: &graph.Coordinator{}, APIReader: kubeClient, Config: cfg}, provider)
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err != nil {
+		t.Fatalf("initial status checkpoint: %v", err)
+	}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}}); err == nil {
 		t.Fatal("Reconcile() unexpectedly succeeded")
 	}
@@ -397,8 +408,8 @@ func TestGatewayUnsupportedAddressUsesGatewayLevelReason(t *testing.T) {
 	if listenerAccepted == nil || listenerAccepted.Status != metav1.ConditionTrue {
 		t.Fatalf("Listener Accepted condition = %#v", listenerAccepted)
 	}
-	if len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("EnsureGateway calls = %d, want 0", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Ensure requests = %d, want 0", len(provider.GatewaySpecs()))
 	}
 }
 
@@ -474,7 +485,7 @@ func programmedTestGateway(cfg Config) *gatewayv1.Gateway {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default", Name: "edge", UID: "gateway-uid", Generation: 1,
 			Finalizers:  []string{cfg.GatewayFinalizer()},
-			Annotations: gatewayBindingAnnotations(cfg, "80"),
+			Annotations: gatewayBindingAnnotations(cfg),
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",

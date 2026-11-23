@@ -82,11 +82,11 @@ func TestGatewayTopologyBindingRejectsIncompleteOrChangedMetadata(t *testing.T) 
 		{"finalizer missing", func(g *gatewayv1.Gateway) { g.Finalizers = nil }},
 		{"annotation changed", func(g *gatewayv1.Gateway) { g.Annotations[config.GatewayTopologyAnnotation()] += " " }},
 		{"duplicate binding", func(g *gatewayv1.Gateway) {
-			g.Finalizers = append(g.Finalizers, config.GatewayTopologyFinalizer("other"))
+			g.Finalizers = append(g.Finalizers, config.gatewayTopologyFinalizer("other"))
 		}},
 		{"invalid JSON with matching digest", func(g *gatewayv1.Gateway) {
 			g.Annotations[config.GatewayTopologyAnnotation()] = "{}"
-			g.Finalizers = []string{config.GatewayTopologyFinalizer("{}")}
+			g.Finalizers = []string{config.gatewayTopologyFinalizer("{}")}
 		}},
 	}
 	for _, test := range tests {
@@ -178,7 +178,7 @@ func TestGatewayTopologyRejectsInvalidMemberMode(t *testing.T) {
 			}
 			gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{config.GatewayTopologyAnnotation(): string(encoded)},
-				Finalizers:  []string{config.GatewayTopologyFinalizer(string(encoded))},
+				Finalizers:  []string{config.gatewayTopologyFinalizer(string(encoded))},
 			}}
 			if _, err := StoredGatewayTopology(config, gateway); !errors.Is(err, cloud.ErrOwnershipConflict) {
 				t.Fatalf("invalid stored configuration error = %v", err)

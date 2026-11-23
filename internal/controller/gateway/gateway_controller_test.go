@@ -42,11 +42,7 @@ func TestGatewayRequestsForHTTPRoute(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default",
 			Name:      "api",
-			Annotations: map[string]string{
-				config.RouteGatewayNamespaceAnnotation(): "previous",
-				config.RouteGatewayNameAnnotation():      "bound",
-				config.RouteGatewayUIDAnnotation():       "bound-uid",
-			},
+			UID:       "route-uid",
 		},
 		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{
 			{Name: "edge"},
@@ -59,6 +55,11 @@ func TestGatewayRequestsForHTTPRoute(t *testing.T) {
 			{ParentRef: gatewayv1.ParentReference{Name: "status-parent"}, ControllerName: config.ControllerName},
 			{ParentRef: gatewayv1.ParentReference{Name: "foreign-status"}, ControllerName: "example.com/foreign"},
 		}}},
+	}
+
+	previous := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "previous", Name: "bound", UID: "bound-uid"}}
+	if err := controller.SetRouteBinding(config, route, controller.RouteBinding{Identity: controller.RouteIdentity(config, previous, route), Lifecycle: controller.RouteAttached}); err != nil {
+		t.Fatal(err)
 	}
 
 	reconciler := newTestReconciler(Reconciler{Config: config}, nil)
@@ -111,7 +112,7 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 			Name:        "edge",
 			UID:         "gateway-uid",
 			Finalizers:  []string{config.GatewayFinalizer()},
-			Annotations: gatewayBindingAnnotations(config, "80"),
+			Annotations: gatewayBindingAnnotations(config),
 		},
 	}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), config).
@@ -127,8 +128,8 @@ func TestCleanupGatewayRejectsStaleResourceVersion(t *testing.T) {
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("cleanupGateway() error = %v, want conflict", err)
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("Gateway Delete requests = %d, want 0", len(provider.DeletedGateways()))
 	}
 }
 
@@ -143,7 +144,7 @@ func TestGatewayBindingWithoutFinalizerRemainsCleanupResponsibility(t *testing.T
 			Namespace:   "default",
 			Name:        "edge",
 			UID:         "gateway-uid",
-			Annotations: gatewayBindingAnnotations(config, "80"),
+			Annotations: gatewayBindingAnnotations(config),
 		},
 		Spec: gatewayv1.GatewaySpec{GatewayClassName: "openstack"},
 	}
@@ -161,8 +162,8 @@ func TestGatewayBindingWithoutFinalizerRemainsCleanupResponsibility(t *testing.T
 	}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 1 {
-		t.Fatalf("DeleteGateway calls = %d, want 1", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 1 {
+		t.Fatalf("Gateway Delete requests = %d, want 1", len(provider.DeletedGateways()))
 	}
 	var current gatewayv1.Gateway
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), &current); err != nil {

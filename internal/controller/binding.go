@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,7 +46,6 @@ func ValidateGatewayBinding(config Config, gateway *gatewayv1.Gateway) error {
 // This check alone never authorizes graph mutation or finalizer removal.
 func ValidateGatewayIdentityBinding(config Config, gateway *gatewayv1.Gateway) error {
 	bindingValues := []string{
-		gateway.Annotations[config.GatewayListenerPortAnnotation()],
 		gateway.Annotations[config.GatewayClusterIDAnnotation()],
 		gateway.Annotations[config.GatewayProjectIDAnnotation()],
 	}
@@ -73,7 +74,6 @@ func GatewayHasControllerBinding(config Config, gateway *gatewayv1.Gateway) bool
 		return true
 	}
 	for _, key := range []string{
-		config.GatewayListenerPortAnnotation(),
 		config.GatewayClusterIDAnnotation(),
 		config.GatewayProjectIDAnnotation(),
 	} {
@@ -95,7 +95,6 @@ func GatewayBindingMetadataEqual(config Config, left, right *gatewayv1.Gateway) 
 		return false
 	}
 	for _, key := range []string{
-		config.GatewayListenerPortAnnotation(),
 		config.GatewayClusterIDAnnotation(),
 		config.GatewayProjectIDAnnotation(),
 	} {
@@ -126,79 +125,155 @@ func SameGatewayIdentity(left, right cloud.Identity) bool {
 		left.GatewayUID == right.GatewayUID
 }
 
-// StoredRouteIdentity validates and returns the Gateway identity recorded by
-// an HTTPRoute binding.
-func StoredRouteIdentity(config Config, route *gatewayv1.HTTPRoute) (cloud.Identity, bool, error) {
-	annotations := route.Annotations
-	values := []string{
-		annotations[config.RouteGatewayNamespaceAnnotation()],
-		annotations[config.RouteGatewayNameAnnotation()],
-		annotations[config.RouteGatewayUIDAnnotation()],
-	}
-	empty := 0
-	for _, value := range values {
-		if value == "" {
-			empty++
-		}
-	}
-	if empty == len(values) {
-		if annotations[config.RouteClusterIDAnnotation()] != "" || annotations[config.RouteProjectIDAnnotation()] != "" || hasRouteBindingFinalizer(config, route) {
-			return cloud.Identity{}, false, fmt.Errorf("HTTPRoute %s/%s has an incomplete stored Gateway identity", route.Namespace, route.Name)
-		}
-		return cloud.Identity{}, false, nil
-	}
-	if empty != 0 {
-		return cloud.Identity{}, false, fmt.Errorf("HTTPRoute %s/%s has an incomplete stored Gateway identity", route.Namespace, route.Name)
-	}
-	clusterID := annotations[config.RouteClusterIDAnnotation()]
-	if clusterID == "" {
-		clusterID = config.ClusterID
-	}
-	projectID := annotations[config.RouteProjectIDAnnotation()]
-	if projectID == "" {
-		projectID = config.OpenStackProjectID
-	}
-	identity := cloud.Identity{
-		OpenStackProjectID: projectID,
-		ClusterID:          clusterID,
-		Controller:         string(config.ControllerName),
-		ControllerVersion:  config.ControllerVersion,
-		GatewayNamespace:   values[0],
-		GatewayName:        values[1],
-		GatewayUID:         values[2],
-		RouteNamespace:     route.Namespace,
-		RouteName:          route.Name,
-		RouteUID:           string(route.UID),
-	}
-	if identity.ClusterID != config.ClusterID {
-		return cloud.Identity{}, false, fmt.Errorf("controller cluster identity differs from HTTPRoute %s/%s's existing resource binding; restore the original cluster ID before reconciling", route.Namespace, route.Name)
-	}
-	if identity.OpenStackProjectID != config.OpenStackProjectID {
-		return cloud.Identity{}, false, fmt.Errorf("authenticated OpenStack project differs from HTTPRoute %s/%s's existing resource binding; restore access to the original project before reconciling", route.Namespace, route.Name)
-	}
-	if err := cloud.ValidateRouteIdentity(identity); err != nil {
-		return cloud.Identity{}, false, err
-	}
-	expectedBindingFinalizer := config.RouteBindingFinalizer(
-		identity.ClusterID,
-		identity.OpenStackProjectID,
-		identity.GatewayNamespace,
-		identity.GatewayName,
-		identity.GatewayUID,
-	)
-	if controllerutil.ContainsFinalizer(route, config.RouteFinalizer()) && !controllerutil.ContainsFinalizer(route, expectedBindingFinalizer) {
-		return cloud.Identity{}, false, fmt.Errorf("HTTPRoute %s/%s stored Gateway identity does not match its binding finalizer; restore the original binding before reconciling", route.Namespace, route.Name)
-	}
-	for _, finalizer := range route.Finalizers {
-		if strings.HasPrefix(finalizer, config.RouteBindingFinalizerPrefix()) && finalizer != expectedBindingFinalizer {
-			return cloud.Identity{}, false, fmt.Errorf("HTTPRoute %s/%s has a conflicting Gateway binding finalizer", route.Namespace, route.Name)
-		}
-	}
-	return identity, true, nil
+// RouteBinding records one HTTPRoute fragment's durable Gateway ownership.
+// Identity includes the Route UID so copying annotations cannot transfer ownership.
+type RouteBinding struct {
+	Identity       cloud.Identity `json:"identity"`
+	Lifecycle      RouteLifecycle `json:"lifecycle"`
+	CleanupFailure string         `json:"cleanupFailure,omitempty"`
 }
 
-// hasRouteBindingFinalizer reports whether any finalizer anchors an HTTPRoute
-// binding owned by this controller.
+// StoredRouteBindings validates every binding and its matching finalizer.
+func StoredRouteBindings(config Config, route *gatewayv1.HTTPRoute) ([]RouteBinding, error) {
+	var bindings []RouteBinding
+	if encoded := route.Annotations[config.RouteBindingsAnnotation()]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &bindings); err != nil {
+			return nil, fmt.Errorf("%w: HTTPRoute binding list is invalid", cloud.ErrOwnershipConflict)
+		}
+	}
+	if len(bindings) == 0 {
+		if controllerutil.ContainsFinalizer(route, config.RouteFinalizer()) || hasRouteBindingFinalizer(config, route) {
+			return nil, fmt.Errorf("%w: HTTPRoute has finalizers without a complete Gateway binding", cloud.ErrOwnershipConflict)
+		}
+		return nil, nil
+	}
+	if !controllerutil.ContainsFinalizer(route, config.RouteFinalizer()) {
+		return nil, fmt.Errorf("%w: HTTPRoute binding has no controller finalizer", cloud.ErrOwnershipConflict)
+	}
+	finalizers := make(map[string]struct{}, len(bindings))
+	seen := make(map[string]struct{}, len(bindings))
+	for i := range bindings {
+		binding := &bindings[i]
+		id := binding.Identity
+		if err := cloud.ValidateRouteIdentity(id); err != nil {
+			return nil, fmt.Errorf("%w: HTTPRoute binding identity is incomplete", cloud.ErrOwnershipConflict)
+		}
+		if id.OpenStackProjectID == "" || id.OpenStackProjectID != config.OpenStackProjectID || id.ClusterID != config.ClusterID || id.Controller != string(config.ControllerName) ||
+			id.RouteNamespace != route.Namespace || id.RouteName != route.Name || id.RouteUID != string(route.UID) {
+			return nil, fmt.Errorf("%w: HTTPRoute binding identity differs from the controller or Route", cloud.ErrOwnershipConflict)
+		}
+		if binding.Lifecycle != RouteAttached && binding.Lifecycle != RouteDetaching {
+			return nil, fmt.Errorf("%w: HTTPRoute binding lifecycle is missing or invalid", cloud.ErrOwnershipConflict)
+		}
+		if _, exists := seen[id.GatewayUID]; exists {
+			return nil, fmt.Errorf("%w: HTTPRoute has duplicate Gateway bindings", cloud.ErrOwnershipConflict)
+		}
+		seen[id.GatewayUID] = struct{}{}
+		finalizer := routeBindingFinalizer(config, id)
+		if !controllerutil.ContainsFinalizer(route, finalizer) {
+			return nil, fmt.Errorf("%w: HTTPRoute binding does not match its finalizer", cloud.ErrOwnershipConflict)
+		}
+		finalizers[finalizer] = struct{}{}
+		// Release metadata is not immutable ownership.
+		binding.Identity.ControllerVersion = config.ControllerVersion
+	}
+	for _, finalizer := range route.Finalizers {
+		if strings.HasPrefix(finalizer, config.RouteBindingFinalizerPrefix()) {
+			if _, expected := finalizers[finalizer]; !expected {
+				return nil, fmt.Errorf("%w: HTTPRoute has an unmatched Gateway binding finalizer", cloud.ErrOwnershipConflict)
+			}
+		}
+	}
+	slices.SortFunc(bindings, func(a, b RouteBinding) int { return strings.Compare(a.Identity.GatewayUID, b.Identity.GatewayUID) })
+	return bindings, nil
+}
+
+// StoredRouteBinding returns the validated binding for one Gateway UID.
+func StoredRouteBinding(config Config, route *gatewayv1.HTTPRoute, gatewayUID string) (RouteBinding, bool, error) {
+	bindings, err := StoredRouteBindings(config, route)
+	if err != nil {
+		return RouteBinding{}, false, err
+	}
+	for _, binding := range bindings {
+		if binding.Identity.GatewayUID == gatewayUID {
+			return binding, true, nil
+		}
+	}
+	return RouteBinding{}, false, nil
+}
+
+// SetRouteBinding adds or replaces one entry without changing other bindings.
+// Callers must validate the source snapshot before mutating it.
+func SetRouteBinding(config Config, route *gatewayv1.HTTPRoute, binding RouteBinding) error {
+	desired := route.DeepCopy()
+	bindings, err := StoredRouteBindings(config, desired)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range bindings {
+		if bindings[i].Identity.GatewayUID == binding.Identity.GatewayUID {
+			if bindings[i].Identity != binding.Identity {
+				return fmt.Errorf("%w: HTTPRoute binding identity cannot change", cloud.ErrOwnershipConflict)
+			}
+			bindings[i] = binding
+			found = true
+		}
+	}
+	if !found {
+		bindings = append(bindings, binding)
+	}
+	if err := storeRouteBindings(config, desired, bindings); err != nil {
+		return err
+	}
+	controllerutil.AddFinalizer(desired, config.RouteFinalizer())
+	controllerutil.AddFinalizer(desired, routeBindingFinalizer(config, binding.Identity))
+	if _, err := StoredRouteBindings(config, desired); err != nil {
+		return err
+	}
+	*route = *desired
+	return nil
+}
+
+// RemoveRouteBinding removes only the specified binding after confirmed cleanup.
+func RemoveRouteBinding(config Config, route *gatewayv1.HTTPRoute, gatewayUID string) error {
+	bindings, err := StoredRouteBindings(config, route)
+	if err != nil {
+		return err
+	}
+	remaining := make([]RouteBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.Identity.GatewayUID == gatewayUID {
+			controllerutil.RemoveFinalizer(route, routeBindingFinalizer(config, binding.Identity))
+			continue
+		}
+		remaining = append(remaining, binding)
+	}
+	if len(remaining) == 0 {
+		delete(route.Annotations, config.RouteBindingsAnnotation())
+		controllerutil.RemoveFinalizer(route, config.RouteFinalizer())
+		return nil
+	}
+	return storeRouteBindings(config, route, remaining)
+}
+
+func storeRouteBindings(config Config, route *gatewayv1.HTTPRoute, bindings []RouteBinding) error {
+	slices.SortFunc(bindings, func(a, b RouteBinding) int { return strings.Compare(a.Identity.GatewayUID, b.Identity.GatewayUID) })
+	encoded, err := json.Marshal(bindings)
+	if err != nil {
+		return fmt.Errorf("encode HTTPRoute bindings: %w", err)
+	}
+	if route.Annotations == nil {
+		route.Annotations = make(map[string]string)
+	}
+	route.Annotations[config.RouteBindingsAnnotation()] = string(encoded)
+	return nil
+}
+
+func routeBindingFinalizer(config Config, id cloud.Identity) string {
+	return config.RouteBindingFinalizer(id.ClusterID, id.OpenStackProjectID, id.GatewayNamespace, id.GatewayName, id.GatewayUID)
+}
+
 func hasRouteBindingFinalizer(config Config, route *gatewayv1.HTTPRoute) bool {
 	for _, finalizer := range route.Finalizers {
 		if strings.HasPrefix(finalizer, config.RouteBindingFinalizerPrefix()) {
@@ -208,27 +283,7 @@ func hasRouteBindingFinalizer(config Config, route *gatewayv1.HTTPRoute) bool {
 	return false
 }
 
-// routeHasBindingAnnotations reports whether an HTTPRoute contains any stored
-// Gateway identity annotation owned by this controller.
-func routeHasBindingAnnotations(config Config, route *gatewayv1.HTTPRoute) bool {
-	for _, key := range []string{
-		config.RouteGatewayNamespaceAnnotation(),
-		config.RouteGatewayNameAnnotation(),
-		config.RouteGatewayUIDAnnotation(),
-		config.RouteClusterIDAnnotation(),
-		config.RouteProjectIDAnnotation(),
-	} {
-		if route.Annotations[key] != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// RouteHasControllerBinding reports whether an HTTPRoute contains any part of
-// this controller's durable binding.
+// RouteHasControllerBinding reports any durable cleanup responsibility.
 func RouteHasControllerBinding(config Config, route *gatewayv1.HTTPRoute) bool {
-	return controllerutil.ContainsFinalizer(route, config.RouteFinalizer()) ||
-		hasRouteBindingFinalizer(config, route) ||
-		routeHasBindingAnnotations(config, route)
+	return controllerutil.ContainsFinalizer(route, config.RouteFinalizer()) || hasRouteBindingFinalizer(config, route) || route.Annotations[config.RouteBindingsAnnotation()] != ""
 }
