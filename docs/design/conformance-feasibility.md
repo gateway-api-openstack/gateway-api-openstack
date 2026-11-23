@@ -55,6 +55,55 @@ The Amphora template emits legacy `redirect location` or `redirect prefix`.
 The [HAProxy redirect contract](https://docs.haproxy.org/3.0/configuration.html#4.2-redirect%20prefix) distinguishes these static forms from dynamic `http-request redirect`.
 These exposed fields do not provide the general mapping that retains an arbitrary request hostname.
 
+### Certificate selection on a shared HTTPS port
+
+The pinned [Listener TLS contract](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/apis/v1/gateway_types.go#L444) associates certificates with listener hostnames and requires the longest matching SNI.
+Octavia accepts a default certificate and a list of SNI certificate references, but no hostname selector for each reference.
+The [Amphora driver](https://github.com/openstack/octavia/blob/19.0.0/octavia/amphorae/drivers/haproxy/rest_api_driver.py#L430) writes certificate paths without hostname filters to HAProxy's `crt-list`.
+Without those filters, [HAProxy uses certificate CN and SAN names](https://docs.haproxy.org/3.0/configuration.html#5.1-crt-list).
+
+For example, two logical listeners for `a.example.com` and `b.example.com` can select different certificates that both contain those two SANs.
+A list of certificate references loses the association between each listener hostname and its selected certificate.
+This source analysis identifies a mapping gap, not a measured TLS failure.
+Verify overlapping SANs, exact and wildcard hostnames, default selection, rotation, and listener removal before enabling the general Core HTTPS profile.
+Assess explicit hostname-to-certificate selection in the Octavia API and Amphora driver if the existing mapping fails those cases.
+HAProxy already supports SNI filters, so this does not establish a need for a new HAProxy feature.
+
+## Upstream work
+
+The existing [octavia-lib review 1012714](https://review.opendev.org/c/openstack/octavia-lib/+/1012714) and [Octavia review 1012715](https://review.opendev.org/c/openstack/octavia/+/1012715) implement one capability: selecting the response code of an individual REJECT policy while retaining the default 403.
+Both reviews were unmerged when checked on November 17, 2026.
+The Octavia change preserves existing policy precedence and unmatched-request handling.
+Treat those reviews as one dependency, not as implementations of the remaining behaviors below.
+
+The following work units describe required behavior rather than final API fields or a fixed number of patches.
+Several behaviors may share one upstream design.
+Required behavior refers to this project's direct Amphora Core target, while conditional extensions need a failing mapping proof before a new API is proposed.
+
+| Work unit | Classification | Proposed scope and acceptance case |
+| --- | --- | --- |
+| Action ordering | Required. | Select the winning policy independently of whether it forwards, redirects, or returns an error. Verify a specific forwarding rule under a broader redirect and an invalid backend at its original match priority. Preserve existing Octavia behavior through an upstream-agreed compatibility contract. |
+| Unmatched-request fallback | Required behavior, new API shape conditional. | Return 404 only after no Route matches. First test whether ordered actions plus the existing REJECT-code proposal can express a final fallback. Add a separate fallback API only if that composition cannot preserve ordinary forwarding and redirects. |
+| Request header operations | Required extension. | Add, set, and remove arbitrary request headers for the selected policy. Match the original request before applying transformations, and verify case-insensitive names, multiple values, and isolation from other routes. |
+| Redirects using request fields | Required extension. | Preserve the request hostname when no replacement is supplied, and retain unchanged path and query components. Extend the existing redirect behavior, including listener-port derivation, rather than adding a second fixed-host redirect feature. |
+| Weighted backend and error selection | Required behavior, mapping and API shape conditional. | Preserve Service weights and the invalid share that must return 500. Evaluate existing member weights first, using a documented precision bound and endpoint lifecycle cases. If they are insufficient, review selection among backend groups and error outcomes together. |
+| SNI certificate selection | Mapping gap, extension to verify. | Preserve each logical listener's hostname-to-certificate association when several HTTPS listeners share a port. Verify overlapping SANs and exact and wildcard precedence before proposing explicit SNI selectors. |
+| L7 expression limits | Conditional extension. | Establish concrete Gateway API inputs that cannot be represented within current key/value and rule-count limits. Change only the API, storage, and driver limits needed by those proofs, including encoded or escaped length. |
+
+The ordering work follows from Octavia's documented [REJECT, redirect, and forwarding precedence](https://docs.openstack.org/octavia/latest/user/guides/l7.html#policy-position).
+The backend selection proof uses the [single redirect pool](https://docs.openstack.org/api-ref/load-balancer/v2/index.html#create-an-l7-policy) and existing [member weights](https://docs.openstack.org/api-ref/load-balancer/v2/index.html#create-member).
+For expression limits, compare the [L7 request types](https://github.com/openstack/octavia/blob/19.0.0/octavia/api/v2/types/l7rule.py) and [database columns](https://github.com/openstack/octavia/blob/19.0.0/octavia/db/models.py) with the exact generated representation before proposing a limit increase.
+
+Propose the action-order contract before building separate header, redirect, and response implementations around incompatible execution phases.
+Review weighted selection independently, then verify its interaction with error responses.
+Under the [Octavia contribution process](https://docs.openstack.org/octavia/latest/contributor/contributing.html#new-feature-planning), discuss larger ordering and backend-selection changes as design proposals, and scope smaller additions with the maintainers.
+This is a proposed review sequence, not an upstream-approved plan.
+Keep each functional change reviewable with its API documentation and focused tests, with octavia-lib or client support in companion reviews when required.
+Library releases and the matching Amphora build are integration dependencies, not additional features.
+
+Existing member registration, ordinary listener and pool creation, hostname and exact header matching, fixed-host redirects, and basic TLS termination do not each need a new Octavia feature.
+Their missing controller mapping and lifecycle work stays in this repository, while general SNI selection needs the proof above.
+
 ## Phase 4 proof cases
 
 API and model checks precede live proofs.
@@ -123,10 +172,32 @@ The [Secret creation API](https://docs.openstack.org/barbican/latest/api/referen
 If creation succeeds but its response is lost before ownership metadata or the returned ID is persisted, recovery lacks a complete identity with which to authorize mutation or deletion.
 A durable intent or an idempotency token alone does not establish that identity.
 
-Investigate a mechanism that records the complete ownership identity atomically with creation and permits scoped discovery, duplicate rejection, and safe retry.
-Determine whether an existing API mechanism can meet that contract before proposing a Barbican extension for atomic metadata creation and recovery.
-Do not treat a name, creator ID, ACL, or cached reference as the missing proof.
-Using one PKCS12 Secret reduces the number of creation boundaries but does not remove this failure window.
+Two ownership mechanisms remain under review:
+
+| Candidate | Existing support | Remaining proof or implementation |
+| --- | --- | --- |
+| Structured ownership inside the PKCS12 payload | Standard bag attributes can carry the full identity in the same payload as the certificate. Octavia's existing PKCS12 consumer can extract the certificate and key from such a bundle. | Select a maintained Go codec API for writing and reading the attribute, review payload-read permissions, and verify discovery and recovery through Barbican and Amphora. |
+| Initial user metadata in Secret creation | The old approved [Barbican metadata design](https://specs.openstack.org/openstack/barbican-specs/specs/mitaka/add-user-metadata.html#rest-api-impact) includes metadata in POST, but the reviewed current [creation handler](https://github.com/openstack/barbican/blob/master/barbican/api/controllers/secrets.py) and [Secret model](https://github.com/openstack/barbican/blob/master/barbican/model/models.py) do not implement that storage path. | Confirm the design and implementation gap with maintainers, then add transactional initial metadata, validation, tests, and API documentation if this mechanism is selected. |
+
+The payload candidate follows [PKCS12 bag attributes](https://www.rfc-editor.org/rfc/rfc7292.html#section-4.2) and the [serialization API](https://cryptography.io/en/latest/hazmat/primitives/asymmetric/serialization/#pkcs12).
+Octavia already supplies a friendly name when [creating PKCS12 data](https://github.com/openstack/octavia/blob/19.0.0/octavia/certificates/manager/barbican.py), while its [consumer](https://github.com/openstack/octavia/blob/19.0.0/octavia/certificates/common/pkcs12.py) extracts the certificate and key without using that name for routing.
+Local experiments with synthetic certificates retained a structured ownership attribute and passed certificate/key extraction through the Octavia consumer and Go decoder.
+These checks establish file-format compatibility only, not Barbican storage, recovery, access control, or real TLS traffic.
+The reviewed [Go PKCS12 library](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) does not expose the required attribute round trip through its normal certificate-and-key encode/decode API.
+Prefer a maintained library enhancement over shipping the experimental ASN.1 manipulation or using deprecated conversion functions.
+
+For this candidate, the Barbican name only narrows discovery.
+The controller would validate the complete project, cluster, controller, Gateway, role, and certificate-revision identity from the payload, not infer ownership from the name or a shared certificate fingerprint.
+Payload access, bounded decoding, marker integrity, duplicate detection, and project-scoped pagination need separate verification.
+The [proposed certificate lifecycle](adr/0005-core-resource-mapping.md#references-and-certificates) defines the recovery cases before enabling either mechanism.
+
+Barbican server changes are therefore conditional, not a prerequisite established by the current evidence.
+If initial user metadata is selected, the smallest useful server review covers atomic Secret and metadata persistence, rollback, permission and quota validation, and compatibility with requests that omit metadata.
+Test creation-response loss followed by project-scoped rediscovery and exact identity checks.
+A client-library change can follow separately.
+Metadata filtering is a possible discovery optimization, and general idempotency keys or client-assigned UUIDs are separate proposals, not requirements to bundle into this first review.
+Initial metadata makes ownership discoverable but does not by itself make repeated POST requests idempotent.
+
 Rotation must also account for [immutable Secret payloads](https://docs.openstack.org/api-guide/key-manager/secrets.html#single-step-secret-creation) by creating and switching to a new revision before retiring an unreferenced owned revision.
 
 Octavia supports operator-configured [certificate managers](https://docs.openstack.org/octavia/latest/configuration/configref.html#certificates), including a Castellan integration.

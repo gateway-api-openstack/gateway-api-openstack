@@ -23,11 +23,11 @@ This project does not adopt or migrate its resources.
 - Existing OpenStack resources are not adopted.
 - Unsupported or unrepresentable behavior is rejected through status.
 
-The current profile supports one HTTP listener, one selected HTTPRoute in the Gateway namespace, one rule, and one Service backend in the route namespace.
-It supports an exact hostname with Exact or PathPrefix matching.
+The current profile supports multiple valid HTTP listeners and one selected HTTPRoute per Gateway, with one rule and one Service backend.
+It supports multiple parent Gateways, namespace-based attachment, authorized cross-namespace Service references, exact and wildcard hostnames, Exact or PathPrefix paths, and exact header matches.
 NodePort is the default member mode.
 The opt-in IPv4 Endpoint implementation awaits live network validation under [ADR 0007](adr/0007-direct-endpoint-members.md).
-Multiple listeners, multiple desired routes, TLS, cross-namespace forwarding, requested addresses, and backend policies remain unsupported.
+Concurrent routes, multiple rules, TLS, requested addresses, and backend policies remain unsupported in the deployed path.
 
 ## Design principles
 
@@ -66,7 +66,7 @@ An exact match with `GatewayClass.spec.controllerName` permits new provisioning.
 Ownership of a Kubernetes resource covers only this controller's finalizers, binding annotations, and status fields.
 Other controllers' fields and HTTPRoute parent status entries are preserved.
 
-The cloud graph contains the Gateway's load balancer, listener, optional Floating IP, and route pools, members, health monitors, L7 policies, and L7 rules.
+The cloud graph contains the Gateway's load balancer, listeners, optional Floating IP, and route pools, members, health monitors, L7 policies, and L7 rules.
 A resource that stops selecting this controller remains its cleanup responsibility when a durable finalizer or binding records prior ownership.
 That responsibility permits cleanup of the recorded graph, not provisioning for the new controller.
 
@@ -93,8 +93,8 @@ Ownership of a security group alone is insufficient authority to change a port.
 | OpenStackGatewayClassConfig | Resolved topology and class health defaults | Cluster-scoped `gateway-api-openstack.github.io/v1alpha1`. |
 | Gateway | Amphora load balancer | One per Gateway. |
 | Gateway address | Allocated Floating IP or load balancer VIP | Existing addresses are not adopted, and requested Gateway addresses are unsupported. |
-| Listener | HTTP listener | One listener. Terminated HTTPS remains planned. |
-| HTTPRoute rule and match | Pool, ordered L7 policies, and conjunctive rules | One selected route, rule, and backend with exact hostname and path matching. |
+| Listener | One HTTP listener per protocol and port | Logical listeners retain separate hostname constraints and status. Terminated HTTPS remains planned. |
+| HTTPRoute rule and match | Pool per rule, ordered L7 policies per match, and conjunctive rules | One selected Route per Gateway, with one rule and backend. Multiple match and hostname alternatives are supported. |
 | NodePort mode | Members on eligible worker Node addresses and NodePorts | Requires a NodePort Service. |
 | Endpoint mode | Members on resolved EndpointSlice addresses and ports | Opt-in IPv4 development mode with no verified cloud environment. |
 | Class health settings | HTTP health monitor for the route pool | Backend-specific policy is deferred. |
@@ -111,6 +111,8 @@ Pools are not shared across Gateways.
 
 Ownership uses the authenticated project, stable cluster ID, controller identity, Gateway namespace, name and UID, and resource role.
 Route resources also contain the HTTPRoute namespace, name and UID.
+Canonical child keys distinguish physical listeners, rule pools, matches, hostname alternatives, and predicates within that identity.
+The [HTTP mapping in ADR 0005](adr/0005-core-resource-mapping.md#listener-and-route-mapping) defines those keys and their validation.
 The release version is trace metadata, so an ordinary version change does not make an owned resource foreign.
 
 For every mutation plan, the adapter discovers resources within the authenticated project, rejects duplicate candidates, validates the complete identity, and checks surrounding dependencies.
@@ -143,18 +145,34 @@ The controller never uses an unvalidated cascade.
 
 `internal/controller/model` compiles supplied Kubernetes observations without API calls or cloud mutations.
 It retains logical listeners, parent attachments, ordered HTTP matches, source object revisions, and Service backend groups with their weights and endpoint observations.
+It also preserves Core request header operations and redirects in filter order, including omitted redirect fields that depend on the incoming request.
 Invalid references and unsupported rules remain explicit diagnostics, so a consumer cannot discard their traffic shares or silently forward their requests to a broader route.
 Endpoint conditions describe Kubernetes observations, not Amphora health or network reachability.
+
+For supplied HTTPS inputs, the compiler checks Gateway-to-Secret grants before validating the Secret type, certificate chain, and private key agreement.
+The compiled listener retains only the Secret identity and revision, without certificate or key payloads.
+Gateway reconciliation watches Secret metadata and indexes certificate references.
+It reads individual payloads through the uncached reader after validating live controller ownership and any required ReferenceGrant.
+Rotation, deletion, and grant changes update listener diagnostics without storing payloads in the cache, bindings, or status.
+Certificate publication and TLS programming remain disabled.
 
 Both member modes use the model's normalized match and selected Service port, reusing the same EndpointSlice observation for member selection.
 The graph source collects backend inputs for its complete current route inventory and compiles them once per observation.
 Service and EndpointSlice reads are shared across rules and routes, while backend weights, authorization results, and diagnostics remain separate.
 Cross-namespace targets are read only when an observed ReferenceGrant permits at least one referring route.
 Namespace labels are collected when listener attachment uses a namespace selector.
-The current single-route selection then chooses the portion eligible for cloud programming without dropping any of that route's rules or backend groups.
-The compiler can evaluate multiple HTTP listeners, routes, parents, and backend groups in local tests, while the deployed path retains the current profile's restrictions.
-Enabling those configurations still requires the physical mappings, complete live inventory, and durable parent bindings described in [ADR 0005](adr/0005-core-resource-mapping.md).
-The compiler does not assign cloud resource identities, choose a pool layout, or authorize cleanup.
+The current single-route selection chooses the eligible Route without discarding unsupported rules or backend groups from validation.
+The HTTP lowerer groups listeners by protocol and port, assigns typed child keys, and orders matches within each physical listener.
+It combines equivalent attachments without duplicating their cloud resources.
+This translation does not authorize cleanup, which requires observed cloud identity and durable bindings.
+
+The OpenStack adapter expands match priorities into contiguous policy positions, including each PathPrefix policy pair.
+Local tests cover multiple listeners, Routes, and rules, reordering, child replacement, and converged no-op behavior.
+The controller retains one selected Route per Gateway and one rule per Route because a missing backend must produce HTTP 500 without falling through to a broader match.
+The required response and action-ordering APIs remain unresolved under [ADR 0005](adr/0005-core-resource-mapping.md).
+Rejected listeners do not contribute physical listeners or forwarding matches.
+Valid listeners continue to reconcile, while conflicting listeners are all excluded rather than selecting a winner.
+A Gateway with no valid HTTP listeners follows the existing rejection and cleanup path.
 
 ### One writer for each Gateway
 
@@ -169,19 +187,22 @@ Route cleanup preserves the Gateway component and deletes only exact detaching f
 Whole-Gateway cleanup may remove the entire graph after validation.
 A preserved fragment cannot authorize restoring disabled parent traffic.
 
-The route source lists the Gateway namespace through the uncached reader, including bound routes whose ParentRef has disappeared and candidates that can affect selection.
+The route source lists HTTPRoutes across all namespaces through the uncached reader, including current parent references, bindings whose ParentRef has disappeared, and candidates that can affect selection.
 It repeats that inventory before mutation and checks route UIDs and resource versions, then validates the required object revisions, bindings, finalizers, lifecycle, ownership, and API version.
 It also reobserves backend dependencies once per graph to detect replacement objects, changed EndpointSlice membership, and revised reference permissions.
 Binding creation performs the same inventory and dependency checks before persisting ownership.
 Cleanup requests rely on durable bindings and do not require Service, EndpointSlice, or ReferenceGrant reads.
 These checks detect observed changes without claiming an atomic Kubernetes snapshot.
 Cached indexes drive event mapping, not proof of inventory completeness.
-Collecting an authorized backend in another namespace does not expand the route inventory or enable cross-namespace provisioning.
 
-Bound routes require an explicit `Attached` or `Detaching` marker.
-The route reconciler makes the applicable status and cleanup checkpoint durable before changing the marker to `Detaching`.
-That state survives restart and later spec changes until the owned fragment is absent and its binding can be cleared.
-Missing or invalid lifecycle markers block graph work.
+An HTTPRoute stores a typed binding list keyed by Gateway UID, with an explicit `Attached` or `Detaching` state for each entry.
+The reconciler persists the applicable status and cleanup checkpoint before marking an entry `Detaching`.
+It removes that entry only after its exact fragment is absent, preserving other Gateway bindings, finalizers, and parent status entries.
+Malformed or conflicting bindings block graph work.
+
+Before replacing listener resources, Gateway reconciliation persists a pending status for the evaluated generation and returns.
+The writer checks that checkpoint before mutation, including when an HTTPRoute triggers reconciliation.
+Listener replacement preserves the load balancer, frozen topology, and unrelated listener resources.
 
 A missing Gateway does not erase an HTTPRoute's durable cleanup identity.
 A detaching route can still remove its exact child graph with `Gateway=Preserve`.
@@ -277,13 +298,15 @@ PathPrefix `/foo` needs an exact `/foo` policy and a `/foo/` prefix policy so th
 
 The [conformance guide](../testing-conformance.md) records current Core gaps.
 The [feasibility assessment](conformance-feasibility.md) identifies Octavia API blockers and designs needed for the broader compiler.
-The accepted [Core model boundaries](adr/0006-core-model-boundaries.md) guide the next implementation, while the proposed [Core mapping ADR](adr/0005-core-resource-mapping.md) retains the unresolved physical mappings.
+The accepted [Core model boundaries](adr/0006-core-model-boundaries.md) and [HTTP mapping scope](adr/0005-core-resource-mapping.md#accepted-development-scope) guide implementation.
+The remaining sections of the Core mapping ADR retain unresolved action, backend, and certificate designs.
 
 Kubernetes TLS Secrets are the planned default certificate source, but stock Amphora still requires cloud key manager references.
 Managed publication requires a certificate identity and lifecycle design, including rotation, rollback, SNI, and safe deletion.
 Optional operator-managed certificate references remain a separate proposal and would not transfer certificate ownership to this controller.
 The [certificate assessment](conformance-feasibility.md#certificate-transport-and-ownership) describes these paths and their limits.
-Cross-namespace Service or Secret references also require ReferenceGrant implementation.
+Service and certificate references use ReferenceGrant authorization.
+Certificate collection currently supplies diagnostics only, so it cannot authorize a TLS listener or Barbican resource.
 An HTTP-only deployment does not need Barbican.
 
 ## Failure and recovery
@@ -373,7 +396,7 @@ The following boundaries remain open:
 - per-Gateway infrastructure parameters and merge semantics
 - managed changes to worker security groups
 - shared resource identity, reference counting, and uninstall behavior
-- listener grouping, multiple routes, and global precedence
+- activation of concurrent routes and rules, partial validity, and ordering across different HTTP actions
 - weighted and invalid backend behavior
 - Barbican identity, certificate rotation, and rollback
 - the backend policy API, whole-Service and port overlap, and conflict status

@@ -35,9 +35,10 @@ The [architecture](docs/design/architecture.md) defines ownership, resource mapp
 
 The controller uses Gateway API v1.6.1 Standard Channel and supports:
 
-- One HTTP listener and one selected HTTPRoute in the Gateway namespace
-- One rule, one backend Service, and Exact or PathPrefix matching
-- At most one exact route hostname
+- Multiple HTTP listeners, grouped by protocol and port in Octavia, with valid listeners preserved when a sibling is rejected
+- One selected HTTPRoute per Gateway, with multiple parent Gateways and listener attachments
+- One rule and backend Service, with multiple matches, exact or wildcard hostnames, Exact or PathPrefix paths, and exact headers
+- Namespace-based Route attachment and ReferenceGrant-authorized Service references
 - Eligible worker NodePort members with Local or Cluster traffic policy
 - An opt-in IPv4 Endpoint mode for ClusterIP, headless, and NodePort Services, pending live network validation
 - Typed GatewayClass configuration with topology settings fixed for each Gateway
@@ -47,13 +48,16 @@ The controller uses Gateway API v1.6.1 Standard Channel and supports:
 - Ownership validation, restart recovery, and ordered cleanup
 
 The [class configuration reference](docs/reference/class-configuration.md) describes member modes and their network prerequisites.
-Multiple listeners and routes, HTTPS, and cross-namespace forwarding remain unimplemented.
+Concurrent routes and multiple rules remain disabled until the required backend error responses and action ordering can be represented safely.
+TLS Secret references are observed and validated, but certificate publication and HTTPS programming remain unimplemented.
+Weighted backends and HTTP filters also remain unimplemented in the deployed path.
 OVN, non-HTTP Route kinds, existing resource adoption, and proxy data planes are outside the current product scope.
 
 ## Development status
 
 Phase 4 connectivity features are implemented, with live validation and Core design work remaining.
-Phase 5 includes the logical HTTP model, shared backend input collection, reference watches, and local Endpoint mode implementation.
+Phase 5 includes the logical HTTP model, shared backend input collection, reference watches, HTTP listener mapping, Gateway-specific Route bindings, and local Endpoint mode implementation.
+The expanded HTTP mapping has local tests and awaits live traffic validation.
 See the [compatibility record](docs/providers/compatibility.md) for completed checks and outstanding evidence.
 Development results do not establish general OpenStack support or Gateway API conformance.
 
