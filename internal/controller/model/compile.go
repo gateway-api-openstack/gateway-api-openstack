@@ -32,7 +32,7 @@ func Compile(input Input) (Gateway, error) {
 	if input.Gateway == nil {
 		return Gateway{}, errors.New("gateway input is required")
 	}
-	result := Gateway{Source: source(input.Gateway), Listeners: compileListeners(input.Gateway)}
+	result := Gateway{Source: source(input.Gateway), Listeners: compileListeners(input)}
 	if input.Gateway.Spec.AllowedListeners != nil || input.Gateway.Spec.TLS != nil {
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{
 			Condition: string(gatewayv1.GatewayConditionAccepted), Reason: string(gatewayv1.GatewayReasonInvalidParameters),
@@ -77,7 +77,8 @@ func Compile(input Input) (Gateway, error) {
 	return result, nil
 }
 
-func compileListeners(gateway *gatewayv1.Gateway) []Listener {
+func compileListeners(input Input) []Listener {
+	gateway := input.Gateway
 	result := make([]Listener, 0, len(gateway.Spec.Listeners))
 	for _, listener := range gateway.Spec.Listeners {
 		compiled := Listener{Name: listener.Name, Port: listener.Port, Protocol: listener.Protocol}
@@ -85,12 +86,12 @@ func compileListeners(gateway *gatewayv1.Gateway) []Listener {
 			compiled.Hostname = string(*listener.Hostname)
 		}
 		switch {
-		case listener.Protocol != gatewayv1.HTTPProtocolType:
+		case listener.Protocol != gatewayv1.HTTPProtocolType && listener.Protocol != gatewayv1.HTTPSProtocolType:
 			compiled.Diagnostics = append(compiled.Diagnostics, Diagnostic{
 				Condition: string(gatewayv1.ListenerConditionAccepted), Reason: string(gatewayv1.ListenerReasonUnsupportedProtocol),
-				Message: "only HTTP listeners can be resolved without certificate inputs",
+				Message: "only HTTP and terminated HTTPS listeners are implemented by the logical compiler",
 			})
-		case listener.TLS != nil:
+		case listener.Protocol == gatewayv1.HTTPProtocolType && listener.TLS != nil:
 			compiled.Diagnostics = append(compiled.Diagnostics, Diagnostic{
 				Condition: string(gatewayv1.ListenerConditionAccepted), Reason: string(gatewayv1.ListenerReasonUnsupportedValue),
 				Message: "TLS configuration is unsupported on an HTTP listener",
@@ -100,6 +101,13 @@ func compileListeners(gateway *gatewayv1.Gateway) []Listener {
 				Condition: string(gatewayv1.ListenerConditionAccepted), Reason: string(gatewayv1.ListenerReasonPortUnavailable),
 				Message: "listener port must be between 1 and 65535",
 			})
+		}
+		if listener.Protocol == gatewayv1.HTTPSProtocolType && len(compiled.Diagnostics) == 0 {
+			var diagnostic *Diagnostic
+			compiled.TLS, diagnostic = resolveListenerTLS(gateway.Namespace, listener, input.Secrets, input.ReferenceGrants)
+			if diagnostic != nil {
+				compiled.Diagnostics = append(compiled.Diagnostics, *diagnostic)
+			}
 		}
 		if listener.AllowedRoutes != nil {
 			for _, kind := range listener.AllowedRoutes.Kinds {
@@ -116,21 +124,29 @@ func compileListeners(gateway *gatewayv1.Gateway) []Listener {
 	}
 	// Only supported protocols participate in conflicts. In particular, an
 	// unsupported TCP listener cannot displace HTTP on the same port.
-	// Exact and wildcard hostnames may overlap, but identical HTTP hostnames
-	// on the same port conflict regardless of input order or TLS configuration.
+	// Exact and wildcard hostnames may overlap. Incompatible protocols or
+	// identical hostnames on the same port conflict regardless of input order.
 	for i := range result {
-		if result[i].Protocol != gatewayv1.HTTPProtocolType {
+		if !httpProtocol(result[i].Protocol) {
 			continue
 		}
 		for j := i + 1; j < len(result); j++ {
-			if result[j].Protocol != gatewayv1.HTTPProtocolType || result[i].Port != result[j].Port {
+			if !httpProtocol(result[j].Protocol) || result[i].Port != result[j].Port {
 				continue
 			}
-			if result[i].Hostname == result[j].Hostname {
-				diagnostic := Diagnostic{Condition: string(gatewayv1.ListenerConditionConflicted), Reason: string(gatewayv1.ListenerReasonHostnameConflict), Message: "HTTP listeners on the same port have identical hostnames"}
-				result[i].Diagnostics = append(result[i].Diagnostics, diagnostic)
-				result[j].Diagnostics = append(result[j].Diagnostics, diagnostic)
+			diagnostic := Diagnostic{Condition: string(gatewayv1.ListenerConditionConflicted)}
+			switch {
+			case result[i].Protocol != result[j].Protocol:
+				diagnostic.Reason = string(gatewayv1.ListenerReasonProtocolConflict)
+				diagnostic.Message = "HTTP and HTTPS listeners cannot share a port"
+			case result[i].Hostname == result[j].Hostname:
+				diagnostic.Reason = string(gatewayv1.ListenerReasonHostnameConflict)
+				diagnostic.Message = "listeners on the same port have identical hostnames"
+			default:
+				continue
 			}
+			result[i].Diagnostics = append(result[i].Diagnostics, diagnostic)
+			result[j].Diagnostics = append(result[j].Diagnostics, diagnostic)
 		}
 	}
 	for i := range result {
@@ -140,6 +156,10 @@ func compileListeners(gateway *gatewayv1.Gateway) []Listener {
 		result[i].Diagnostics = slices.Compact(result[i].Diagnostics)
 	}
 	return result
+}
+
+func httpProtocol(protocol gatewayv1.ProtocolType) bool {
+	return protocol == gatewayv1.HTTPProtocolType || protocol == gatewayv1.HTTPSProtocolType
 }
 
 func compileRoute(route *gatewayv1.HTTPRoute, input Input) Route {
@@ -155,16 +175,12 @@ func compileRoute(route *gatewayv1.HTTPRoute, input Input) Route {
 	supportedRules := 0
 	for i, rule := range route.Spec.Rules {
 		compiled := Rule{Index: i, Backends: ResolveBackends(route, rule, input)}
-		if rule.Name != nil || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
+		if !RuleOptionsSupported(rule) {
 			compiled.Diagnostics = append(compiled.Diagnostics, *unsupported("named rules, timeouts, retries, and session persistence are not implemented", ScopeRule))
 		}
-		for _, filter := range rule.Filters {
-			scope := ScopeRule
-			if !knownFilter(filter.Type) {
-				scope = ScopeRoute
-			}
-			compiled.Diagnostics = append(compiled.Diagnostics, *unsupported(fmt.Sprintf("HTTPRoute filter %s requires an explicit action model before lowering", filter.Type), scope))
-		}
+		filters, diagnostics := compileFilters(rule)
+		compiled.Filters = filters
+		compiled.Diagnostics = append(compiled.Diagnostics, diagnostics...)
 		for _, backend := range rule.BackendRefs {
 			if len(backend.Filters) != 0 {
 				compiled.Diagnostics = append(compiled.Diagnostics, *unsupported("backendRef filters are not implemented", ScopeRule))
@@ -198,6 +214,12 @@ func compileRoute(route *gatewayv1.HTTPRoute, input Input) Route {
 		result.Diagnostics = append(result.Diagnostics, *unsupported("HTTPRoute has no supported rules", ScopeRoute))
 	}
 	return result
+}
+
+// RuleOptionsSupported is the shared rule-option boundary for the logical model
+// and runtime admission. Filters, matches, and backend limits are checked separately.
+func RuleOptionsSupported(rule gatewayv1.HTTPRouteRule) bool {
+	return rule.Name == nil && rule.Timeouts == nil && rule.Retry == nil && rule.SessionPersistence == nil
 }
 
 func knownFilter(kind gatewayv1.HTTPRouteFilterType) bool {

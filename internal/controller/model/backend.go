@@ -97,21 +97,30 @@ func BackendServiceReference(namespace string, reference gatewayv1.BackendObject
 // BackendReferenceAllowed checks Service reference authorization against observed grants.
 // It performs no reads and does not confer ownership of the referenced Service.
 func BackendReferenceAllowed(namespace string, target types.NamespacedName, grants []gatewayv1.ReferenceGrant) bool {
-	if namespace == target.Namespace {
+	return referenceAllowed(namespace, "HTTPRoute", gatewayv1.ObjectReference{
+		Kind: "Service", Name: gatewayv1.ObjectName(target.Name), Namespace: ptr.To(gatewayv1.Namespace(target.Namespace)),
+	}, grants)
+}
+
+// referenceAllowed checks the source and target independently of whether the
+// referenced object exists. Authorization must precede reads of its contents.
+func referenceAllowed(namespace string, sourceKind gatewayv1.Kind, target gatewayv1.ObjectReference, grants []gatewayv1.ReferenceGrant) bool {
+	targetNamespace := string(ptr.Deref(target.Namespace, gatewayv1.Namespace(namespace)))
+	if namespace == targetNamespace {
 		return true
 	}
 	for _, grant := range grants {
-		if grant.Namespace != target.Namespace || !grant.DeletionTimestamp.IsZero() {
+		if grant.Namespace != targetNamespace || !grant.DeletionTimestamp.IsZero() {
 			continue
 		}
 		fromAllowed := slices.ContainsFunc(grant.Spec.From, func(from gatewayv1.ReferenceGrantFrom) bool {
-			return from.Group == gatewayv1.GroupName && from.Kind == "HTTPRoute" && string(from.Namespace) == namespace
+			return from.Group == gatewayv1.GroupName && from.Kind == sourceKind && string(from.Namespace) == namespace
 		})
 		if !fromAllowed {
 			continue
 		}
 		if slices.ContainsFunc(grant.Spec.To, func(to gatewayv1.ReferenceGrantTo) bool {
-			return to.Group == "" && to.Kind == "Service" && (to.Name == nil || string(*to.Name) == target.Name)
+			return to.Group == target.Group && to.Kind == target.Kind && (to.Name == nil || *to.Name == target.Name)
 		}) {
 			return true
 		}
