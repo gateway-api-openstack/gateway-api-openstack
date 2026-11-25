@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -45,13 +46,30 @@ func TestDeleteMarkedAndWaitUsesRunMarkerAndUID(t *testing.T) {
 		UID:         routeUID,
 		Annotations: map[string]string{runAnnotation: "run-1234"},
 	}}
+	deleteCalls := 0
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, kubeClient client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+			deleteCalls++
+			if client.ObjectKeyFromObject(object) != client.ObjectKeyFromObject(route) {
+				t.Fatalf("delete object = %s, want %s", client.ObjectKeyFromObject(object), client.ObjectKeyFromObject(route))
+			}
+			deleteOptions := (&client.DeleteOptions{}).ApplyOptions(options)
+			if deleteOptions.Preconditions == nil || deleteOptions.Preconditions.UID == nil || *deleteOptions.Preconditions.UID != routeUID {
+				t.Fatalf("delete preconditions = %#v, want UID %q", deleteOptions.Preconditions, routeUID)
+			}
+			return kubeClient.Delete(ctx, object, options...)
+		},
+	}).Build()
 	suite := &openStackSuite{
-		client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build(),
+		client: kubeClient,
 		config: e2eConfig{RunID: "run-1234", PollInterval: time.Millisecond},
 	}
 	object := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "e2e", Name: routeName}}
 	if err := suite.deleteMarkedAndWait(context.Background(), object, &routeUID); err != nil {
 		t.Fatalf("deleteMarkedAndWait() error = %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("Delete() calls = %d, want 1", deleteCalls)
 	}
 	if err := suite.client.Get(context.Background(), client.ObjectKeyFromObject(route), &gatewayv1.HTTPRoute{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("deleted HTTPRoute Get() error = %v, want NotFound", err)

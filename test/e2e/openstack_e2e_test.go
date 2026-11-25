@@ -92,6 +92,9 @@ type openStackSuite struct {
 	gatewayClassUID         types.UID
 	gatewayUID              types.UID
 	routeUID                types.UID
+	routingNamespaceUID     types.UID
+	routingNamespaceCreated bool
+	crossRouteUID           types.UID
 }
 
 type leaseState struct {
@@ -241,6 +244,8 @@ func (s *openStackSuite) checkRunners() map[string]func(context.Context) error {
 		checkHTTPRoute:          s.createHTTPRoute,
 		checkActiveAudit:        s.verifyActiveOwnershipInventoryAudit,
 		checkTraffic:            s.verifyExternalTraffic,
+		checkHTTPRouting:        s.verifyHTTPRouting,
+		checkEndpointBackends:   s.verifyEndpointBackends,
 		checkReferencedSecurity: s.verifyReferencedSecurity,
 		checkFloatingIPRecovery: s.verifyFloatingIPRecovery,
 		checkFloatingIPDeletion: s.verifyFloatingIPDeletion,
@@ -519,6 +524,7 @@ func TestEveryConfiguredCheckHasRunner(t *testing.T) {
 	config := reportTestConfig(projectModeDedicated)
 	config.LocalLifecycle, config.MemberTransitions = true, true
 	config.FloatingIPRecovery, config.FloatingIPDeletion = true, true
+	config.HTTPRouting, config.EndpointBackends = true, true
 	config.Project.FrontendSecurityGroupIDs = []string{"test-group"}
 	suite := &openStackSuite{config: config}
 	runners := suite.checkRunners()

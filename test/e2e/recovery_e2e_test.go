@@ -506,6 +506,9 @@ func (s *openStackSuite) orderlyCleanup(ctx context.Context) error {
 	if err := s.waitForControllerHealthy(ctx); err != nil {
 		return fmt.Errorf("verify controller before finalizer-bound cleanup: %w", err)
 	}
+	if err := s.deleteCrossNamespaceRoute(ctx); err != nil {
+		return err
+	}
 	if err := s.deleteHTTPRoute(ctx); err != nil {
 		return err
 	}
@@ -516,6 +519,9 @@ func (s *openStackSuite) orderlyCleanup(ctx context.Context) error {
 		return err
 	}
 	if err := s.deleteSecondClass(ctx); err != nil {
+		return err
+	}
+	if err := s.deleteRoutingNamespace(ctx); err != nil {
 		return err
 	}
 	return s.deleteNamespace(ctx)
@@ -532,10 +538,12 @@ func (s *openStackSuite) ensureCleanup(ctx context.Context) error {
 		}
 	}
 	for _, cleanup := range []func(context.Context) error{
+		s.deleteCrossNamespaceRoute,
 		s.deleteHTTPRoute,
 		s.deleteGateway,
 		s.deleteGatewayClass,
 		s.deleteSecondClass,
+		s.deleteRoutingNamespace,
 		s.deleteNamespace,
 	} {
 		if err := cleanup(ctx); err != nil {

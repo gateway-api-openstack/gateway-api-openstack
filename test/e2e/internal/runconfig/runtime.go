@@ -29,12 +29,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	configv1alpha1 "github.com/gateway-api-openstack/gateway-api-openstack/api/v1alpha1"
 )
 
 const maximumRuntimeBytes = 1 << 20
 
 // Runtime is the validated, non-secret configuration passed to the live test process.
 type Runtime struct {
+	HTTPRouting                  bool                                `json:"httpRouting,omitempty"`
+	EndpointBackends             bool                                `json:"endpointBackends,omitempty"`
+	BackendMemberMode            configv1alpha1.MemberMode           `json:"backendMemberMode,omitempty"`
 	FormatVersion                string                              `json:"formatVersion"`
 	RunID                        string                              `json:"runID"`
 	Namespace                    string                              `json:"namespace"`
@@ -111,6 +116,7 @@ func (c Runtime) Validate() error {
 		c.validateLocalLifecycle,
 		c.validateMemberTransitions,
 		c.validateNetworkScenarios,
+		c.validateHTTPScenarios,
 		c.validateSharedNetworkTests,
 	} {
 		if err := validate(); err != nil {
@@ -218,7 +224,7 @@ func (c Runtime) validateArtifacts() error {
 	if c.BackendReplicas != 1 && c.BackendReplicas != 2 {
 		return fmt.Errorf("backend.replicas must be 1 or 2")
 	}
-	return validateBackendProfile(c.BackendExternalTrafficPolicy, c.BackendNodeSelector, c.Project.Mode, c.Project.AllowSharedNetworkTests)
+	return validateBackendMode(c.BackendMemberMode, c.BackendExternalTrafficPolicy, c.BackendNodeSelector, c.Project.Mode, c.Project.AllowSharedNetworkTests)
 }
 
 func (c Runtime) validateLocalLifecycle() error {

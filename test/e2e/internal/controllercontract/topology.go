@@ -32,6 +32,7 @@ const ClassConfigCRDName = "openstackgatewayclassconfigs." + configv1alpha1.Grou
 
 // TopologySettings contains existing infrastructure approved for one E2E run.
 type TopologySettings struct {
+	MemberMode               configv1alpha1.MemberMode
 	VIPSubnetID              string
 	MemberSubnetID           string
 	ExternalNetworkID        string
@@ -41,6 +42,10 @@ type TopologySettings struct {
 
 // ClassConfig builds the run-scoped class parameters without cloud lookups.
 func (s TopologySettings) ClassConfig(name, runID string) *configv1alpha1.OpenStackGatewayClassConfig {
+	memberMode := s.MemberMode
+	if memberMode == "" {
+		memberMode = configv1alpha1.MemberModeNodePort
+	}
 	floatingIP := configv1alpha1.FloatingIPConfig{Mode: configv1alpha1.FloatingIPNone}
 	if s.ExternalNetworkID != "" {
 		floatingIP.Mode = configv1alpha1.FloatingIPAllocate
@@ -50,7 +55,8 @@ func (s TopologySettings) ClassConfig(name, runID string) *configv1alpha1.OpenSt
 		TypeMeta:   metav1.TypeMeta{APIVersion: configv1alpha1.GroupVersion.String(), Kind: configv1alpha1.GatewayClassConfigKind},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{RunAnnotation: runID}},
 		Spec: configv1alpha1.OpenStackGatewayClassConfigSpec{
-			VIPSubnet: configv1alpha1.ResourceReference{ID: s.VIPSubnetID}, MemberSubnet: configv1alpha1.ResourceReference{ID: s.MemberSubnetID},
+			MemberMode: memberMode,
+			VIPSubnet:  configv1alpha1.ResourceReference{ID: s.VIPSubnetID}, MemberSubnet: configv1alpha1.ResourceReference{ID: s.MemberSubnetID},
 			FloatingIP: floatingIP, NodeAddressType: "InternalIP",
 			FrontendSecurity: configv1alpha1.FrontendSecurityConfig{Mode: configv1alpha1.FrontendOctaviaManaged},
 			BackendSecurity:  configv1alpha1.BackendSecurityConfig{Mode: configv1alpha1.BackendUnmanaged},

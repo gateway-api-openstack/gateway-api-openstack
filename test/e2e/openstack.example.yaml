@@ -35,6 +35,8 @@ controller:
   image: registry.example.test/gateway-api-openstack/controller@sha256:<digest>
   sourceRevision: <git-commit>
 backend:
+  # Default memberMode is NodePort. Endpoint requires approved Pod routing and both cluster identity fields.
+  # memberMode: Endpoint
   image: registry.k8s.io/e2e-test-images/agnhost@sha256:<digest>
   # Replicas default to 2. Set 1 for a cluster with one eligible worker.
   # replicas: 1
@@ -64,3 +66,11 @@ backend:
 # Recurring validation requires an existing directory outside the checkout.
 # artifacts:
 #   root: /absolute/path/to/e2e-artifacts
+
+# Expanded HTTP checks reuse one LB and its existing port. They require both cluster identity fields.
+# scenarios:
+#   httpRouting: true
+# Endpoint checks require backend.memberMode: Endpoint. Omit externalTrafficPolicy and worker security groups.
+# They reuse existing backend Pods through ClusterIP, headless, and manual EndpointSlice Services.
+# scenarios:
+#   endpointBackends: true

@@ -86,6 +86,7 @@ func (s *openStackSuite) verifyRunScopedClassConfig(ctx context.Context) error {
 	wanted := s.classConfig
 	if wanted == nil {
 		wanted = controllercontract.TopologySettings{
+			MemberMode:               s.config.BackendMemberMode,
 			VIPSubnetID:              s.config.Project.ExpectedVIPSubnetID,
 			MemberSubnetID:           s.config.Project.ExpectedMemberSubnetID,
 			ExternalNetworkID:        s.config.Project.ExpectedExternalNetworkID,

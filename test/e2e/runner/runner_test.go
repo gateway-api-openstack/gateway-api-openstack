@@ -501,6 +501,12 @@ func TestInstallAndRemoveControllerPreservesSourceIdentityAndOrder(t *testing.T)
 	if strings.Join(kubeClient.deletes, ",") != strings.Join(wantDeletes, ",") {
 		t.Fatalf("delete order = %#v", kubeClient.deletes)
 	}
+	for _, object := range installed.objects {
+		key := recordingObjectKey(object.object)
+		if uid := kubeClient.deleteUIDs[key]; uid != object.uid {
+			t.Errorf("delete precondition for %s = %q, want UID %q", key, uid, object.uid)
+		}
+	}
 }
 
 func TestPartialInstallFailsClosedWhenCreateOutcomeIsNotVisible(t *testing.T) {
@@ -588,24 +594,7 @@ func TestPartialInstallRollsBackObjectCreatedAfterLostResponse(t *testing.T) {
 }
 
 func TestInstallationCleanupRefusesChangedIdentity(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := loadBaseObjects(testRepositoryRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, configv1alpha1.AddToScheme} {
-		if err := install(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
+	config, objects, scheme := controllerInstallFixture(t)
 	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	installed, err := installController(context.Background(), kubeClient, objects, config)
 	if err != nil {
@@ -627,24 +616,7 @@ func TestInstallationCleanupRefusesChangedIdentity(t *testing.T) {
 }
 
 func TestInstallationCleanupValidatesLaterObjectBeforeAnyDelete(t *testing.T) {
-	config, err := resolveFileConfig(validFileConfig(), resolveOptions{repositoryRoot: testRepositoryRoot(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := loadBaseObjects(testRepositoryRoot(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	objects, err := buildControllerObjects(base, config, []byte("clouds: {}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheme := runtime.NewScheme()
-	for _, install := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, rbacv1.AddToScheme, configv1alpha1.AddToScheme} {
-		if err := install(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
+	config, objects, scheme := controllerInstallFixture(t)
 	kubeClient := &recordingClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	installed, err := installController(context.Background(), kubeClient, objects, config)
 	if err != nil {
@@ -917,6 +889,7 @@ type recordingClient struct {
 	client.Client
 	creates                    []string
 	deletes                    []string
+	deleteUIDs                 map[string]types.UID
 	failCreateKind             string
 	failCreateAfterPersistKind string
 	failGetKind                string
@@ -998,6 +971,13 @@ func (c *recordingClient) Delete(ctx context.Context, object client.Object, opti
 		return err
 	}
 	c.deletes = append(c.deletes, objectKind(object))
+	deleteOptions := (&client.DeleteOptions{}).ApplyOptions(options)
+	if deleteOptions.Preconditions != nil && deleteOptions.Preconditions.UID != nil {
+		if c.deleteUIDs == nil {
+			c.deleteUIDs = make(map[string]types.UID)
+		}
+		c.deleteUIDs[recordingObjectKey(object)] = *deleteOptions.Preconditions.UID
+	}
 	return nil
 }
 
