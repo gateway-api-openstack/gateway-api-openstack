@@ -360,6 +360,6 @@ func (r *Reconciler) setRouteParentStatuses(ctx context.Context, route *gatewayv
 		kind:    routeStatusPlanReplace,
 		updates: append([]parentStatusUpdate(nil), updates...),
 	}
-	_, _, _, err := r.patchHTTPRouteStatus(ctx, route, plan)
+	_, err := r.patchHTTPRouteStatus(ctx, route, plan)
 	return err
 }

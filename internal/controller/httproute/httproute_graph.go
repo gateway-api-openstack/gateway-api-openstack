@@ -116,7 +116,23 @@ func (r *Reconciler) prepareRouteGraphBinding(ctx context.Context, route *gatewa
 		return routeBindingUnknown, fmt.Errorf("acquire Gateway graph: %w", err)
 	}
 	defer release()
-	snapshot, err := r.buildRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForEnsure)
+	snapshot, parent, err := r.observeRouteValidationSnapshot(ctx, route, gateway, routeSnapshotForEnsure)
+	if err != nil {
+		return routeBindingUnknown, err
+	}
+	if snapshot.disposition == routeValidationGatewayPending {
+		return routeBindingGatewayPending, nil
+	}
+
+	// An unchanged binding needs no checkpoint model. The writer rebuilds the
+	// complete graph under its lock and validates fresh inputs before mutation.
+	// Other bindings and status checkpoints keep the full validation order.
+	bound := snapshot
+	if err := r.finishRouteBindingSnapshot(&bound, routeSnapshotForEnsure); err == nil &&
+		bound.disposition == routeValidationReady && !routeProgrammedCheckpointNeeded(r.Config, snapshot.route, snapshot.gateway) {
+		return routeBindingReady, nil
+	}
+	snapshot, err = r.completeRouteValidationSnapshot(ctx, snapshot, parent, routeSnapshotForEnsure, nil)
 	if err != nil {
 		return routeBindingUnknown, err
 	}

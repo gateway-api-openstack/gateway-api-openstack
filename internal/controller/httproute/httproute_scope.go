@@ -54,6 +54,12 @@ type routeStatusPlan struct {
 	cleanupIdentity     cloud.Identity
 }
 
+type routeStatusPatchResult struct {
+	applied      bool
+	changed      bool
+	transitioned bool
+}
+
 type routeProviderWarning struct {
 	policy                 controller.ProviderFailurePolicy
 	action                 string
@@ -137,16 +143,16 @@ func (r *Reconciler) patchHTTPRoute(ctx context.Context, scope *httpRouteScope) 
 	if scope.skipPatch {
 		return childErr
 	}
-	applied, changed, transitioned := true, false, false
+	patch := routeStatusPatchResult{applied: true}
 	if scope.statusPlan != nil {
 		var err error
-		applied, changed, transitioned, err = r.patchHTTPRouteStatus(ctx, scope.route, scope.statusPlan)
+		patch, err = r.patchHTTPRouteStatus(ctx, scope.route, scope.statusPlan)
 		if err != nil {
 			return errors.Join(childErr, fmt.Errorf("patch HTTPRoute status: %w", err))
 		}
 	}
-	if applied && scope.warning != nil &&
-		(scope.warning.cleanupCheckpointSaved || transitioned || scope.warning.recordOnStatusChange && changed) {
+	if patch.applied && scope.warning != nil &&
+		(scope.warning.cleanupCheckpointSaved || patch.transitioned || scope.warning.recordOnStatusChange && patch.changed) {
 		controller.RecordProviderWarning(r.Recorder, scope.route, scope.warning.policy, scope.warning.action)
 	}
 	return childErr
@@ -156,12 +162,12 @@ func (r *Reconciler) patchHTTPRouteStatus(
 	ctx context.Context,
 	route *gatewayv1.HTTPRoute,
 	plan *routeStatusPlan,
-) (applied, changed, transitioned bool, err error) {
+) (result routeStatusPatchResult, err error) {
 	key := client.ObjectKeyFromObject(route)
 	uid, generation := route.UID, route.Generation
 	isDeleting := !route.DeletionTimestamp.IsZero()
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		applied, changed, transitioned = false, false, false
+		result = routeStatusPatchResult{}
 		current := &gatewayv1.HTTPRoute{}
 		if err := r.routePatchReader().Get(ctx, key, current); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -188,14 +194,14 @@ func (r *Reconciler) patchHTTPRouteStatus(
 				// ParentStatus names a Gateway, not its UID. Keep the old graph's
 				// failure in its binding without changing its replacement's status.
 				*route = *current
-				applied = true
+				result.applied = true
 				return nil
 			}
 		}
 
 		base := current.DeepCopy()
-		transitioned = plan.apply(r.Config, current)
-		applied = true
+		result.transitioned = plan.apply(r.Config, current)
+		result.applied = true
 		if reflect.DeepEqual(base.Status, current.Status) {
 			*route = *current
 			return nil
@@ -203,12 +209,12 @@ func (r *Reconciler) patchHTTPRouteStatus(
 		if err := r.Status().Patch(ctx, current, controller.OptimisticMergeFrom(base)); err != nil {
 			return err
 		}
-		changed = true
+		result.changed = true
 		*route = *current
 		log.FromContext(ctx).V(1).Info("Updated HTTPRoute status")
 		return nil
 	})
-	return applied, changed, transitioned, err
+	return result, err
 }
 
 func (r *Reconciler) routeStatusCheckpointNeeded(
@@ -362,24 +368,12 @@ func (p *routeStatusPlan) apply(config controller.Config, route *gatewayv1.HTTPR
 }
 
 func applyRouteParentStatuses(config controller.Config, route *gatewayv1.HTTPRoute, updates []parentStatusUpdate) {
-	existing := append([]gatewayv1.RouteParentStatus(nil), route.Status.Parents...)
-	parents := make([]gatewayv1.RouteParentStatus, 0, len(existing)+len(updates))
-	for _, parent := range existing {
-		if retainParentStatus(config, route, parent, updates) {
-			parents = append(parents, parent)
-		}
-	}
-	for index, update := range updates {
-		if parentStatusUpdateAppearedEarlier(route.Namespace, updates, index) {
-			continue
-		}
-		parentStatus := routeParentStatus(route, config.ControllerName, existing, update.parent)
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(string(gatewayv1.RouteConditionAccepted), update.status.accepted, update.status.acceptedReason, update.status.acceptedMessage, route.Generation))
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(string(gatewayv1.RouteConditionResolvedRefs), update.status.resolved, update.status.resolvedReason, update.status.resolvedMessage, route.Generation))
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(config.Domain()+"/Programmed", update.status.programmed, update.status.programmedReason, update.status.programmedMessage, route.Generation))
-		parents = append(parents, parentStatus)
-	}
-	route.Status.Parents = preserveParentStatusOrder(route.Namespace, existing, parents)
+	mergeRouteParentStatuses(config, route, updates, func(parent *gatewayv1.RouteParentStatus, status routeReconcileStatus) bool {
+		controller.SetCondition(&parent.Conditions, controller.Condition(string(gatewayv1.RouteConditionAccepted), status.accepted, status.acceptedReason, status.acceptedMessage, route.Generation))
+		controller.SetCondition(&parent.Conditions, controller.Condition(string(gatewayv1.RouteConditionResolvedRefs), status.resolved, status.resolvedReason, status.resolvedMessage, route.Generation))
+		controller.SetCondition(&parent.Conditions, controller.Condition(config.Domain()+"/Programmed", status.programmed, status.programmedReason, status.programmedMessage, route.Generation))
+		return false
+	})
 }
 
 func applyRouteProviderFailureStatuses(
@@ -388,6 +382,43 @@ func applyRouteProviderFailureStatuses(
 	updates []parentStatusUpdate,
 	policy controller.ProviderFailurePolicy,
 	referencesEvaluated bool,
+) bool {
+	return mergeRouteParentStatuses(config, route, updates, func(parent *gatewayv1.RouteParentStatus, status routeReconcileStatus) bool {
+		resolvedGeneration := controller.ConditionObservedGeneration(
+			parent.Conditions,
+			string(gatewayv1.RouteConditionResolvedRefs),
+			route.Generation,
+			referencesEvaluated,
+		)
+		programmedGeneration := controller.ConditionObservedGeneration(
+			parent.Conditions,
+			config.Domain()+"/Programmed",
+			route.Generation,
+			policy.AdvancesObservedGeneration,
+		)
+		transitioned := controller.ConditionTransitioned(
+			parent.Conditions,
+			config.Domain()+"/Programmed",
+			status.programmed,
+			status.programmedReason,
+			status.programmedMessage,
+			programmedGeneration,
+		)
+		controller.SetCondition(&parent.Conditions, controller.Condition(string(gatewayv1.RouteConditionAccepted), status.accepted, status.acceptedReason, status.acceptedMessage, route.Generation))
+		controller.SetCondition(&parent.Conditions, controller.Condition(string(gatewayv1.RouteConditionResolvedRefs), status.resolved, status.resolvedReason, status.resolvedMessage, resolvedGeneration))
+		controller.SetCondition(&parent.Conditions, controller.Condition(config.Domain()+"/Programmed", status.programmed, status.programmedReason, status.programmedMessage, programmedGeneration))
+		return transitioned
+	})
+}
+
+// mergeRouteParentStatuses owns parent retention, deduplication, and ordering.
+// The caller computes conditions because normal and failed evaluations advance
+// ObservedGeneration and publish Warning events under different rules.
+func mergeRouteParentStatuses(
+	config controller.Config,
+	route *gatewayv1.HTTPRoute,
+	updates []parentStatusUpdate,
+	apply func(*gatewayv1.RouteParentStatus, routeReconcileStatus) bool,
 ) bool {
 	existing := append([]gatewayv1.RouteParentStatus(nil), route.Status.Parents...)
 	parents := make([]gatewayv1.RouteParentStatus, 0, len(existing)+len(updates))
@@ -401,31 +432,9 @@ func applyRouteProviderFailureStatuses(
 		if parentStatusUpdateAppearedEarlier(route.Namespace, updates, index) {
 			continue
 		}
-		parentStatus := routeParentStatus(route, config.ControllerName, existing, update.parent)
-		resolvedGeneration := controller.ConditionObservedGeneration(
-			parentStatus.Conditions,
-			string(gatewayv1.RouteConditionResolvedRefs),
-			route.Generation,
-			referencesEvaluated,
-		)
-		programmedGeneration := controller.ConditionObservedGeneration(
-			parentStatus.Conditions,
-			config.Domain()+"/Programmed",
-			route.Generation,
-			policy.AdvancesObservedGeneration,
-		)
-		transitioned = transitioned || controller.ConditionTransitioned(
-			parentStatus.Conditions,
-			config.Domain()+"/Programmed",
-			update.status.programmed,
-			update.status.programmedReason,
-			update.status.programmedMessage,
-			programmedGeneration,
-		)
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(string(gatewayv1.RouteConditionAccepted), update.status.accepted, update.status.acceptedReason, update.status.acceptedMessage, route.Generation))
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(string(gatewayv1.RouteConditionResolvedRefs), update.status.resolved, update.status.resolvedReason, update.status.resolvedMessage, resolvedGeneration))
-		controller.SetCondition(&parentStatus.Conditions, controller.Condition(config.Domain()+"/Programmed", update.status.programmed, update.status.programmedReason, update.status.programmedMessage, programmedGeneration))
-		parents = append(parents, parentStatus)
+		parent := routeParentStatus(route, config.ControllerName, existing, update.parent)
+		transitioned = apply(&parent, update.status) || transitioned
+		parents = append(parents, parent)
 	}
 	route.Status.Parents = preserveParentStatusOrder(route.Namespace, existing, parents)
 	return transitioned
