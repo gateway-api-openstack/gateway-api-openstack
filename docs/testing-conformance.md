@@ -2,7 +2,8 @@
 
 The target is Gateway API v1.6.1 Standard Channel and the `GATEWAY-HTTP` profile.
 Its [Core feature set](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/conformance/utils/suite/profiles.go) contains Gateway, HTTPRoute, and ReferenceGrant, including HTTPS termination for HTTPRoute.
-The repository does not yet provide a full-profile runner.
+The opt-in runner in `test/conformance` uses the pinned upstream suite without changing its fixtures.
+It has local tests but has not produced a full-profile result in OpenStack.
 
 ## Implementation gaps
 
@@ -11,14 +12,14 @@ The [compatibility record](providers/compatibility.md) summarizes the available 
 
 | Area | Current implementation | Remaining Core work |
 | --- | --- | --- |
-| Listeners | One HTTP listener without a listener hostname | Multiple listeners and their lifecycle, hostname matching, HTTPS, and certificate validation |
-| Route attachment | One selected HTTPRoute with one parent in the Gateway namespace | Multiple routes and parents, namespace selection, and precedence |
-| Matching | One rule and match, Exact or PathPrefix, and at most one exact hostname | Multiple rules and matches, wildcard and multiple hostnames, and exact header matching |
-| Service inputs | One Service in the route namespace, with NodePort forwarding or opt-in IPv4 Endpoint forwarding | Live proof for ClusterIP, headless, and manually managed EndpointSlice inputs in a verified network environment |
+| Listeners | Multiple valid HTTP listeners grouped by protocol and port, with logical hostname constraints and status | HTTPS and certificate lifecycle |
+| Route attachment | One selected HTTPRoute per Gateway, with multiple parents, namespace selection, and listener attachment | Activation and lifecycle of concurrent Routes |
+| Matching | One rule with multiple matches, exact and wildcard hostnames, Exact or PathPrefix paths, and exact headers | Activation of multiple rules and precedence across forwarding, redirects, and error responses |
+| Service inputs | One authorized Service, with NodePort forwarding or opt-in IPv4 Endpoint forwarding | Live proof for ClusterIP, headless, and manually managed EndpointSlice inputs in a verified network environment |
 | Backend selection and errors | One backend | Weighted backends, weight zero, unmatched-request HTTP 404, and required responses for omitted or invalid backends |
 | Filters | No filters | RequestHeaderModifier and Core RequestRedirect behavior |
-| References | References within the route namespace | ReferenceGrant for Service and certificate references |
-| Partial validity and status | Conditions and listener status for the supported subset | Required behavior for invalid siblings, reference errors, listener changes, and generation updates |
+| References | Authorized Service and certificate input reads, dependency watches, and Secret validation | Required error responses after revocation, certificate publication, and traffic verification |
+| Partial validity and status | Valid HTTP listeners remain programmed when a sibling is rejected, with separate conditions | Invalid rule and backend behavior, plus live lifecycle and status verification |
 
 The Endpoint mode implementation removes the NodePort requirement from Service input handling, but local tests do not close the Core traffic gap.
 Rejecting unsupported input does not satisfy a requirement for positive traffic behavior or a particular HTTP response.
@@ -57,6 +58,77 @@ An adapted diagnostic can help investigate behavior, but it does not establish p
 One-off runners and environment-specific adaptations remain local.
 Record the gaps below to distinguish setup blockers, failures, and tests that have not run.
 
+## Run the pinned suite
+
+Use an already installed controller with an accepted GatewayClass whose configuration selects Endpoint mode.
+The runner requires a dedicated Kubernetes cluster and OpenStack project because even a single upstream test can create several base Gateways.
+It cannot enforce the shared-project E2E limit of one load balancer.
+The dedicated-project settings below record operator approval, not a check of Keystone credentials, network connectivity, or cloud quota.
+
+The runner checks the explicit Kubernetes context, API server, cluster UID, class ownership, pinned CRD bundle, and absence of upstream fixture namespaces and classes before creating resources.
+It reserves `gateway-api-openstack-conformance` to prevent concurrent runs.
+It does not install the controller, change GatewayClass feature declarations, rewrite fixtures, or remove finalizers.
+
+Create a private configuration with actual environment values:
+
+```yaml
+formatVersion: v1alpha1
+mode: diagnostic
+kubeconfig: /absolute/private/kubeconfig
+context: conformance
+expectedAPIServer: https://kubernetes.example.test:6443
+expectedClusterUID: replace-with-kube-system-uid
+dedicatedCluster: true
+dedicatedOpenStackProject: true
+acceptUpstreamResourceFootprint: true
+gatewayClassName: openstack-conformance
+controllerName: gateway-api-openstack.github.io/gateway-api-openstack
+artifactsDirectory: /absolute/private/results/run-001
+implementation:
+  organization: gateway-api-openstack
+  project: gateway-api-openstack
+  url: https://github.com/gateway-api-openstack/gateway-api-openstack
+  version: replace-with-tested-revision
+  contact:
+    - https://github.com/gateway-api-openstack/gateway-api-openstack/issues
+diagnostic:
+  evaluationFeatures:
+    - Gateway
+    - HTTPRoute
+    - ReferenceGrant
+```
+
+Diagnostic mode evaluates the full Core profile when `diagnostic.runTest` is omitted.
+Set it to an upstream test's short name for a focused diagnostic, while retaining its unchanged setup.
+Optional `timeoutConfig` fields use the upstream names and duration strings.
+Use `mode: profile` without a `diagnostic` block to test the features advertised by GatewayClass, including all Core features and declared Extended features.
+Profile mode rejects an incomplete Core declaration and does not allow increasing the upstream 30-second consistency limit.
+The current controller cannot yet satisfy that mode or the full HTTPS setup.
+A diagnostic can therefore stop during setup without producing a profile report.
+
+Run local checks without accessing a cluster:
+
+```sh
+make test-conformance-unit test-conformance-compile
+```
+
+After approving the environment and upstream resource footprint, execute:
+
+```sh
+make test-conformance CONFORMANCE_CONFIG=/absolute/private/conformance.yaml
+```
+
+The artifact directory must be new.
+The runner stores `upstream-report.yaml` without changing the suite's report and records the mode, configuration, Go test outcome, report consistency, and cleanup result separately in `run.yaml`.
+A setup failure produces only the run record.
+Keep these artifacts private under the publication policy, including any Kubernetes or cloud identifiers in test output.
+
+Upstream cleanup runs before the runner checks that fixture namespaces and classes are absent.
+That check does not replace the independent cloud ownership audit and leak checks.
+Incomplete cleanup retains the run lock and requires operator recovery with the installed controller and credentials available.
+Remove the lock only after verifying that the prior run's Kubernetes and owned cloud resources are absent.
+Do not publish a conformance claim from a diagnostic run or an inconsistent report.
+
 ## Record conformance gaps
 
 Keep exploratory records local under the [publication policy](../CONTRIBUTING.md#test-evidence-and-publication).
@@ -91,9 +163,11 @@ This record does not replace the suite-generated conformance report.
 Upstream lists [Conformant and Partially Conformant implementations](https://gateway-api.sigs.k8s.io/docs/implementations/list/).
 This project's target requires the complete Core profile and all declared Extended features to pass.
 An eligible partial report can support an earlier listing during Phase 5 development, but does not satisfy that target or close Phase 4.
-The current adapted single-test diagnostic is not an eligible profile report, and this repository still needs a reusable report-producing runner.
+The earlier adapted single-test diagnostic is not an eligible profile report.
+The reusable runner is available, but its setup and complete profile still need a live run.
 The current empty `supportedFeatures` list also blocks the suite's default inferred-feature setup.
-Resolve submission eligibility without declaring unverified features or overriding feature selection merely to qualify.
+Use diagnostic mode to evaluate gaps without changing those declarations.
+A diagnostic report does not grant submission eligibility or establish supported features.
 
 Before submitting a partial result, make the upstream setup work, publish a reproducible immutable evaluation version, and run the profile with known gaps explicitly identified.
 Keep the suite-generated report unmodified and retain the reasons for skipped tests and earlier failures.

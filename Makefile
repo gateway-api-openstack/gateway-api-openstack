@@ -14,6 +14,7 @@ ENVTEST_ASSETS_DIR ?= $(abspath $(BINARY_DIR)/envtest)
 ENVTEST_K8S_VERSION ?= 1.36.2
 ENVTEST_RELEASE_INDEX ?= https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/3311c8d50e5c8a976266e08f1f92f827439bd34a/envtest-releases.yaml
 E2E_CONFIG ?=
+CONFORMANCE_CONFIG ?=
 VERSION ?= dev
 IMAGE ?= openstack-gateway-controller:$(VERSION)
 
@@ -111,6 +112,22 @@ test-core-mapping: ## Compare the Core mapping with the pinned upstream conforma
 	test -n "$$source"; \
 	GATEWAY_API_CONFORMANCE_SOURCE_DIR="$$source" $(GO) test -count=1 ./test/design -run '^TestCoreMapping'
 
+.PHONY: test-conformance-unit
+test-conformance-unit: ## Test conformance runner safety without contacting a cluster.
+	cd test/conformance && GATEWAY_OPENSTACK_CONFORMANCE=false $(GO) test -tags=conformance ./...
+
+.PHONY: test-conformance-compile
+test-conformance-compile: ## Compile the pinned conformance suite without running it.
+	cd test/conformance && $(GO) test -tags=conformance -run '^$$' ./...
+
+.PHONY: test-conformance
+test-conformance: ## Run the unmodified upstream suite in an approved dedicated environment.
+	@test -n "$(CONFORMANCE_CONFIG)" || { printf 'Set CONFORMANCE_CONFIG to the private conformance YAML path.\n'; exit 1; }
+	cd test/conformance && \
+	GATEWAY_OPENSTACK_CONFORMANCE=true \
+	GATEWAY_OPENSTACK_CONFORMANCE_CONFIG="$(abspath $(CONFORMANCE_CONFIG))" \
+	$(GO) test -tags=conformance -count=1 -timeout=6h -parallel=1 -run '^TestConformance$$' -v .
+
 .PHONY: envtest-assets
 envtest-assets: ## Download the pinned envtest control-plane binaries.
 	@mkdir -p "$(BINARY_DIR)" "$(ENVTEST_ASSETS_DIR)"
@@ -144,7 +161,7 @@ lint-fix: ## Apply safe golangci-lint fixes when installed.
 	$(GOLANGCI_LINT) run --fix
 
 .PHONY: verify
-verify: fmt-check vet test test-e2e-unit ## Run the checks required by CI.
+verify: fmt-check vet test test-e2e-unit test-conformance-unit ## Run the checks required by CI.
 
 .PHONY: tidy
 tidy: ## Update module metadata.
