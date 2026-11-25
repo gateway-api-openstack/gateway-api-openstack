@@ -103,30 +103,6 @@ func (c Config) RouteBindingFinalizerPrefix() string {
 // Domain returns the DNS prefix of the configured Gateway controller name.
 func (c Config) Domain() string { return strings.SplitN(string(c.ControllerName), "/", 2)[0] }
 
-// RouteGatewayNamespaceAnnotation returns the key that records the bound
-// Gateway namespace on an HTTPRoute.
-func (c Config) RouteGatewayNamespaceAnnotation() string {
-	return c.Domain() + "/route-gateway-namespace-" + c.controllerKey()
-}
-
-// RouteGatewayNameAnnotation returns the key that records the bound Gateway
-// name on an HTTPRoute.
-func (c Config) RouteGatewayNameAnnotation() string {
-	return c.Domain() + "/route-gateway-name-" + c.controllerKey()
-}
-
-// RouteGatewayUIDAnnotation returns the key that records the bound Gateway UID
-// on an HTTPRoute.
-func (c Config) RouteGatewayUIDAnnotation() string {
-	return c.Domain() + "/route-gateway-uid-" + c.controllerKey()
-}
-
-// GatewayListenerPortAnnotation returns the key that records the listener port
-// in a Gateway binding.
-func (c Config) GatewayListenerPortAnnotation() string {
-	return c.Domain() + "/gateway-listener-port-" + c.controllerKey()
-}
-
 // GatewayClusterIDAnnotation returns the key that records the cluster ID in a
 // Gateway binding.
 func (c Config) GatewayClusterIDAnnotation() string {
@@ -137,27 +113,6 @@ func (c Config) GatewayClusterIDAnnotation() string {
 // project ID in a Gateway binding.
 func (c Config) GatewayProjectIDAnnotation() string {
 	return c.Domain() + "/gateway-project-id-" + c.controllerKey()
-}
-
-// RouteClusterIDAnnotation returns the key that records the cluster ID in an
-// HTTPRoute binding.
-func (c Config) RouteClusterIDAnnotation() string {
-	return c.Domain() + "/route-cluster-id-" + c.controllerKey()
-}
-
-// RouteProjectIDAnnotation returns the key that records the OpenStack project
-// ID in an HTTPRoute binding.
-func (c Config) RouteProjectIDAnnotation() string {
-	return c.Domain() + "/route-project-id-" + c.controllerKey()
-}
-
-// RouteCleanupFailureAnnotation returns the key used to store a cleanup reason
-// when Gateway API status has no valid parent entry for a cleanup diagnostic.
-// The stored reason contains no sensitive data.
-// It suppresses duplicate Events and is not part of the OpenStack ownership
-// identity.
-func (c Config) RouteCleanupFailureAnnotation() string {
-	return c.Domain() + "/httproute-cleanup-failure-" + c.controllerKey()
 }
 
 func (c Config) controllerKey() string {

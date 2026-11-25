@@ -139,3 +139,38 @@ func TestGatewayDescriptionIgnoresRouteFields(t *testing.T) {
 		t.Fatal("route-scoped identity did not recognize its Gateway-scoped Floating IP description")
 	}
 }
+
+func TestChildKeysRetainCanonicalOwnershipMetadata(t *testing.T) {
+	value := cloud.Identity{OpenStackProjectID: "project-a", ClusterID: "cluster-a", Controller: "example.test/controller", GatewayNamespace: "default", GatewayName: "edge", GatewayUID: "gateway-uid", RouteNamespace: "app", RouteName: "route", RouteUID: "route-uid"}
+	identity, err := NewIdentity(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := cloud.ResourceKey{Kind: cloud.ResourcePolicy, Listener: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 8080}, RuleIndex: 7, MatchIndex: 2, HostIndex: 1, Variant: "prefix"}
+	tags, err := identity.ChildTags(RolePolicyPrefix, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ChildKey(tags)
+	if err != nil || parsed != key || !identity.MatchesRoute(tags, RolePolicyPrefix) {
+		t.Fatalf("child identity = %#v, %v", parsed, err)
+	}
+	if _, err := identity.ChildTags(RolePool, key); err == nil {
+		t.Fatal("accepted mismatched role and child kind")
+	}
+	for _, changed := range [][]string{tags[:len(tags)-1], append(append([]string(nil), tags...), tags[len(tags)-1]), append(append([]string(nil), tags[:len(tags)-1]...), Tag("resource-key", "rule/07"))} {
+		if _, err := ChildKey(changed); err == nil {
+			t.Fatal("accepted missing, duplicate, or noncanonical child key")
+		}
+	}
+	gateway := value
+	gateway.RouteNamespace, gateway.RouteName, gateway.RouteUID = "", "", ""
+	owner, _ := NewIdentity(gateway)
+	recovered, err := owner.RouteIdentity(tags)
+	if err != nil || recovered.Value() != value {
+		t.Fatalf("recovered Route = %#v, %v", recovered.Value(), err)
+	}
+	if _, err := owner.RouteIdentity(append(tags, Tag("route-uid", value.RouteUID))); err == nil {
+		t.Fatal("recovered a duplicate Route identity")
+	}
+}

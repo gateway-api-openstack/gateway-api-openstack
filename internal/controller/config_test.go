@@ -38,12 +38,12 @@ func TestConfigFinalizersUseControllerDomain(t *testing.T) {
 	if got := cfg.RouteFinalizer(); got != "example.net/httproute-finalizer-"+cfg.controllerKey() {
 		t.Fatalf("routeFinalizer() = %q", got)
 	}
-	if got := cfg.RouteCleanupFailureAnnotation(); got != "example.net/httproute-cleanup-failure-"+cfg.controllerKey() {
-		t.Fatalf("routeCleanupFailureAnnotation() = %q", got)
+	if got := cfg.RouteBindingsAnnotation(); got != "example.net/route-bindings-"+cfg.controllerKey() {
+		t.Fatalf("routeBindingsAnnotation() = %q", got)
 	}
 	other := cfg
 	other.ControllerName = "example.net/another-controller"
-	if cfg.GatewayFinalizer() == other.GatewayFinalizer() || cfg.RouteGatewayUIDAnnotation() == other.RouteGatewayUIDAnnotation() {
+	if cfg.GatewayFinalizer() == other.GatewayFinalizer() || cfg.RouteBindingsAnnotation() == other.RouteBindingsAnnotation() {
 		t.Fatal("controller-scoped metadata keys collide for controllers sharing a DNS domain")
 	}
 }

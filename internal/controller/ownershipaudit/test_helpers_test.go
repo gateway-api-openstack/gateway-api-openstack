@@ -17,12 +17,13 @@ limitations under the License.
 package ownershipaudit
 
 import (
+	"encoding/json"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
@@ -37,30 +38,27 @@ func testConfig() Config {
 	}
 }
 
-func gatewayBindingAnnotations(cfg Config, listenerPort string) map[string]string {
+func gatewayBindingAnnotations(cfg Config, _ string) map[string]string {
 	return map[string]string{
-		cfg.GatewayListenerPortAnnotation(): listenerPort,
-		cfg.GatewayClusterIDAnnotation():    cfg.ClusterID,
-		cfg.GatewayProjectIDAnnotation():    cfg.OpenStackProjectID,
+		cfg.GatewayClusterIDAnnotation(): cfg.ClusterID,
+		cfg.GatewayProjectIDAnnotation(): cfg.OpenStackProjectID,
 	}
 }
 
 func applyRouteBinding(cfg Config, route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway) {
-	route.Annotations = map[string]string{
-		cfg.RouteGatewayNamespaceAnnotation(): gateway.Namespace,
-		cfg.RouteGatewayNameAnnotation():      gateway.Name,
-		cfg.RouteGatewayUIDAnnotation():       string(gateway.UID),
-		cfg.RouteClusterIDAnnotation():        cfg.ClusterID,
-		cfg.RouteProjectIDAnnotation():        cfg.OpenStackProjectID,
+	if err := controller.SetRouteBinding(cfg, route, controller.RouteBinding{Identity: controller.RouteIdentity(cfg, gateway, route), Lifecycle: controller.RouteAttached}); err != nil {
+		panic(err)
 	}
-	controllerutil.AddFinalizer(route, cfg.RouteBindingFinalizer(
-		cfg.ClusterID,
-		cfg.OpenStackProjectID,
-		gateway.Namespace,
-		gateway.Name,
-		string(gateway.UID),
-	))
-	controllerutil.AddFinalizer(route, cfg.RouteFinalizer())
+}
+
+func routeBindingJSON(cfg Config, identity cloud.Identity, lifecycle controller.RouteLifecycle, cleanupFailure string) string {
+	identity.Controller = string(cfg.ControllerName)
+	identity.ControllerVersion = cfg.ControllerVersion
+	encoded, err := json.Marshal([]controller.RouteBinding{{Identity: identity, Lifecycle: lifecycle, CleanupFailure: cleanupFailure}})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {

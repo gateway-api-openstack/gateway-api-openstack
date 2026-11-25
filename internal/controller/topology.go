@@ -44,10 +44,10 @@ func (c Config) GatewayTopologyFinalizerPrefix() string {
 	return c.Domain() + "/gateway-topology-" + c.controllerKey() + "-"
 }
 
-// GatewayTopologyFinalizer binds the exact serialized topology to metadata
+// gatewayTopologyFinalizer binds the exact serialized topology to metadata
 // persisted before cloud creation. Like other binding finalizers, this detects
 // accidental edits but is not a security boundary against finalizer editors.
-func (c Config) GatewayTopologyFinalizer(value string) string {
+func (c Config) gatewayTopologyFinalizer(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return c.GatewayTopologyFinalizerPrefix() + fmt.Sprintf("%x", digest[:16])
 }
@@ -77,7 +77,7 @@ func BindGatewayTopology(config Config, gateway *gatewayv1.Gateway, resolved cla
 		gateway.Annotations = map[string]string{}
 	}
 	gateway.Annotations[config.GatewayTopologyAnnotation()] = string(encoded)
-	controllerutil.AddFinalizer(gateway, config.GatewayTopologyFinalizer(string(encoded)))
+	controllerutil.AddFinalizer(gateway, config.gatewayTopologyFinalizer(string(encoded)))
 	return nil
 }
 
@@ -86,7 +86,7 @@ func BindGatewayTopology(config Config, gateway *gatewayv1.Gateway, resolved cla
 func StoredGatewayTopology(config Config, gateway *gatewayv1.Gateway) (classconfig.Resolved, error) {
 	raw := gateway.Annotations[config.GatewayTopologyAnnotation()]
 	finalizers := topologyFinalizers(config, gateway)
-	if raw == "" || len(finalizers) != 1 || finalizers[0] != config.GatewayTopologyFinalizer(raw) {
+	if raw == "" || len(finalizers) != 1 || finalizers[0] != config.gatewayTopologyFinalizer(raw) {
 		return classconfig.Resolved{}, fmt.Errorf("%w: Gateway topology binding is missing, incomplete, or changed", cloud.ErrOwnershipConflict)
 	}
 	var resolved classconfig.Resolved

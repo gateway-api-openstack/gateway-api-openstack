@@ -40,9 +40,9 @@ func TestHTTPRouteDeletionProgressRetainsFinalizersAndBinding(t *testing.T) {
 		WithStatusSubresource(route).
 		WithObjects(route).
 		Build()
-	provider := &routeTransitionProvider{
-		deleteOutcome: cloud.ProgressingOutcome("Deleting controller-owned L7 rule", time.Hour),
-	}
+	deleteOutcome := cloud.ProgressingOutcome("Deleting controller-owned L7 rule", time.Hour)
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{Outcome: deleteOutcome}, nil)
 	reconciler := *newTestReconciler(Reconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
@@ -56,12 +56,12 @@ func TestHTTPRouteDeletionProgressRetainsFinalizersAndBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	wantRequeue := controller.ProviderProgressRequeueAfter(provider.deleteOutcome, route.UID)
+	wantRequeue := controller.ProviderProgressRequeueAfter(deleteOutcome, route.UID)
 	if result.RequeueAfter != wantRequeue {
 		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
-	if len(provider.deletedRoutes) != 1 {
-		t.Fatalf("DeleteRoute calls = %d, want 1", len(provider.deletedRoutes))
+	if len(provider.DeletedRoutes()) != 1 {
+		t.Fatalf("DeleteRoute calls = %d, want 1", len(provider.DeletedRoutes()))
 	}
 
 	current := &gatewayv1.HTTPRoute{}
@@ -87,10 +87,15 @@ func TestHTTPRouteDeletionRemovesBindingOnlyAfterProviderIsReady(t *testing.T) {
 		WithStatusSubresource(route).
 		WithObjects(route).
 		Build()
-	provider := &routeTransitionProvider{deleteOutcomes: []cloud.Outcome{
+	deleteOutcomes := []cloud.Outcome{
 		cloud.ProgressingOutcome("Deleting controller-owned L7 rule", time.Second),
 		cloud.ReadyOutcome(),
-	}}
+	}
+	provider := &recordingProvider{}
+	provider.Respond = func(ctx context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
+		index := min(len(provider.Calls)-1, len(deleteOutcomes)-1)
+		return singleRouteGraphResponse(t, cloud.RouteResult{Outcome: deleteOutcomes[index]}, nil)(ctx, spec)
+	}
 	reconciler := *newTestReconciler(Reconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
@@ -114,8 +119,8 @@ func TestHTTPRouteDeletionRemovesBindingOnlyAfterProviderIsReady(t *testing.T) {
 	if second != (ctrl.Result{}) {
 		t.Fatalf("second Reconcile() result = %#v, want no requeue", second)
 	}
-	if len(provider.deletedRoutes) != 2 {
-		t.Fatalf("DeleteRoute calls = %d, want 2", len(provider.deletedRoutes))
+	if len(provider.DeletedRoutes()) != 2 {
+		t.Fatalf("DeleteRoute calls = %d, want 2", len(provider.DeletedRoutes()))
 	}
 
 	current := &gatewayv1.HTTPRoute{}
@@ -138,45 +143,10 @@ func TestHTTPRouteDeletionRemovesBindingOnlyAfterProviderIsReady(t *testing.T) {
 	}
 }
 
-type routeTransitionProvider struct {
-	deleteOutcome  cloud.Outcome
-	deleteOutcomes []cloud.Outcome
-	deletedRoutes  []cloud.Identity
-}
-
-func (p *routeTransitionProvider) EnsureGateway(context.Context, cloud.GatewaySpec) (cloud.GatewayResult, error) {
-	return cloud.GatewayReadyResult(cloud.GatewayState{}), nil
-}
-
-func (p *routeTransitionProvider) DeleteGateway(context.Context, cloud.Identity) (cloud.Outcome, error) {
-	return cloud.ReadyOutcome(), nil
-}
-
-func (p *routeTransitionProvider) EnsureRoute(context.Context, cloud.RouteSpec) (cloud.RouteResult, error) {
-	return cloud.RouteReadyResult(cloud.RouteState{}), nil
-}
-
-func (p *routeTransitionProvider) DeleteRoute(_ context.Context, identity cloud.Identity) (cloud.Outcome, error) {
-	p.deletedRoutes = append(p.deletedRoutes, identity)
-	if len(p.deleteOutcomes) != 0 {
-		index := len(p.deletedRoutes) - 1
-		if index >= len(p.deleteOutcomes) {
-			index = len(p.deleteOutcomes) - 1
-		}
-		return p.deleteOutcomes[index], nil
-	}
-	return p.deleteOutcome, nil
-}
-
 func deletingBoundRoute(cfg Config) (*gatewayv1.HTTPRoute, map[string]string) {
 	now := metav1.Now()
 	annotations := map[string]string{
-		cfg.RouteLifecycleAnnotation():        controller.RouteDetaching,
-		cfg.RouteGatewayNamespaceAnnotation(): "default",
-		cfg.RouteGatewayNameAnnotation():      "edge",
-		cfg.RouteGatewayUIDAnnotation():       "gateway-uid",
-		cfg.RouteClusterIDAnnotation():        cfg.ClusterID,
-		cfg.RouteProjectIDAnnotation():        cfg.OpenStackProjectID,
+		cfg.RouteBindingsAnnotation(): routeBindingJSON(cfg, cloud.Identity{OpenStackProjectID: cfg.OpenStackProjectID, ClusterID: cfg.ClusterID, GatewayNamespace: "default", GatewayName: "edge", GatewayUID: "gateway-uid", RouteNamespace: "default", RouteName: "api", RouteUID: "route-uid"}, controller.RouteDetaching, ""),
 	}
 	return &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{

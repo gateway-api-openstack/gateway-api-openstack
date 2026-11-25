@@ -38,6 +38,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/internal/controllertest"
 )
 
 func TestHTTPRouteProviderFailurePreservesProviderAndStatusErrors(t *testing.T) {
@@ -53,7 +54,8 @@ func TestHTTPRouteProviderFailurePreservesProviderAndStatusErrors(t *testing.T) 
 		WithObjects(class, gateway, route).
 		Build()
 	statusErr := errors.New("forced status patch failure")
-	kubeClient := &patchFailingStatusClient{Client: baseClient, patchErr: statusErr}
+	injectedStatusErr := statusErr
+	kubeClient := controllertest.WithStatusPatchError(baseClient, &injectedStatusErr)
 	reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Config: cfg}, nil)
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryRetryableService, errors.New("token=secret-token"))
 
@@ -214,7 +216,8 @@ func assertNoEvent(t *testing.T, recorder *events.FakeRecorder) {
 
 func TestHTTPRouteProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 	providerResult := cloud.RouteProgressingResult("Octavia pool is PENDING_CREATE", time.Millisecond)
-	provider := &recordingProvider{routeResult: &providerResult}
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, providerResult, nil)
 	reconciler, kubeClient, route := providerOutcomeRouteFixture(t, provider, nil)
 	cfg := reconciler.Config
 
@@ -226,8 +229,8 @@ func TestHTTPRouteProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 	if result.RequeueAfter != wantRequeue {
 		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
-	if len(provider.routeSpecs) != 1 {
-		t.Fatalf("EnsureRoute calls = %d, want 1", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 1 {
+		t.Fatalf("EnsureRoute calls = %d, want 1", len(provider.RouteSpecs()))
 	}
 	current := &gatewayv1.HTTPRoute{}
 	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: route.Namespace, Name: route.Name}, current); err != nil {
@@ -245,7 +248,8 @@ func TestHTTPRouteProgressingOutcomeUsesBoundedRequeue(t *testing.T) {
 
 func TestBoundHTTPRouteReconcilesWhileGatewayIsProgressing(t *testing.T) {
 	providerResult := cloud.RouteProgressingResult("Validating the HTTPRoute graph before restoring traffic", time.Second)
-	provider := &recordingProvider{routeResult: &providerResult}
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, providerResult, nil)
 	reconciler, kubeClient, route := providerOutcomeRouteFixture(t, provider, nil)
 
 	var gateway gatewayv1.Gateway
@@ -267,10 +271,10 @@ func TestBoundHTTPRouteReconcilesWhileGatewayIsProgressing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(provider.routeSpecs) != 1 {
-		t.Fatalf("EnsureRoute calls = %d, want 1", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 1 {
+		t.Fatalf("EnsureRoute calls = %d, want 1", len(provider.RouteSpecs()))
 	}
-	got := provider.routeSpecs[0].Identity
+	got := provider.RouteSpecs()[0].Identity
 	if got.GatewayUID != string(gateway.UID) || got.RouteUID != string(route.UID) {
 		t.Fatalf("EnsureRoute identity = %#v, want Gateway %q and HTTPRoute %q", got, gateway.UID, route.UID)
 	}
@@ -301,8 +305,8 @@ func TestBoundHTTPRouteDoesNotReconcileInvalidGateway(t *testing.T) {
 	if result.RequeueAfter == 0 {
 		t.Fatalf("Reconcile() result = %#v, want a delayed retry", result)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls for an invalid Gateway = %d, want 0", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls for an invalid Gateway = %d, want 0", len(provider.RouteSpecs()))
 	}
 }
 
@@ -318,8 +322,8 @@ func TestHTTPRouteMutationBoundaryUsesAPIReader(t *testing.T) {
 	if !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("Reconcile() error = %v, want %v", err, errHTTPRouteChanged)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls after API server deletion = %d, want 0", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls after API server deletion = %d, want 0", len(provider.RouteSpecs()))
 	}
 }
 
@@ -340,7 +344,8 @@ func TestHTTPRouteProviderFailuresUseSafeStatusAndRetryPolicy(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			providerErr := cloud.NewProviderError(test.category, errors.New("token=secret-token response=private-body"))
-			provider := &recordingProvider{routeErr: providerErr}
+			provider := &recordingProvider{}
+			provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{}, providerErr)
 			recorder := events.NewFakeRecorder(1)
 			reconciler, kubeClient, route := providerOutcomeRouteFixture(t, provider, recorder)
 
@@ -420,7 +425,9 @@ func providerOutcomeRouteFixture(
 			}},
 		},
 	}
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "backend"},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: []corev1.ServicePort{{Port: 8080, NodePort: 30080}}},
@@ -493,10 +500,8 @@ func TestHTTPRouteProviderFailureDuringFinalizationPreservesStatusAndBinding(t *
 			Namespace: "default", Name: "api", UID: "route-uid", Generation: 1,
 			DeletionTimestamp: &now,
 			Finalizers:        routeBindingFinalizers(cfg, "default", "edge", "gateway-uid"),
-			Annotations: map[string]string{
-				cfg.RouteGatewayNamespaceAnnotation(): "default",
-				cfg.RouteGatewayNameAnnotation():      "edge",
-				cfg.RouteGatewayUIDAnnotation():       "gateway-uid",
+			Annotations: map[string]string{cfg.
+				RouteBindingsAnnotation(): routeBindingJSON(cfg, cloud.Identity{OpenStackProjectID: cfg.OpenStackProjectID, ClusterID: cfg.ClusterID, GatewayNamespace: "default", GatewayName: "edge", GatewayUID: "gateway-uid", RouteNamespace: "default", RouteName: "api", RouteUID: string("route-uid")}, "Attached", ""),
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}}},
@@ -513,9 +518,10 @@ func TestHTTPRouteProviderFailureDuringFinalizationPreservesStatusAndBinding(t *
 		}}},
 	}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryOwnershipConflict, errors.New("project=private-project response=private-body"))
-	provider := &recordingProvider{routeDeleteErr: providerErr}
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{}, providerErr)
 	recorder := events.NewFakeRecorder(1)
-	route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 	kubeClient := indexedFakeClientBuilder(scheme, cfg).
 		WithStatusSubresource(route).
 		WithObjects(route).
@@ -539,11 +545,11 @@ func TestHTTPRouteProviderFailureDuringFinalizationPreservesStatusAndBinding(t *
 			t.Errorf("HTTPRoute finalizer %q was removed", finalizer)
 		}
 	}
-	if current.Annotations[cfg.RouteGatewayUIDAnnotation()] != "gateway-uid" {
+	if bindingFixture(t, cfg, current.Annotations).Identity.GatewayUID != "gateway-uid" {
 		t.Fatalf("HTTPRoute binding annotations = %#v", current.Annotations)
 	}
-	if current.Annotations[cfg.RouteCleanupFailureAnnotation()] != controller.ProviderReasonOwnershipConflict {
-		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", current.Annotations[cfg.RouteCleanupFailureAnnotation()])
+	if bindingFixture(t, cfg, current.Annotations).CleanupFailure != controller.ProviderReasonOwnershipConflict {
+		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", bindingFixture(t, cfg, current.Annotations).CleanupFailure)
 	}
 	if len(current.Status.Parents) != 2 || !controller.ParentRefsEqual(current.Status.Parents[0].ParentRef, current.Namespace, parent, current.Namespace) {
 		t.Fatalf("HTTPRoute parent statuses = %#v", current.Status.Parents)
@@ -573,23 +579,22 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default", Name: "api", UID: "route-uid", Generation: 1,
 			Finalizers: routeBindingFinalizers(cfg, "default", "edge", "gateway-uid"),
-			Annotations: map[string]string{
-				cfg.RouteGatewayNamespaceAnnotation(): "default",
-				cfg.RouteGatewayNameAnnotation():      "edge",
-				cfg.RouteGatewayUIDAnnotation():       "gateway-uid",
+			Annotations: map[string]string{cfg.
+				RouteBindingsAnnotation(): routeBindingJSON(cfg, cloud.Identity{OpenStackProjectID: cfg.OpenStackProjectID, ClusterID: cfg.ClusterID, GatewayNamespace: "default", GatewayName: "edge", GatewayUID: "gateway-uid", RouteNamespace: "default", RouteName: "api", RouteUID: string("route-uid")}, "Attached", ""),
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{parent}}},
 	}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryOwnershipConflict, errors.New("response=private-body"))
-	provider := &recordingProvider{routeDeleteErr: providerErr}
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{}, providerErr)
 	recorder := events.NewFakeRecorder(1)
 	updates := []parentStatusUpdate{{
 		parent: parent,
 		status: rejectedRouteStatus(string(gatewayv1.RouteReasonUnsupportedValue), "HTTPRoute configuration is unsupported"),
 	}}
 	applyRouteParentStatuses(cfg, route, updates)
-	route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
 		WithObjects(class, gateway, route).
@@ -602,7 +607,7 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 		Client: kubeClient, APIReader: kubeClient,
 		Coordinator: &graph.Coordinator{}, Recorder: recorder, Config: cfg,
 	}, provider)
-	scope := &httpRouteScope{route: current}
+	scope := &httpRouteScope{route: current, identity: bindingFixture(t, cfg, current.Annotations).Identity}
 	result, err := reconciler.setRouteStatusesAndDetach(context.Background(), scope, updates)
 	if err != nil {
 		t.Fatalf("setRouteStatusesAndDetach() error = %v", err)
@@ -614,11 +619,11 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(current.Finalizers, cfg.RouteFinalizer()) || current.Annotations[cfg.RouteGatewayUIDAnnotation()] != "gateway-uid" {
+	if !slices.Contains(current.Finalizers, cfg.RouteFinalizer()) || bindingFixture(t, cfg, current.Annotations).Identity.GatewayUID != "gateway-uid" {
 		t.Fatalf("HTTPRoute binding was removed: finalizers %#v, annotations %#v", current.Finalizers, current.Annotations)
 	}
-	if current.Annotations[cfg.RouteCleanupFailureAnnotation()] != controller.ProviderReasonOwnershipConflict {
-		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", current.Annotations[cfg.RouteCleanupFailureAnnotation()])
+	if bindingFixture(t, cfg, current.Annotations).CleanupFailure != controller.ProviderReasonOwnershipConflict {
+		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", bindingFixture(t, cfg, current.Annotations).CleanupFailure)
 	}
 	programmed := meta.FindStatusCondition(current.Status.Parents[0].Conditions, cfg.Domain()+"/Programmed")
 	if programmed == nil || programmed.Reason != "OwnershipConflict" || !strings.Contains(programmed.Message, "HTTPRoute cleanup") || strings.Contains(programmed.Message, "private-body") {
@@ -637,9 +642,8 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 	}
 	assertNoEvent(t, recorder)
 
-	provider.routeDeleteErr = nil
 	progressing := cloud.ProgressingOutcome("HTTPRoute cleanup is progressing", time.Second)
-	provider.routeDeleteOut = &progressing
+	provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{Outcome: progressing}, nil)
 	scope = &httpRouteScope{route: current}
 	result, err = reconciler.setRouteStatusesAndDetach(context.Background(), scope, updates)
 	if err != nil {
@@ -655,7 +659,7 @@ func TestHTTPRouteDetachFailurePublishesCleanupStatus(t *testing.T) {
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), current); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := current.Annotations[cfg.RouteCleanupFailureAnnotation()]; present {
+	if bindingFixture(t, cfg, current.Annotations).CleanupFailure != "" {
 		t.Fatalf("progressing cleanup retained failure checkpoint: %#v", current.Annotations)
 	}
 }
@@ -684,18 +688,20 @@ func testHTTPRouteFinalizationWithoutParentStatus(t *testing.T, specGateway stri
 			Namespace: "default", Name: "api", UID: "route-uid", Generation: 1,
 			DeletionTimestamp: &now,
 			Finalizers:        routeBindingFinalizers(cfg, "default", "old-gateway", "old-gateway-uid"),
-			Annotations: map[string]string{
-				cfg.RouteGatewayNamespaceAnnotation(): "default",
-				cfg.RouteGatewayNameAnnotation():      "old-gateway",
-				cfg.RouteGatewayUIDAnnotation():       "old-gateway-uid",
+			Annotations: map[string]string{cfg.
+				RouteBindingsAnnotation(): routeBindingJSON(cfg, cloud.Identity{OpenStackProjectID: cfg.OpenStackProjectID, ClusterID: cfg.ClusterID, GatewayNamespace: "default", GatewayName: "old-gateway", GatewayUID: "old-gateway-uid",
+				RouteNamespace: "default", RouteName: "api",
+
+				RouteUID: string("route-uid")}, "Attached", ""),
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(specGateway)}}}},
 	}
 	providerErr := cloud.NewProviderError(cloud.ErrorCategoryTerminalValidation, errors.New("invalid delete request"))
-	provider := &recordingProvider{routeDeleteErr: providerErr}
+	provider := &recordingProvider{}
+	provider.Respond = singleRouteGraphResponse(t, cloud.RouteResult{}, providerErr)
 	recorder := events.NewFakeRecorder(1)
-	route.Annotations[cfg.RouteLifecycleAnnotation()] = controller.RouteDetaching
+	updateBindingFixture(t, cfg, route.Annotations, func(binding *controller.RouteBinding) { binding.Lifecycle = controller.RouteDetaching })
 	kubeClient := indexedFakeClientBuilder(scheme, cfg).WithStatusSubresource(route).WithObjects(route).Build()
 	reconciler := *newTestReconciler(Reconciler{Client: kubeClient, Coordinator: &graph.Coordinator{}, APIReader: kubeClient, Recorder: recorder, Config: cfg}, provider)
 
@@ -714,8 +720,8 @@ func testHTTPRouteFinalizationWithoutParentStatus(t *testing.T, specGateway stri
 	if !slices.Contains(current.Finalizers, cfg.RouteFinalizer()) {
 		t.Fatal("HTTPRoute cleanup failure removed the finalizer")
 	}
-	if current.Annotations[cfg.RouteCleanupFailureAnnotation()] != controller.ProviderReasonInvalidConfiguration {
-		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", current.Annotations[cfg.RouteCleanupFailureAnnotation()])
+	if bindingFixture(t, cfg, current.Annotations).CleanupFailure != controller.ProviderReasonInvalidConfiguration {
+		t.Fatalf("HTTPRoute cleanup failure checkpoint = %q", bindingFixture(t, cfg, current.Annotations).CleanupFailure)
 	}
 	if event := receiveEvent(t, recorder); !strings.Contains(event, "InvalidProviderConfiguration") || !strings.Contains(event, "HTTPRoute cleanup") {
 		t.Fatalf("Event = %q", event)
@@ -731,30 +737,4 @@ func equalRouteParentStatus(left, right gatewayv1.RouteParentStatus) bool {
 		left.ControllerName == right.ControllerName &&
 		len(left.Conditions) == len(right.Conditions) &&
 		left.Conditions[0] == right.Conditions[0]
-}
-
-type patchFailingStatusClient struct {
-	client.Client
-	patchErr error
-}
-
-func (c *patchFailingStatusClient) Status() client.StatusWriter {
-	return &patchFailingStatusWriter{SubResourceWriter: c.Client.Status(), patchErr: c.patchErr}
-}
-
-type patchFailingStatusWriter struct {
-	client.SubResourceWriter
-	patchErr error
-}
-
-func (w *patchFailingStatusWriter) Patch(
-	ctx context.Context,
-	object client.Object,
-	patch client.Patch,
-	options ...client.SubResourcePatchOption,
-) error {
-	if w.patchErr != nil {
-		return w.patchErr
-	}
-	return w.SubResourceWriter.Patch(ctx, object, patch, options...)
 }

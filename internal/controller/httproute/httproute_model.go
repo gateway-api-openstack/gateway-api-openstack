@@ -20,11 +20,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -41,6 +39,7 @@ const (
 	routeErrorRefNotPermitted     routeErrorKind = "RefNotPermitted"
 	routeErrorUnsupportedProtocol routeErrorKind = "UnsupportedProtocol"
 	routeErrorNoMatchingParent    routeErrorKind = "NoMatchingParent"
+	routeErrorNoMatchingHostname  routeErrorKind = "NoMatchingListenerHostname"
 	routeErrorNotAllowed          routeErrorKind = "NotAllowedByListeners"
 	routeErrorPending             routeErrorKind = "Pending"
 )
@@ -56,65 +55,47 @@ func newRouteBuildError(kind routeErrorKind, format string, args ...any) error {
 	return &routeBuildError{kind: kind, message: fmt.Sprintf(format, args...)}
 }
 
+// structurallySupportedRoute is the current runtime admission boundary.
+// Multiple rules remain gated until invalid-backend responses cannot fall
+// through to another rule. The pure forwarding mapper supports their layout.
 func structurallySupportedRoute(route *gatewayv1.HTTPRoute) bool {
-	if len(route.Spec.ParentRefs) != 1 {
-		return false
-	}
-	_, err := validateRouteStructure(route)
-	return err == nil
+	return len(route.Spec.Rules) == 1 && validateRouteStructure(route) == nil
 }
 
-// validateRouteStructure limits programming to the existing Octavia mapping.
-// The logical compiler can represent a wider configuration without enabling it.
-func validateRouteStructure(route *gatewayv1.HTTPRoute) (gatewayv1.BackendObjectReference, error) {
-	if len(route.Spec.Hostnames) > 1 {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "at most one exact hostname is supported")
+func validateRouteStructure(route *gatewayv1.HTTPRoute) error {
+	if len(route.Spec.Rules) == 0 {
+		return newRouteBuildError(routeErrorUnsupported, "at least one HTTPRoute rule is required")
 	}
-	if len(route.Spec.Hostnames) == 1 && strings.HasPrefix(string(route.Spec.Hostnames[0]), "*.") {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "wildcard hostnames are not supported")
+	for _, rule := range route.Spec.Rules {
+		if !model.RuleOptionsSupported(rule) {
+			return newRouteBuildError(routeErrorUnsupported, "named rules, timeouts, retries, and session persistence are not supported")
+		}
+		if err := compileRouteAction(rule); err != nil {
+			return err
+		}
+		for _, match := range rule.Matches {
+			if _, err := model.NormalizeMatch(match); err != nil {
+				return newRouteBuildError(routeErrorUnsupported, "%s", err)
+			}
+		}
+		if len(rule.BackendRefs) != 1 {
+			return newRouteBuildError(routeErrorUnsupported, "exactly one backendRef per rule is supported")
+		}
+		backend := rule.BackendRefs[0]
+		if len(backend.Filters) != 0 {
+			return newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
+		}
+		if backend.Weight != nil && *backend.Weight <= 0 {
+			return newRouteBuildError(routeErrorUnsupported, "a single backendRef must have positive weight")
+		}
+		if _, supported := model.BackendServiceReference(route.Namespace, backend.BackendObjectReference); !supported {
+			return newRouteBuildError(routeErrorInvalidKind, "backendRef must refer to a core Service")
+		}
+		if backend.Port == nil {
+			return newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
+		}
 	}
-	if len(route.Spec.Rules) != 1 {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported")
-	}
-	rule := route.Spec.Rules[0]
-	if rule.Name != nil || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "named rules, timeouts, retries, and session persistence are not supported")
-	}
-	if err := compileRouteAction(rule); err != nil {
-		return gatewayv1.BackendObjectReference{}, err
-	}
-	_, _, err := supportedMatch(rule.Matches)
-	if err != nil {
-		return gatewayv1.BackendObjectReference{}, err
-	}
-	if len(rule.BackendRefs) != 1 {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "exactly one backendRef is supported")
-	}
-	backend := rule.BackendRefs[0]
-	if len(backend.Filters) != 0 {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "backendRef filters are not supported")
-	}
-	if backend.Weight != nil && *backend.Weight == 0 {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "a single backendRef must have non-zero weight")
-	}
-	if backend.Group != nil && *backend.Group != gatewayv1.Group("") {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorInvalidKind, "backendRef group %q is unsupported; use a core Service", *backend.Group)
-	}
-	if backend.Kind != nil && *backend.Kind != gatewayv1.Kind("Service") {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorInvalidKind, "backendRef kind %q is unsupported; use Service", *backend.Kind)
-	}
-	backendNamespace := route.Namespace
-	if backend.Namespace != nil {
-		backendNamespace = string(*backend.Namespace)
-	}
-	if backendNamespace != route.Namespace {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorRefNotPermitted, "cross-namespace backendRefs require ReferenceGrant and are deferred until Phase 5")
-	}
-	if backend.Port == nil {
-		return gatewayv1.BackendObjectReference{}, newRouteBuildError(routeErrorUnsupported, "backendRef port is required")
-	}
-
-	return backend.BackendObjectReference, nil
+	return nil
 }
 
 func (r *Reconciler) buildRouteModelWithReader(
@@ -123,14 +104,14 @@ func (r *Reconciler) buildRouteModelWithReader(
 	route *gatewayv1.HTTPRoute,
 	gateway *gatewayv1.Gateway,
 ) (cloud.RouteSpec, error) {
-	if _, err := validateRouteStructure(route); err != nil {
+	if err := validateRouteStructure(route); err != nil {
 		return cloud.RouteSpec{}, err
 	}
 	inputs, err := collectRouteModelInputs(ctx, reader, gateway, []gatewayv1.HTTPRoute{*route})
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	return r.buildRouteModelFromInputs(ctx, reader, route, gateway, inputs)
+	return r.buildValidatedRouteModel(ctx, reader, route, gateway, inputs)
 }
 
 func (r *Reconciler) buildRouteModelFromInputs(
@@ -140,46 +121,66 @@ func (r *Reconciler) buildRouteModelFromInputs(
 	gateway *gatewayv1.Gateway,
 	inputs *routeModelInputs,
 ) (cloud.RouteSpec, error) {
-	reference, err := validateRouteStructure(route)
-	if err != nil {
+	if err := validateRouteStructure(route); err != nil {
 		return cloud.RouteSpec{}, err
 	}
-	key := types.NamespacedName{Namespace: route.Namespace, Name: string(reference.Name)}
-	service := inputs.service(key)
-	if service == nil {
-		return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", apierrors.NewNotFound(corev1.Resource("services"), key.Name))
-	}
+	return r.buildValidatedRouteModel(ctx, reader, route, gateway, inputs)
+}
+
+// buildValidatedRouteModel lowers an admitted route using one observed input set.
+// Reader-based callers validate before collecting backend objects; callers with
+// existing inputs validate at their entry point without repeating that work here.
+func (r *Reconciler) buildValidatedRouteModel(
+	ctx context.Context,
+	reader client.Reader,
+	route *gatewayv1.HTTPRoute,
+	gateway *gatewayv1.Gateway,
+	inputs *routeModelInputs,
+) (cloud.RouteSpec, error) {
 	topology, err := controller.StoredGatewayTopology(r.Config, gateway)
 	if err != nil {
 		return cloud.RouteSpec{}, err
 	}
 	mode := topology.Topology.MemberMode
-	if _, err := servicePortForBackend(service, *reference.Port, mode); err != nil {
-		return cloud.RouteSpec{}, err
+	for _, rule := range route.Spec.Rules {
+		reference := rule.BackendRefs[0].BackendObjectReference
+		key, _ := model.BackendServiceReference(route.Namespace, reference)
+		if !model.BackendReferenceAllowed(route.Namespace, key, inputs.input.ReferenceGrants) {
+			return cloud.RouteSpec{}, newRouteBuildError(routeErrorRefNotPermitted, "backend Service %s is not permitted by a ReferenceGrant", key)
+		}
+		service := inputs.service(key)
+		if service == nil {
+			return cloud.RouteSpec{}, fmt.Errorf("get backend Service: %w", apierrors.NewNotFound(corev1.Resource("services"), key.Name))
+		}
+		if err := validateBackendServicePort(service, *reference.Port, mode); err != nil {
+			return cloud.RouteSpec{}, err
+		}
 	}
-	// Route selection is still the current single-route contract. Preserve every
-	// rule and backend of that route so unsupported groups cannot disappear here.
+
+	// The runtime caller selects at most one Route per Gateway. Keep this
+	// admission boundary separate from the complete physical mapping, which
+	// also supports several Routes and interleaved rule priorities.
 	logical := inputs.selectedRoute(route)
-	match, backend, err := supportedRouteModel(logical, mode)
+	forwarding, err := model.LowerHTTPForwarding(logical)
 	if err != nil {
-		return cloud.RouteSpec{}, err
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorUnsupported, "%s", err)
 	}
-	var members []cloud.Member
-	if mode == cloud.MemberModeEndpoint {
-		members, err = endpointMembers(service, backend.Endpoints)
-	} else {
-		members, err = nodePortMembersFromSlices(ctx, reader, service, backend.Port, topology.NodeAddressType, inputs.endpointSlices(key))
+	if len(forwarding.Routes) != 1 {
+		for _, candidate := range logical.Routes {
+			for _, parent := range candidate.Parents {
+				if len(parent.Diagnostics) != 0 {
+					return cloud.RouteSpec{}, routeAttachmentError(parent.Diagnostics[0])
+				}
+			}
+		}
+		return cloud.RouteSpec{}, newRouteBuildError(routeErrorNotAllowed, "no listener accepts this HTTPRoute")
 	}
-	if err != nil {
-		return cloud.RouteSpec{}, err
-	}
-	return cloud.RouteSpec{
+	desired := cloud.RouteSpec{
 		Identity: controller.RouteIdentity(r.Config, gateway, route),
 		GatewayRequirements: cloud.GatewayRequirements{
 			Provider:          "amphora",
 			VIPSubnetID:       topology.Topology.VIPSubnetID,
 			ExternalNetworkID: topology.Topology.ExternalNetworkID,
-			ListenerPort:      int(logical.Listeners[0].Port),
 			FlavorID:          topology.Topology.FlavorID, AvailabilityZone: topology.Topology.AvailabilityZone,
 			VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 		},
@@ -187,58 +188,43 @@ func (r *Reconciler) buildRouteModelFromInputs(
 		MemberSubnetID:          topology.Topology.MemberSubnetID,
 		BackendSecurityGroupIDs: slices.Clone(topology.Topology.BackendSecurityGroupIDs),
 		HealthMonitor:           topology.HealthMonitor,
-		Hostname:                match.Hostname,
-		PathType:                cloud.PathMatchType(match.Match.PathType),
-		PathValue:               match.Match.PathValue,
-		Members:                 members,
-	}, nil
+	}
+	var nodes *corev1.NodeList
+	for _, rule := range forwarding.Routes[0].Rules {
+		service := inputs.service(rule.Backend.Service)
+		lowered := rule.Spec
+		if mode == cloud.MemberModeEndpoint {
+			lowered.Members, err = endpointMembers(service, rule.Backend.Endpoints)
+		} else {
+			localNodes, nodeErr := readyBackendNodes(service, rule.Backend.Port, inputs.endpointSlices(rule.Backend.Service))
+			if nodeErr != nil {
+				return cloud.RouteSpec{}, nodeErr
+			}
+			if nodes == nil {
+				nodes = &corev1.NodeList{}
+				if err := reader.List(ctx, nodes); err != nil {
+					return cloud.RouteSpec{}, fmt.Errorf("list backend Nodes: %w", err)
+				}
+			}
+			lowered.Members, err = nodePortMembersForNodes(service, rule.Backend.Port.NodePort, topology.NodeAddressType, localNodes, nodes.Items)
+		}
+		if err != nil {
+			return cloud.RouteSpec{}, err
+		}
+		desired.Rules = append(desired.Rules, lowered)
+	}
+	return desired, nil
 }
 
-// supportedRouteModel lowers only the currently implemented graph shape. Model
-// diagnostics never grant authority to drop a fragment or choose a fallback.
-func supportedRouteModel(logical model.Gateway, mode cloud.MemberMode) (model.RouteMatch, model.BackendGroup, error) {
-	unsupported := func() (model.RouteMatch, model.BackendGroup, error) {
-		return model.RouteMatch{}, model.BackendGroup{}, newRouteBuildError(routeErrorUnsupported, "logical Gateway configuration is outside the supported HTTP profile")
+func routeAttachmentError(diagnostic model.Diagnostic) error {
+	kind := routeErrorNotAllowed
+	switch diagnostic.Reason {
+	case string(gatewayv1.RouteReasonUnsupportedValue):
+		kind = routeErrorUnsupported
+	case string(gatewayv1.RouteReasonNoMatchingParent):
+		kind = routeErrorNoMatchingParent
+	case string(gatewayv1.RouteReasonNoMatchingListenerHostname):
+		kind = routeErrorNoMatchingHostname
 	}
-	if len(logical.Diagnostics) != 0 || len(logical.Listeners) != 1 || len(logical.Routes) != 1 {
-		return unsupported()
-	}
-	listener, route := logical.Listeners[0], logical.Routes[0]
-	if len(listener.Diagnostics) != 0 || len(route.Diagnostics) != 0 || len(listener.Rules) != 1 || len(route.Rules) != 1 || len(route.Parents) != 1 {
-		return unsupported()
-	}
-	match := listener.Rules[0]
-	if listener.Hostname != "" || route.Source.Namespace != logical.Source.Namespace || len(match.Match.Headers) != 0 || strings.HasPrefix(match.Hostname, "*.") {
-		return unsupported()
-	}
-	rule, parent := route.Rules[0], route.Parents[0]
-	if len(rule.Diagnostics) != 0 || len(rule.Backends) != 1 || len(rule.Matches) != 1 || parent.State != model.AttachmentAccepted {
-		return unsupported()
-	}
-	backend := rule.Backends[0]
-	if backend.Diagnostic != nil || backend.Port == nil || backend.Weight == 0 || backend.Service.Namespace != route.Source.Namespace {
-		return unsupported()
-	}
-	if mode == cloud.MemberModeNodePort && backend.Port.NodePort == 0 {
-		return unsupported()
-	}
-	return match, backend, nil
-}
-
-func supportedMatch(matches []gatewayv1.HTTPRouteMatch) (cloud.PathMatchType, string, error) {
-	if len(matches) > 1 {
-		return "", "", newRouteBuildError(routeErrorUnsupported, "at most one HTTPRoute match is supported")
-	}
-	var match gatewayv1.HTTPRouteMatch
-	if len(matches) == 1 {
-		match = matches[0]
-	}
-	if len(match.Headers) != 0 || len(match.QueryParams) != 0 || match.Method != nil {
-		return "", "", newRouteBuildError(routeErrorUnsupported, "header, query parameter, and method matches are not supported")
-	}
-	normalized, err := model.NormalizeMatch(match)
-	if err != nil {
-		return "", "", newRouteBuildError(routeErrorUnsupported, "%s", err)
-	}
-	return cloud.PathMatchType(normalized.PathType), normalized.PathValue, nil
+	return newRouteBuildError(kind, "%s", diagnostic.Message)
 }

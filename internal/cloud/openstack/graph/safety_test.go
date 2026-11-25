@@ -21,11 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/internal/openstacktest"
 	"github.com/gophercloud/gophercloud/v2"
 )
 
@@ -248,11 +248,11 @@ func TestBuildGatewayDeletionPlanUsesDedicatedListAPIs(t *testing.T) {
 	}
 	wantRequestOrder := []string{
 		"/lbaas/listeners",
+		"/lbaas/pools",
+		"/lbaas/pools/pool-1/members",
+		"/lbaas/healthmonitors",
 		"/lbaas/l7policies",
 		"/lbaas/l7policies/policy-1/rules",
-		"/lbaas/pools",
-		"/lbaas/healthmonitors",
-		"/lbaas/pools/pool-1/members",
 	}
 	gotRequestOrder := requests.orderedPaths()
 	if len(gotRequestOrder) != len(wantRequestOrder) {
@@ -338,7 +338,7 @@ func TestDeleteGatewayExecutesValidatedPlanWithoutCascade(t *testing.T) {
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/listeners":
 			items := []any{}
 			if deleted["/lbaas/listeners/listener-1"] == 0 {
-				items = append(items, map[string]any{"id": "listener-1", "tags": listenerTags})
+				items = append(items, map[string]any{"id": "listener-1", "protocol": "HTTP", "protocol_port": 80, "tags": listenerTags})
 			}
 			safetyWriteJSON(t, w, map[string]any{"listeners": items})
 		case request.Method == http.MethodGet && request.URL.Path == "/lbaas/l7policies":
@@ -528,7 +528,7 @@ func TestObserveRoutePoliciesRejectsForeignPolicyOrRule(t *testing.T) {
 				}
 			})
 			provider := newTestProvider(t, ServiceClients{LoadBalancer: safetyServiceClient(handler), ProjectID: "project-a"}, ProviderConfig{})
-			_, err := provider.observeGatewayRoutes(context.Background(), []Identity{identity}, cloud.GatewayState{LoadBalancerID: "load-balancer-1", ListenerID: "listener-1"})
+			_, err := provider.observeGatewayRoutes(context.Background(), []Identity{identity}, cloud.GatewayState{LoadBalancerID: "load-balancer-1", Listeners: []cloud.ListenerState{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, ID: "listener-1"}}})
 			if !errors.Is(err, cloud.ErrOwnershipConflict) {
 				t.Fatalf("observeGatewayRoutes() error = %v, want ownership conflict", err)
 			}
@@ -597,7 +597,8 @@ func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResourc
 			}
 			safetyWriteJSON(t, w, map[string]any{"listeners": []any{
 				map[string]any{
-					"id":            "listener-1",
+					"id":       "listener-1",
+					"protocol": "HTTP", "protocol_port": 80,
 					"project_id":    "project-a",
 					"loadbalancers": []any{map[string]any{"id": "load-balancer-1"}},
 					"tags":          tags["listener"],
@@ -655,7 +656,7 @@ func safetyGatewayGraphHandler(t *testing.T, identity Identity, unmanagedResourc
 				return
 			}
 			safetyWriteJSON(t, w, map[string]any{"members": []any{
-				map[string]any{"id": "member-1", "project_id": "project-a", "pool_id": "pool-1", "tags": tags["member"]},
+				map[string]any{"id": "member-1", "address": "10.0.0.10", "protocol_port": 30080, "project_id": "project-a", "pool_id": "pool-1", "tags": tags["member"]},
 			}})
 		case "/lbaas/healthmonitors":
 			if !safetyRequireQuery(t, w, request, "pool_id", "pool-1") {
@@ -699,6 +700,9 @@ func safetyTestIdentity(t *testing.T) Identity {
 func safetyGatewayTags(t *testing.T, identity Identity, role string) []string {
 	t.Helper()
 	tags, err := identity.GatewayTags(role)
+	if role == roleListener {
+		tags, err = identity.ChildTags(role, testChildKey(role))
+	}
 	if err != nil {
 		t.Fatalf("GatewayTags(%q) error = %v", role, err)
 	}
@@ -707,7 +711,7 @@ func safetyGatewayTags(t *testing.T, identity Identity, role string) []string {
 
 func safetyRouteTags(t *testing.T, identity Identity, role string) []string {
 	t.Helper()
-	tags, err := identity.RouteTags(role)
+	tags, err := identity.ChildTags(role, testChildKey(role))
 	if err != nil {
 		t.Fatalf("RouteTags(%q) error = %v", role, err)
 	}
@@ -721,18 +725,7 @@ func (roundTrip safetyRoundTripper) RoundTrip(request *http.Request) (*http.Resp
 }
 
 func safetyServiceClient(handler http.Handler) *gophercloud.ServiceClient {
-	providerClient := &gophercloud.ProviderClient{TokenID: "test-token"}
-	providerClient.HTTPClient.Transport = safetyRoundTripper(func(request *http.Request) (*http.Response, error) {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		result := response.Result()
-		result.Request = request
-		return result, nil
-	})
-	return &gophercloud.ServiceClient{
-		ProviderClient: providerClient,
-		Endpoint:       "http://openstack.test/",
-	}
+	return openstacktest.ServiceClient(handler)
 }
 
 func safetyRequireQuery(t *testing.T, w http.ResponseWriter, request *http.Request, key, want string) bool {
@@ -751,4 +744,27 @@ func safetyWriteJSON(t *testing.T, w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Errorf("encode test response: %v", err)
 	}
+}
+
+func testChildKey(role string) cloud.ResourceKey {
+	key := cloud.ResourceKey{Kind: cloud.ResourceRule}
+	switch role {
+	case roleListener:
+		key.Kind, key.Listener = cloud.ResourceListener, cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}
+	case rolePolicyExact, rolePolicyPrefix, roleRulePath, roleRuleHost, roleRuleHeader:
+		key.Kind, key.Listener, key.Variant = cloud.ResourcePolicy, cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, "exact"
+		if role == rolePolicyPrefix {
+			key.Variant = "prefix"
+		}
+		if role == roleRulePath {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "path"
+		}
+		if role == roleRuleHost {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "host"
+		}
+		if role == roleRuleHeader {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "header-0"
+		}
+	}
+	return key
 }

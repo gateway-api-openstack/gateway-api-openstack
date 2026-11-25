@@ -26,6 +26,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
@@ -79,9 +80,11 @@ func TestNodePortMembersWorkerEligibility(t *testing.T) {
 					if tt.mutate != nil {
 						tt.mutate(node)
 					}
-					kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(endpoints, node, other).Build()
-
-					members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
+					ready, err := readyBackendNodes(service, &service.Spec.Ports[0], []discoveryv1.EndpointSlice{*endpoints})
+					if err != nil {
+						t.Fatal(err)
+					}
+					members, err := nodePortMembersForNodes(service, service.Spec.Ports[0].NodePort, corev1.NodeInternalIP, ready, []corev1.Node{*node, *other})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -104,9 +107,11 @@ func TestNodePortMembersNoEligibleWorker(t *testing.T) {
 			service, endpoints, node := validNodePortBackend("default", "backend")
 			service.Spec.ExternalTrafficPolicy = policy
 			node.Labels = map[string]string{"node-role.kubernetes.io/control-plane": ""}
-			kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(endpoints, node).Build()
-
-			members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
+			ready, err := readyBackendNodes(service, &service.Spec.Ports[0], []discoveryv1.EndpointSlice{*endpoints})
+			if err != nil {
+				t.Fatal(err)
+			}
+			members, err := nodePortMembersForNodes(service, service.Spec.Ports[0].NodePort, corev1.NodeInternalIP, ready, []corev1.Node{*node})
 			var buildErr *routeBuildError
 			if !errors.As(err, &buildErr) || buildErr.kind != routeErrorPending || len(members) != 0 {
 				t.Fatalf("members = %#v, error = %v, want pending without members", members, err)
@@ -159,7 +164,12 @@ func TestNodePortMembersFollowWorkerLabelChanges(t *testing.T) {
 			endpoints.Endpoints = append(endpoints.Endpoints, discoveryv1.Endpoint{
 				NodeName: ptr.To(other.Name), Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
 			})
-			kubeClient := indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(endpoints, node, other).Build()
+			cfg := testConfig()
+			_, gateway := providerRouteParentObjects(cfg)
+			route := mapperTestHTTPRoute(service.Namespace, "api", gatewayv1.ParentReference{Name: gatewayv1.ObjectName(gateway.Name)}, service.Name)
+			route.UID = "route-uid"
+			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(service, endpoints, node, other).Build()
+			reconciler := &Reconciler{Config: cfg}
 
 			for _, step := range []struct {
 				labels  map[string]string
@@ -175,10 +185,11 @@ func TestNodePortMembersFollowWorkerLabelChanges(t *testing.T) {
 				if err := kubeClient.Update(context.Background(), node); err != nil {
 					t.Fatal(err)
 				}
-				members, err := nodePortMembersFromReader(context.Background(), kubeClient, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
+				desired, err := reconciler.buildRouteModelWithReader(t.Context(), kubeClient, route, gateway)
 				if err != nil {
 					t.Fatal(err)
 				}
+				members := desired.Rules[0].Members
 				want := []cloud.Member{{Address: "192.0.2.20", Port: 30080}}
 				if step.include {
 					want = append([]cloud.Member{{Address: "192.0.2.10", Port: 30080}}, want...)

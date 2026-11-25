@@ -47,8 +47,7 @@ type GatewaySpec struct {
 	ExternalNetworkID   string
 	FlavorID            string
 	AvailabilityZone    string
-	ListenerName        string
-	ListenerPort        int
+	Listeners           []ListenerSpec
 	VIPSecurityGroupIDs []string
 }
 
@@ -60,7 +59,7 @@ type GatewayState struct {
 	VIPAddress        string
 	FloatingIPID      string
 	FloatingIPAddress string
-	ListenerID        string
+	Listeners         []ListenerState
 }
 
 // GatewayRequirements contains the immutable Gateway fields and the settings
@@ -71,7 +70,6 @@ type GatewayRequirements struct {
 	ExternalNetworkID   string
 	FlavorID            string
 	AvailabilityZone    string
-	ListenerPort        int
 	VIPSecurityGroupIDs []string
 }
 
@@ -79,7 +77,7 @@ type GatewayRequirements struct {
 func (r GatewayRequirements) Equal(other GatewayRequirements) bool {
 	return r.Provider == other.Provider && r.VIPSubnetID == other.VIPSubnetID &&
 		r.ExternalNetworkID == other.ExternalNetworkID && r.FlavorID == other.FlavorID &&
-		r.AvailabilityZone == other.AvailabilityZone && r.ListenerPort == other.ListenerPort &&
+		r.AvailabilityZone == other.AvailabilityZone &&
 		slices.Equal(r.VIPSecurityGroupIDs, other.VIPSecurityGroupIDs)
 }
 
@@ -114,7 +112,56 @@ type Member struct {
 	ProviderID string
 }
 
-// RouteSpec describes the pool and L7 policies owned by one route.
+// ListenerSpec describes one physical HTTP listener. Logical listener names and
+// attachment status remain in the Kubernetes layer.
+type ListenerSpec struct {
+	Key ListenerKey
+}
+
+// ListenerState identifies an observed physical listener.
+type ListenerState struct {
+	Key ListenerKey
+	ID  string
+}
+
+// ListenerID returns the observed ID for a physical listener, if present.
+func (s GatewayState) ListenerID(key ListenerKey) string {
+	for _, listener := range s.Listeners {
+		if listener.Key == key {
+			return listener.ID
+		}
+	}
+	return ""
+}
+
+// HeaderMatch is an exact, case-insensitive HTTP header name and its value.
+type HeaderMatch struct {
+	Name  string
+	Value string
+}
+
+// RouteMatchSpec identifies one normalized match alternative on a physical
+// listener. Priority orders matches across all Routes on that listener.
+type RouteMatchSpec struct {
+	Listener   ListenerKey
+	MatchIndex int
+	HostIndex  int
+	Priority   int
+	Hostname   string
+	PathType   PathMatchType
+	PathValue  string
+	Headers    []HeaderMatch
+}
+
+// RouteRuleSpec describes a single-backend rule and its policy alternatives.
+// Index identifies the rule's slot in the owning HTTPRoute.
+type RouteRuleSpec struct {
+	Index   int
+	Members []Member
+	Matches []RouteMatchSpec
+}
+
+// RouteSpec describes all forwarding resources owned by one exact HTTPRoute.
 type RouteSpec struct {
 	Identity                Identity
 	Gateway                 GatewayState
@@ -123,19 +170,22 @@ type RouteSpec struct {
 	MemberSubnetID          string
 	BackendSecurityGroupIDs []string
 	HealthMonitor           HealthMonitorConfig
-	Hostname                string
-	PathType                PathMatchType
-	PathValue               string
-	Members                 []Member
+	Rules                   []RouteRuleSpec
 }
 
-// RouteState records the OpenStack objects produced for one HTTPRoute.
-type RouteState struct {
+// RouteRuleState records the observed objects for one rule slot.
+type RouteRuleState struct {
+	Index       int
 	PoolID      string
 	MemberIDs   []string
 	MonitorID   string
 	L7PolicyIDs []string
 	L7RuleIDs   []string
+}
+
+// RouteState records the OpenStack objects produced for one HTTPRoute.
+type RouteState struct {
+	Rules []RouteRuleState
 }
 
 // ValidateGatewayIdentity verifies the common Gateway ownership tuple.

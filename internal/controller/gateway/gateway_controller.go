@@ -61,6 +61,7 @@ var (
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses;httproutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch;update
 func (r *Reconciler) Reconcile(
 	ctx context.Context,
@@ -97,6 +98,14 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, scope *gatewayScope) (
 }
 
 func (r *Reconciler) reconcileNormal(ctx context.Context, scope *gatewayScope) (ctrl.Result, error) {
+	if scope.managed && controller.GatewayClassSupportsInstalledVersion(scope.gatewayClass) && controller.ValidateGatewayBinding(r.Config, scope.gateway) == nil {
+		input, err := r.collectListenerInputs(ctx, scope.gateway)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		evaluation := evaluateGatewayListeners(input)
+		scope.listeners = &evaluation
+	}
 	decision := r.decideGatewayPhase(scope)
 	switch decision.phase {
 	case gatewayPhaseIgnore:
@@ -110,8 +119,8 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, scope *gatewayScope) (
 		return ctrl.Result{}, nil
 	case gatewayPhaseInvalidSpec:
 		return r.reconcileRejectedGateway(ctx, scope, decision)
-	case gatewayPhaseReplaceGraph:
-		return r.reconcileGatewayReplacement(ctx, scope, decision)
+	case gatewayPhaseCheckpoint:
+		return r.reconcileGatewayCheckpoint(ctx, scope, decision)
 	case gatewayPhaseBind:
 		return r.reconcileGatewayBinding(ctx, scope, decision)
 	case gatewayPhaseEnsure:
@@ -138,16 +147,16 @@ func (r *Reconciler) reconcileRejectedGateway(
 	return r.cleanupGatewayAfterStatusCheckpoint(ctx, scope)
 }
 
-func (r *Reconciler) reconcileGatewayReplacement(
+func (r *Reconciler) reconcileGatewayCheckpoint(
 	ctx context.Context,
 	scope *gatewayScope,
 	decision gatewayPhaseDecision,
 ) (ctrl.Result, error) {
-	message := "Listener port changed; replacing the controller-owned OpenStack resource graph"
-	if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listener, message); err != nil {
+	message := "Gateway configuration changed and requires reconciliation"
+	if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listeners, message); err != nil {
 		return ctrl.Result{}, err
 	}
-	return r.cleanupGatewayAfterStatusCheckpoint(ctx, scope)
+	return ctrl.Result{Requeue: true}, nil
 }
 
 func (r *Reconciler) cleanupGatewayAfterStatusCheckpoint(
@@ -165,7 +174,7 @@ func (r *Reconciler) reconcileGatewayBinding(
 	scope *gatewayScope,
 	decision gatewayPhaseDecision,
 ) (ctrl.Result, error) {
-	if err := r.bindGateway(ctx, scope.gateway, decision.listenerPort); err != nil {
+	if err := r.bindGateway(ctx, scope.gateway); err != nil {
 		var invalid *classconfig.InvalidParametersError
 		if errors.As(err, &invalid) {
 			r.setGatewayFailureReason(scope.gateway, gatewayv1.GatewayReasonInvalidParameters, invalid.Error())
@@ -176,7 +185,7 @@ func (r *Reconciler) reconcileGatewayBinding(
 			return r.setGatewayUnsupportedVersion(ctx, scope)
 		}
 		if _, classified := controller.ProviderFailurePolicyFor(err); classified {
-			return r.handleGatewayProviderFailure(ctx, scope, decision.listener, err)
+			return r.handleGatewayProviderFailure(ctx, scope, decision.listeners, err)
 		}
 		return ctrl.Result{}, err
 	}
@@ -204,7 +213,7 @@ func (r *Reconciler) reconcileGatewayGraph(
 			}
 			return ctrl.Result{}, controller.SafeProviderReconcileError(controller.ProviderFailurePolicy{Message: "The HTTPRoute graph could not be reconciled"}, err)
 		}
-		return r.handleGatewayProviderFailure(ctx, scope, decision.listener, err)
+		return r.handleGatewayProviderFailure(ctx, scope, decision.listeners, err)
 	}
 	gatewayResult := graphResult.Gateway
 	if err := gatewayResult.Outcome.Validate(); err != nil {
@@ -212,14 +221,14 @@ func (r *Reconciler) reconcileGatewayGraph(
 	}
 	if gatewayResult.Outcome.State == cloud.OutcomeProgressing {
 		message := controller.ProviderProgressMessage(gatewayResult.Outcome, "Octavia resources for the Gateway are still progressing")
-		if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listener, message); err != nil {
+		if err := r.setGatewayProgressing(ctx, scope.gateway, decision.listeners, message); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: controller.ProviderProgressRequeueAfter(gatewayResult.Outcome, scope.gateway.UID)}, nil
 	}
 	gatewayState := gatewayResult.State
-	log.FromContext(ctx).V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listenerID", gatewayState.ListenerID)
-	if err := r.setGatewayProgrammed(ctx, scope.gateway, decision.listener, gatewayState); err != nil {
+	log.FromContext(ctx).V(1).Info("Ensured OpenStack resources for Gateway", "loadBalancerID", gatewayState.LoadBalancerID, "listeners", len(gatewayState.Listeners))
+	if err := r.setGatewayProgrammed(ctx, scope.gateway, decision.listeners, gatewayState); err != nil {
 		return ctrl.Result{}, err
 	}
 	if graphResult.Outcome.State == cloud.OutcomeProgressing {

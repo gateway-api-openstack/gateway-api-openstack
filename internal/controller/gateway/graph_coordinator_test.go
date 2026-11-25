@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +30,8 @@ import (
 )
 
 func TestGatewayRevalidatesFinalizerAfterWaitingForGraph(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
 	config := testConfig()
 	coordinator := &graph.Coordinator{}
 	class := &gatewayv1.GatewayClass{
@@ -42,7 +45,7 @@ func TestGatewayRevalidatesFinalizerAfterWaitingForGraph(t *testing.T) {
 			UID:         "gateway-1",
 			Generation:  1,
 			Finalizers:  []string{config.GatewayFinalizer()},
-			Annotations: gatewayBindingAnnotations(config, "80"),
+			Annotations: gatewayBindingAnnotations(config),
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(class.Name),
@@ -53,29 +56,35 @@ func TestGatewayRevalidatesFinalizerAfterWaitingForGraph(t *testing.T) {
 	provider := &recordingProvider{}
 	reconciler := newTestReconciler(Reconciler{Client: kubeClient, Coordinator: coordinator, APIReader: kubeClient, Config: config}, provider)
 
-	release, err := graph.Acquire(context.Background(), coordinator, string(gateway.UID))
+	release, err := graph.Acquire(ctx, coordinator, string(gateway.UID))
 	if err != nil {
 		t.Fatalf("acquire graph lock: %v", err)
 	}
+	t.Cleanup(release)
 	result := make(chan error, 1)
 	go func() {
-		_, err := reconciler.ensureGateway(context.Background(), gateway.DeepCopy())
+		_, err := reconciler.ensureGateway(ctx, gateway.DeepCopy())
 		result <- err
 	}()
 	var changed gatewayv1.Gateway
-	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), &changed); err != nil {
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(gateway), &changed); err != nil {
 		t.Fatal(err)
 	}
 	changed.Finalizers = nil
-	if err := kubeClient.Update(context.Background(), &changed); err != nil {
+	if err := kubeClient.Update(ctx, &changed); err != nil {
 		t.Fatal(err)
 	}
 	release()
 
-	if err := <-result; !errors.Is(err, errGatewayChanged) {
-		t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
+	select {
+	case err := <-result:
+		if !errors.Is(err, errGatewayChanged) {
+			t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
+		}
+	case <-ctx.Done():
+		t.Fatalf("Gateway reconciliation did not finish: %v", ctx.Err())
 	}
-	if len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("EnsureGateway calls = %d, want 0", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Ensure requests = %d, want 0", len(provider.GatewaySpecs()))
 	}
 }

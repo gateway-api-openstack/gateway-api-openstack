@@ -31,7 +31,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
-// ObserveRouteGraph rebuilds every bound fragment from a complete namespace read.
+// ObserveRouteGraph rebuilds every bound fragment from a complete cluster-wide read.
 // Cached indexes cannot establish completeness for a destructive cloud plan.
 func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Request, gateway *gatewayv1.Gateway) (graph.RouteInputs, error) {
 	if r.APIReader == nil {
@@ -54,7 +54,8 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 	foundRequested := request.Route == nil
 	for i := range routes {
 		route := &routes[i]
-		identity, present, err := r.storedRouteIdentity(route)
+		binding, present, err := controller.StoredRouteBinding(r.Config, route, request.Identity.GatewayUID)
+		identity := binding.Identity
 		if err != nil {
 			return graph.RouteInputs{}, err
 		}
@@ -68,7 +69,7 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 			}
 		}
 		node := cloud.RouteGraphNode{Spec: cloud.RouteSpec{Identity: identity}, Disposition: cloud.GraphPreserve}
-		lifecycle := route.Annotations[r.Config.RouteLifecycleAnnotation()]
+		lifecycle := binding.Lifecycle
 		switch lifecycle {
 		case controller.RouteAttached, controller.RouteDetaching:
 		default:
@@ -85,6 +86,9 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 		} else if request.Action == graph.Ensure {
 			if gateway == nil {
 				return graph.RouteInputs{}, errors.New("gateway is required for an attached route")
+			}
+			if routeProgrammedCheckpointNeeded(r.Config, route, gateway) {
+				return graph.RouteInputs{}, errHTTPRouteChanged
 			}
 			snapshot, err := r.buildRouteValidationSnapshotFromInputs(ctx, route, gateway, routeSnapshotForEnsure, backends)
 			if err != nil {
@@ -105,6 +109,15 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 	}
 	if !foundRequested {
 		return graph.RouteInputs{}, errHTTPRouteChanged
+	}
+	ensured := 0
+	for _, node := range input.Nodes {
+		if node.Disposition == cloud.GraphEnsure {
+			ensured++
+		}
+	}
+	if ensured > 1 {
+		return graph.RouteInputs{}, newRouteBuildError(routeErrorUnsupported, "multiple active HTTPRoutes require HTTP error and action-ordering support")
 	}
 	input.Validate = func(ctx context.Context) error {
 		current, err := r.liveGraphRoutes(ctx, request.Identity)
@@ -128,30 +141,42 @@ func (r *Reconciler) ObserveRouteGraph(ctx context.Context, request graph.Reques
 }
 
 func (r *Reconciler) liveGraphRoutes(ctx context.Context, identity cloud.Identity) ([]gatewayv1.HTTPRoute, error) {
-	var list gatewayv1.HTTPRouteList
-	if err := r.APIReader.List(ctx, &list, client.InNamespace(identity.GatewayNamespace)); err != nil {
-		return nil, fmt.Errorf("list Gateway route fragments: %w", err)
-	}
-	result := make([]gatewayv1.HTTPRoute, 0)
-	for _, route := range list.Items {
-		boundUID := route.Annotations[r.Config.RouteGatewayUIDAnnotation()]
-		if boundUID == identity.GatewayUID {
-			result = append(result, route)
-			continue
+	const inventoryPageSize int64 = 500
+	var result []gatewayv1.HTTPRoute
+	continueToken := ""
+	for {
+		var list gatewayv1.HTTPRouteList
+		if err := r.APIReader.List(ctx, &list, client.Limit(inventoryPageSize), client.Continue(continueToken)); err != nil {
+			return nil, fmt.Errorf("list Gateway route fragments: %w", err)
 		}
-		// An unbound candidate can change route selection while a graph is built.
-		for _, parent := range route.Spec.ParentRefs {
-			namespace := route.Namespace
-			if parent.Namespace != nil {
-				namespace = string(*parent.Namespace)
+		for _, route := range list.Items {
+			binding, present, err := controller.StoredRouteBinding(r.Config, &route, identity.GatewayUID)
+			if err != nil {
+				return nil, err
 			}
-			if controller.IsGatewayParentRef(parent) && namespace == identity.GatewayNamespace && string(parent.Name) == identity.GatewayName {
+			if present && controller.SameGatewayIdentity(binding.Identity, identity) {
 				result = append(result, route)
-				break
+				continue
+			}
+			for _, parent := range route.Spec.ParentRefs {
+				namespace := route.Namespace
+				if parent.Namespace != nil {
+					namespace = string(*parent.Namespace)
+				}
+				if controller.IsGatewayParentRef(parent) && namespace == identity.GatewayNamespace && string(parent.Name) == identity.GatewayName {
+					result = append(result, route)
+					break
+				}
 			}
 		}
+		continueToken = list.Continue
+		if continueToken == "" {
+			break
+		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Namespace+"/"+result[i].Name < result[j].Namespace+"/"+result[j].Name
+	})
 	return result, nil
 }
 

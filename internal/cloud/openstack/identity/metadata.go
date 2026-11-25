@@ -55,6 +55,8 @@ const (
 	RoleRulePath = "l7-rule-path"
 	// RoleRuleHost identifies a hostname L7 rule.
 	RoleRuleHost = "l7-rule-host"
+	// RoleRuleHeader identifies an exact-header L7 rule.
+	RoleRuleHeader = "l7-rule-header"
 )
 
 // Identity encodes the shared immutable ownership tuple into Octavia tags and
@@ -119,6 +121,107 @@ func (id Identity) RouteTags(role string) ([]string, error) {
 		return nil, err
 	}
 	return id.tags(role, true, true)
+}
+
+// ChildTags adds a canonical child key to the complete ownership tuple.
+func (id Identity) ChildTags(role string, key cloud.ResourceKey) ([]string, error) {
+	parsed, err := cloud.ParseResourceKey(key.String())
+	if err != nil || parsed != key || ValidateChildRole(role, key) != nil {
+		return nil, fmt.Errorf("invalid child resource key")
+	}
+	var tags []string
+	if key.Kind == cloud.ResourceListener {
+		tags, err = id.GatewayTags(role)
+	} else {
+		tags, err = id.RouteTags(role)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The key must remain decodable for recovery, unlike a bounded trace tag.
+	return validateTagLengths(append(tags, identityPrefix+"resource-key="+encode(key.String())))
+}
+
+// ValidateChildRole checks that an ownership role describes the child key kind.
+func ValidateChildRole(role string, key cloud.ResourceKey) error {
+	valid := false
+	switch role {
+	case RoleListener:
+		valid = key.Kind == cloud.ResourceListener
+	case RolePool, RoleMember, RoleMonitor:
+		valid = key.Kind == cloud.ResourceRule
+	case RolePolicyExact:
+		valid = key.Kind == cloud.ResourcePolicy && key.Variant == "exact"
+	case RolePolicyPrefix:
+		valid = key.Kind == cloud.ResourcePolicy && key.Variant == "prefix"
+	case RoleRulePath:
+		valid = key.Kind == cloud.ResourcePredicate && key.Predicate == "path"
+	case RoleRuleHost:
+		valid = key.Kind == cloud.ResourcePredicate && key.Predicate == "host"
+	case RoleRuleHeader:
+		valid = key.Kind == cloud.ResourcePredicate && strings.HasPrefix(key.Predicate, "header-")
+	}
+	if !valid {
+		return fmt.Errorf("resource role does not match its child key")
+	}
+	return nil
+}
+
+// ChildKey parses exactly one canonical resource key from identity metadata.
+func ChildKey(tags []string) (cloud.ResourceKey, error) {
+	var value string
+	count := 0
+	for _, item := range tags {
+		key, encoded, ok := parseIdentityTag(item)
+		if !ok || key != "resource-key" {
+			continue
+		}
+		count++
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil || encode(string(decoded)) != encoded {
+			return cloud.ResourceKey{}, fmt.Errorf("invalid child resource key encoding")
+		}
+		value = string(decoded)
+	}
+	if count != 1 {
+		return cloud.ResourceKey{}, fmt.Errorf("expected one child resource key")
+	}
+	return cloud.ParseResourceKey(value)
+}
+
+// RouteIdentity reconstructs the exact Route tuple for Gateway finalization.
+// The caller must still validate the expected role and all parent relationships.
+func (id Identity) RouteIdentity(tags []string) (Identity, error) {
+	value := id.value
+	for _, field := range []struct {
+		key string
+		dst *string
+	}{
+		{key: "route-namespace", dst: &value.RouteNamespace},
+		{key: "route-name", dst: &value.RouteName},
+		{key: "route-uid", dst: &value.RouteUID},
+	} {
+		count := 0
+		for _, item := range tags {
+			key, encoded, ok := parseIdentityTag(item)
+			if !ok || key != field.key {
+				continue
+			}
+			count++
+			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil || len(decoded) == 0 || encode(string(decoded)) != encoded {
+				return Identity{}, fmt.Errorf("invalid Route identity metadata")
+			}
+			*field.dst = string(decoded)
+		}
+		if count != 1 {
+			return Identity{}, fmt.Errorf("incomplete or duplicate Route identity metadata")
+		}
+	}
+	if err := cloud.ValidateRouteIdentity(value); err != nil {
+		return Identity{}, err
+	}
+	return NewIdentity(value)
 }
 
 // GatewayDiscoveryTags return the stable, name-scoped portion of Gateway

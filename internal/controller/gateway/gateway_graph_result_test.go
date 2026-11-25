@@ -35,9 +35,11 @@ import (
 func TestGatewayRejectsMissingComponentOutcome(t *testing.T) {
 	cfg := testConfig()
 	gateway := programmedTestGateway(cfg)
-	gateway.Status = gatewayv1.GatewayStatus{}
 	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
+	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), gateway); err != nil {
+		t.Fatal(err)
+	}
 	reconciler := newTestReconciler(Reconciler{Client: kubeClient, APIReader: kubeClient, Config: cfg, Writer: fixedGatewayGraph{result: cloud.GatewayGraphResult{Outcome: cloud.ReadyOutcome()}}}, nil)
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}); err == nil {
 		t.Fatal("missing Gateway component outcome was accepted")

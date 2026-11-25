@@ -63,6 +63,7 @@ const (
 	rolePolicyPrefix = openstackidentity.RolePolicyPrefix
 	roleRulePath     = openstackidentity.RoleRulePath
 	roleRuleHost     = openstackidentity.RoleRuleHost
+	roleRuleHeader   = openstackidentity.RoleRuleHeader
 )
 
 var auditInventoryLimitations = []string{

@@ -17,6 +17,7 @@ limitations under the License.
 package inventory
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -155,7 +156,7 @@ func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 	scopeTags := auditTestScopeTags(identity)
 
 	t.Run("reported parent differs from observed parent", func(t *testing.T) {
-		listenerTags, err := wrapped.GatewayTags(roleListener)
+		listenerTags, err := wrapped.ChildTags(roleListener, testChildKey(roleListener))
 		if err != nil {
 			t.Fatalf("GatewayTags() error = %v", err)
 		}
@@ -172,7 +173,7 @@ func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 	})
 
 	t.Run("matched child without parent", func(t *testing.T) {
-		listenerTags, err := wrapped.GatewayTags(roleListener)
+		listenerTags, err := wrapped.ChildTags(roleListener, testChildKey(roleListener))
 		if err != nil {
 			t.Fatalf("GatewayTags() error = %v", err)
 		}
@@ -187,7 +188,7 @@ func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 	})
 
 	t.Run("parent scoped observation is missing", func(t *testing.T) {
-		listenerTags, err := wrapped.GatewayTags(roleListener)
+		listenerTags, err := wrapped.ChildTags(roleListener, testChildKey(roleListener))
 		if err != nil {
 			t.Fatalf("GatewayTags() error = %v", err)
 		}
@@ -208,7 +209,7 @@ func TestClassifyAuditCandidatesValidatesGraphAndCardinality(t *testing.T) {
 	})
 
 	t.Run("parent identity differs", func(t *testing.T) {
-		listenerTags, err := wrapped.GatewayTags(roleListener)
+		listenerTags, err := wrapped.ChildTags(roleListener, testChildKey(roleListener))
 		if err != nil {
 			t.Fatalf("GatewayTags() error = %v", err)
 		}
@@ -383,4 +384,36 @@ func stringsContainAny(value string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+func TestAuditDistinguishesPhysicalListenerKeys(t *testing.T) {
+	identity := cloud.Identity{OpenStackProjectID: "project-a", ClusterID: "cluster", Controller: "example.test/controller", GatewayNamespace: "default", GatewayName: "edge", GatewayUID: "gateway-uid"}
+	wrapped, err := openstackidentity.NewIdentity(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := preparedAuditRecord{record: audit.OwnershipRecord{Identity: identity, Objects: []audit.ObjectReference{{Kind: "Gateway", Namespace: "default", Name: "edge", UID: "gateway-uid"}}}, identity: wrapped}
+	for _, duplicate := range []bool{false, true} {
+		candidates := auditCandidateSet{}
+		candidates.add(auditTestLoadBalancerCandidate(t, identity, "load-balancer-1"))
+		for index, port := range []int{80, 8080} {
+			if duplicate {
+				port = 80
+			}
+			tags, err := wrapped.ChildTags(roleListener, cloud.ResourceKey{Kind: cloud.ResourceListener, Listener: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: port}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidates.add(auditCandidate{service: auditServiceOctavia, resourceType: auditTypeListener, id: fmt.Sprintf("listener-%d", index), projectID: "project-a", tags: tags, reportedParents: singletonStringSet("load-balancer-1"), observedParents: singletonStringSet("load-balancer-1")})
+		}
+		findings := classifyAuditCandidates(candidates, []preparedAuditRecord{record}, auditTestScopeTags(identity), "project-a")
+		for _, finding := range findings {
+			if finding.Type != auditTypeListener {
+				continue
+			}
+			if duplicate && finding.Reason != auditReasonDuplicateIdentity || !duplicate && finding.Disposition != audit.DispositionMatched {
+				t.Fatalf("duplicate=%t: %#v", duplicate, finding)
+			}
+		}
+	}
 }

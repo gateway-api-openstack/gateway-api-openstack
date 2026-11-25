@@ -51,7 +51,7 @@ func TestGatewayReconcilePredicate(t *testing.T) {
 		gateway.Annotations["example.com/foreign"] = "two"
 	}), false, "foreign annotation")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
-		gateway.Annotations[cfg.GatewayListenerPortAnnotation()] = "80"
+		gateway.Annotations[cfg.GatewayProjectIDAnnotation()] = "80"
 	}), true, "binding annotation")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
 		gateway.Finalizers = append(gateway.Finalizers, cfg.GatewayFinalizer())
@@ -80,7 +80,7 @@ func TestHTTPRouteReconcilePredicate(t *testing.T) {
 		route.Annotations["example.com/foreign"] = "two"
 	}), false, "foreign annotation")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Annotations[cfg.RouteGatewayUIDAnnotation()] = "gateway-uid"
+		route.Annotations[cfg.RouteBindingsAnnotation()] = "gateway-uid"
 	}), true, "binding annotation")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
 		route.Finalizers = append(route.Finalizers, cfg.RouteFinalizer())
@@ -107,7 +107,7 @@ func TestHTTPRouteForGatewayPredicate(t *testing.T) {
 		route.Status.Parents = []gatewayv1.RouteParentStatus{{ControllerName: cfg.ControllerName}}
 	}), true, "controller parent status")
 	testPredicateUpdate(t, pred, base, mutateRoute(base, func(route *gatewayv1.HTTPRoute) {
-		route.Annotations = map[string]string{cfg.RouteGatewayNameAnnotation(): "edge"}
+		route.Annotations = map[string]string{cfg.RouteBindingsAnnotation(): "edge"}
 	}), true, "stored Gateway binding")
 }
 
@@ -155,7 +155,7 @@ func TestGatewayForHTTPRoutePredicate(t *testing.T) {
 		gateway.Status.Conditions[1].Reason = "DifferentReason"
 	}), true, "Accepted reason")
 	testPredicateUpdate(t, pred, base, mutateGateway(base, func(gateway *gatewayv1.Gateway) {
-		gateway.Annotations = map[string]string{cfg.GatewayListenerPortAnnotation(): "80"}
+		gateway.Annotations = map[string]string{cfg.GatewayProjectIDAnnotation(): "80"}
 	}), true, "Gateway binding")
 }
 

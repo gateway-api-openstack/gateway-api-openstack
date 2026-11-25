@@ -49,12 +49,6 @@ func NewServiceClients(ctx context.Context, cfg ClientConfig) (ServiceClients, e
 	return clients.NewServiceClients(ctx, cfg)
 }
 
-// ValidateMicroversion validates the Octavia microversion required for
-// ownership tags.
-func ValidateMicroversion(value string) error {
-	return clients.ValidateMicroversion(value)
-}
-
 // NewIdentity wraps one provider-neutral immutable identity.
 func NewIdentity(value cloud.Identity) (Identity, error) {
 	return openstackidentity.NewIdentity(value)

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -93,7 +94,7 @@ func TestEnsureRouteRepairsAdministrativelyDisabledGatewayAfterGraphValidation(t
 			handler := convergedRouteGraphHandler(t, requests, identity, test.loadBalancerAdmin, test.listenerAdmin)
 			provider := newTestProvider(t, ServiceClients{
 				LoadBalancer: safetyServiceClient(handler),
-				Network:      safetyServiceClient(routeTransitionEmptyFloatingIPHandler(t, requests)),
+				Network:      safetyServiceClient(emptyFloatingIPHandler(t, requests)),
 				ProjectID:    "project-a",
 			}, ProviderConfig{PollInterval: 7 * time.Second})
 
@@ -105,7 +106,7 @@ func TestEnsureRouteRepairsAdministrativelyDisabledGatewayAfterGraphValidation(t
 				result.Outcome.RequeueAfter != 7*time.Second || result.Outcome.Message != test.wantMessage {
 				t.Fatalf("EnsureRoute() outcome = %#v, want Progressing after 7s", result.Outcome)
 			}
-			if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, []string{test.wantMutation}) {
+			if got := requests.mutationPaths(); !slices.Equal(got, []string{test.wantMutation}) {
 				t.Fatalf("mutating requests = %v, want %s", got, test.wantMutation)
 			}
 		})
@@ -198,7 +199,7 @@ func TestEnsureRouteRestoresTrafficInSeparateTransitions(t *testing.T) {
 		}
 	}
 	want := []string{"/lbaas/listeners/listener-1", "/lbaas/loadbalancers/load-balancer-1"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("parent repair order = %v, want %v", got, want)
 	}
 }
@@ -309,7 +310,7 @@ func TestEnsureRouteCreatesOnlyPoolInFirstTransition(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	networkHandler := routeTransitionEmptyFloatingIPHandler(t, requests)
+	networkHandler := emptyFloatingIPHandler(t, requests)
 	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
@@ -326,7 +327,7 @@ func TestEnsureRouteCreatesOnlyPoolInFirstTransition(t *testing.T) {
 		t.Fatalf("EnsureRoute() outcome = %#v, want Progressing", result.Outcome)
 	}
 	want := []string{"/lbaas/pools"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -375,14 +376,14 @@ func TestEnsureRouteChoosesStaleMemberDeterministically(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	})
-	networkHandler := routeTransitionEmptyFloatingIPHandler(t, requests)
+	networkHandler := emptyFloatingIPHandler(t, requests)
 	provider := newTestProvider(t, ServiceClients{
 		LoadBalancer: safetyServiceClient(loadBalancerHandler),
 		Network:      safetyServiceClient(networkHandler),
 		ProjectID:    "project-a",
 	}, ProviderConfig{OperationTimeout: time.Hour, PollInterval: time.Hour})
 	spec := routeTransitionSpec(identity)
-	spec.Members = []cloud.Member{{Address: "10.0.0.30", Port: 30080}}
+	spec.Rules[0].Members = []cloud.Member{{Address: "10.0.0.30", Port: 30080}}
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 
@@ -394,7 +395,7 @@ func TestEnsureRouteChoosesStaleMemberDeterministically(t *testing.T) {
 		t.Fatalf("EnsureRoute() outcome = %#v, want Progressing", result.Outcome)
 	}
 	want := []string{"/lbaas/pools/pool-1/members/member-a"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -475,7 +476,7 @@ func TestEnsureRouteRepairsDisabledMemberBeforeReportingReady(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{PollInterval: time.Second})
 	spec := routeTransitionSpec(identity)
-	spec.Hostname = ""
+	spec.Rules[0].Matches[0].Hostname = ""
 
 	first, err := provider.EnsureRoute(context.Background(), spec)
 	if err != nil {
@@ -492,7 +493,7 @@ func TestEnsureRouteRepairsDisabledMemberBeforeReportingReady(t *testing.T) {
 		t.Fatalf("second EnsureRoute() outcome = %#v, want Ready", second.Outcome)
 	}
 	want := []string{"/lbaas/pools/pool-1/members/member-1"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -604,8 +605,8 @@ func TestEnsureRouteConvergesWithOneMutationPerCall(t *testing.T) {
 			}
 			if hostRuleCreated {
 				items = append(items, map[string]any{
-					"id": "rule-host", "type": "HOST_NAME", "compare_type": "EQUAL_TO",
-					"value": "api.example.com", "admin_state_up": true, "tags": hostRuleTags,
+					"id": "rule-host", "type": "HOST_NAME", "compare_type": "REGEX",
+					"value": `^api\.example\.com(:[0-9]+)?$`, "admin_state_up": true, "tags": hostRuleTags,
 				})
 			}
 			safetyWriteJSON(t, w, map[string]any{"rules": items})
@@ -674,7 +675,7 @@ func TestEnsureRouteConvergesWithOneMutationPerCall(t *testing.T) {
 		"/lbaas/l7policies/policy-1/rules",
 		"/lbaas/l7policies/policy-1",
 	}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("route mutation order = %v, want %v", got, want)
 	}
 }
@@ -727,7 +728,7 @@ func TestEnsureRouteValidatesEveryDescendantBeforeMutation(t *testing.T) {
 		ProjectID:    "project-a",
 	}, ProviderConfig{})
 	spec := routeTransitionSpec(identity)
-	spec.Members = []cloud.Member{{Address: "10.0.0.30", Port: 30080}}
+	spec.Rules[0].Members = []cloud.Member{{Address: "10.0.0.30", Port: 30080}}
 
 	_, err := provider.EnsureRoute(context.Background(), spec)
 	if !errors.Is(err, cloud.ErrOwnershipConflict) {
@@ -838,7 +839,7 @@ func TestEnsureRouteRediscoversPoolAfterLostCreateResponse(t *testing.T) {
 		t.Fatalf("pool create requests = %d, want 1 after provider restart", got)
 	}
 	want := []string{"/lbaas/pools", "/lbaas/pools/pool-1/members"}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -1007,7 +1008,7 @@ func TestDeleteRouteConvergesInDeterministicOrder(t *testing.T) {
 		"/lbaas/pools/pool-1/members/member-1",
 		"/lbaas/pools/pool-1",
 	}
-	if got := requests.mutationPaths(); !equalGatewayTransitionPaths(got, want) {
+	if got := requests.mutationPaths(); !slices.Equal(got, want) {
 		t.Fatalf("mutating requests = %v, want %v", got, want)
 	}
 }
@@ -1018,20 +1019,14 @@ func routeTransitionSpec(identity Identity) cloud.RouteSpec {
 		Gateway: cloud.GatewayState{
 			LoadBalancerID: "load-balancer-1",
 			VIPPortID:      "vip-port",
-			VIPAddress:     "192.0.2.10",
-			ListenerID:     "listener-1",
+			VIPAddress:     "192.0.2.10", Listeners: []cloud.ListenerState{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, ID: "listener-1"}},
 		},
 		GatewayRequirements: cloud.GatewayRequirements{
-			Provider:     "amphora",
-			VIPSubnetID:  "vip-subnet",
-			ListenerPort: 80,
+			Provider:    "amphora",
+			VIPSubnetID: "vip-subnet",
 		},
 		MemberSubnetID: "member-subnet",
-		HealthMonitor:  cloud.HealthMonitorConfig{Path: "/healthz", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3},
-		Hostname:       "api.example.com",
-		PathType:       cloud.PathMatchExact,
-		PathValue:      "/api",
-		Members:        []cloud.Member{{Address: "10.0.0.10", Port: 30080}},
+		HealthMonitor:  cloud.HealthMonitorConfig{Path: "/healthz", Delay: 10, Timeout: 5, MaxRetries: 3, MaxRetriesDown: 3}, Rules: []cloud.RouteRuleSpec{{Members: []cloud.Member{{Address: "10.0.0.10", Port: 30080}}, Matches: []cloud.RouteMatchSpec{{Listener: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, Hostname: "api.example.com", PathType: cloud.PathMatchExact, PathValue: "/api"}}}},
 	}
 }
 
@@ -1096,8 +1091,8 @@ func convergedRouteGraphHandler(
 					"value": "/api", "admin_state_up": true, "tags": pathRuleTags,
 				},
 				map[string]any{
-					"id": "rule-host", "type": "HOST_NAME", "compare_type": "EQUAL_TO",
-					"value": "api.example.com", "admin_state_up": true, "tags": hostRuleTags,
+					"id": "rule-host", "type": "HOST_NAME", "compare_type": "REGEX",
+					"value": `^api\.example\.com(:[0-9]+)?$`, "admin_state_up": true, "tags": hostRuleTags,
 				},
 			}})
 		case request.Method == http.MethodPut && request.URL.Path == "/lbaas/listeners/listener-1":
@@ -1130,18 +1125,5 @@ func convergedRouteGraphHandler(
 			t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
-	})
-}
-
-func routeTransitionEmptyFloatingIPHandler(t *testing.T, requests *gatewayTransitionRequests) http.Handler {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		requests.record(request)
-		if request.Method == http.MethodGet && request.URL.Path == "/floatingips" {
-			safetyWriteJSON(t, w, map[string]any{"floatingips": []any{}})
-			return
-		}
-		t.Errorf("unexpected request: %s %s", request.Method, request.URL.RequestURI())
-		http.Error(w, "unexpected request", http.StatusNotFound)
 	})
 }

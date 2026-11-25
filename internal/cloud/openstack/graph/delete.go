@@ -22,10 +22,18 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/octavia"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/l7policies"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 )
 
 func (p *Provider) executeGatewayDeletionStep(ctx context.Context, step gatewayDeletionStep) error {
+	if step.resource == gatewayDeletionDisablePolicy {
+		_, err := p.octavia.UpdatePolicy(ctx, step.resourceID, l7policies.UpdateOpts{AdminStateUp: boolPointer(false)})
+		if err != nil && !isNotFound(err) {
+			return fmt.Errorf("disable L7 policy before deletion: %w", classifyOctaviaMutationError(err))
+		}
+		return nil
+	}
 	deleteErr := p.deleteGatewayResource(ctx, step)
 	if deleteErr != nil && !isNotFound(deleteErr) {
 		return fmt.Errorf("delete %s %s: %w", step.resource, step.resourceID, classifyOctaviaMutationError(deleteErr))

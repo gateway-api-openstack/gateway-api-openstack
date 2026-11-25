@@ -18,6 +18,9 @@ package httproute
 
 import (
 	"context"
+	"errors"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -47,22 +50,46 @@ type nodeServiceObservation struct {
 }
 
 func (inputs *nodeEventInputs) hasNodePortParent(ctx context.Context, r *Reconciler, route *gatewayv1.HTTPRoute) (bool, error) {
-	keys := controller.ParentGatewayKeys(route)
-	if len(keys) != 1 {
+	var readErr error
+	for _, parent := range route.Spec.ParentRefs {
+		if !controller.IsGatewayParentRef(parent) {
+			continue
+		}
+		key := types.NamespacedName{Namespace: route.Namespace, Name: string(parent.Name)}
+		if parent.Namespace != nil {
+			key.Namespace = string(*parent.Namespace)
+		}
+		indexKey := controller.ObjectKeyString(key)
+		observation, found := inputs.parents[indexKey]
+		if !found {
+			observation.eligible, observation.err = observeNodePortGateway(ctx, r, key)
+			inputs.parents[indexKey] = observation
+		}
+		if observation.eligible {
+			return true, nil
+		}
+		readErr = errors.Join(readErr, observation.err)
+	}
+	return false, readErr
+}
+
+func observeNodePortGateway(ctx context.Context, r *Reconciler, key types.NamespacedName) (bool, error) {
+	var gateway gatewayv1.Gateway
+	if err := r.Get(ctx, key, &gateway); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	var class gatewayv1.GatewayClass
+	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &class); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if class.Spec.ControllerName != r.Config.ControllerName || !controller.HasGatewayTopologyBinding(r.Config, &gateway) {
 		return false, nil
 	}
-	if observation, ok := inputs.parents[keys[0]]; ok {
-		return observation.eligible, observation.err
-	}
-	parents, err := r.managedParents(ctx, route)
-	observation := nodeEligibilityObservation{err: err}
-	if err == nil && len(parents) == 1 && controller.HasGatewayTopologyBinding(r.Config, parents[0].gateway) {
-		topology, err := controller.StoredGatewayTopology(r.Config, parents[0].gateway)
-		observation.err = err
-		observation.eligible = err == nil && topology.Topology.MemberMode == cloud.MemberModeNodePort
-	}
-	inputs.parents[keys[0]] = observation
-	return observation.eligible, observation.err
+	topology, err := controller.StoredGatewayTopology(r.Config, &gateway)
+	return err == nil && topology.Topology.MemberMode == cloud.MemberModeNodePort, err
 }
 
 func (inputs *nodeEventInputs) service(ctx context.Context, reader client.Reader, key types.NamespacedName) (*corev1.Service, error) {

@@ -268,7 +268,6 @@ func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gate
 		return true
 	}
 	for _, key := range []string{
-		config.GatewayListenerPortAnnotation(),
 		config.GatewayClusterIDAnnotation(),
 		config.GatewayProjectIDAnnotation(),
 	} {
@@ -280,17 +279,8 @@ func gatewayBindingChanged(config Config, oldGateway, newGateway *gatewayv1.Gate
 }
 
 func routeBindingChanged(config Config, oldRoute, newRoute *gatewayv1.HTTPRoute) bool {
-	for _, key := range []string{
-		config.RouteLifecycleAnnotation(),
-		config.RouteGatewayNamespaceAnnotation(),
-		config.RouteGatewayNameAnnotation(),
-		config.RouteGatewayUIDAnnotation(),
-		config.RouteClusterIDAnnotation(),
-		config.RouteProjectIDAnnotation(),
-	} {
-		if oldRoute.Annotations[key] != newRoute.Annotations[key] {
-			return true
-		}
+	if oldRoute.Annotations[config.RouteBindingsAnnotation()] != newRoute.Annotations[config.RouteBindingsAnnotation()] {
+		return true
 	}
 	return !equality.Semantic.DeepEqual(
 		controllerRouteFinalizers(config, oldRoute),

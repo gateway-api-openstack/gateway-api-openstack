@@ -55,8 +55,8 @@ func TestGatewayMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {
 	if !errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
 		t.Fatalf("ensureGateway() error = %v, want unsupported Gateway API version", err)
 	}
-	if len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("EnsureGateway calls = %d, want 0", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Ensure requests = %d, want 0", len(provider.GatewaySpecs()))
 	}
 }
 
@@ -100,8 +100,8 @@ func TestGatewayReconcileChecksLiveVersionBeforeBinding(t *testing.T) {
 	if controller.GatewayHasControllerBinding(cfg, &got) {
 		t.Fatalf("Gateway binding = finalizers %#v, annotations %#v; want none", got.Finalizers, got.Annotations)
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.deletedGateways) != 0 {
-		t.Fatalf("provider calls = ensures %d, deletes %d; want none", len(provider.gatewaySpecs), len(provider.deletedGateways))
+	if len(provider.GatewaySpecs()) != 0 || len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("provider calls = ensures %d, deletes %d; want none", len(provider.GatewaySpecs()), len(provider.DeletedGateways()))
 	}
 }
 
@@ -129,8 +129,8 @@ func TestGatewayReconcileChecksLiveVersionBeforeReplacementCleanup(t *testing.T)
 	}); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(provider.deletedGateways) != 0 || len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("provider calls = deletes %d, ensures %d; want none", len(provider.deletedGateways), len(provider.gatewaySpecs))
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("provider calls = deletes %d, ensures %d; want none", len(provider.DeletedGateways()), len(provider.GatewaySpecs()))
 	}
 	var got gatewayv1.Gateway
 	if err := cachedClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), &got); err != nil {
@@ -178,8 +178,8 @@ func TestGatewayCleanupRechecksControllerHandoffWithSupportedBundle(t *testing.T
 	if !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("Reconcile() error = %v, want %v", err, errGatewayChanged)
 	}
-	if len(provider.deletedGateways) != 0 {
-		t.Fatalf("DeleteGateway calls = %d, want 0", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("Gateway Delete requests = %d, want 0", len(provider.DeletedGateways()))
 	}
 }
 
@@ -249,8 +249,8 @@ func TestGatewayProviderMutationRechecksControllerOwnership(t *testing.T) {
 	if _, err := reconciler.ensureGateway(context.Background(), gateway); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
 	}
-	if len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("EnsureGateway calls = %d, want 0 after live controller handoff", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Ensure requests = %d, want 0 after live controller handoff", len(provider.GatewaySpecs()))
 	}
 }
 
@@ -262,7 +262,7 @@ func TestGatewayProviderMutationRechecksBinding(t *testing.T) {
 	}
 	gateway := programmedTestGateway(cfg)
 	changedGateway := gateway.DeepCopy()
-	changedGateway.Annotations[cfg.GatewayListenerPortAnnotation()] = "443"
+	changedGateway.Annotations[cfg.GatewayProjectIDAnnotation()] = "changed-project"
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithObjects(gatewayClass, gateway).
 		Build()
@@ -276,8 +276,8 @@ func TestGatewayProviderMutationRechecksBinding(t *testing.T) {
 	if _, err := reconciler.ensureGateway(context.Background(), gateway); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("ensureGateway() error = %v, want %v", err, errGatewayChanged)
 	}
-	if len(provider.gatewaySpecs) != 0 {
-		t.Fatalf("EnsureGateway calls = %d, want 0 after the binding changed", len(provider.gatewaySpecs))
+	if len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("Gateway Ensure requests = %d, want 0 after the binding changed", len(provider.GatewaySpecs()))
 	}
 }
 
@@ -307,7 +307,7 @@ func TestGatewayBindingMutationRechecksControllerOwnership(t *testing.T) {
 		Coordinator: &graph.Coordinator{}, Config: cfg,
 	}, &recordingProvider{})
 
-	if err := reconciler.bindGateway(context.Background(), gateway, "80"); !errors.Is(err, errGatewayChanged) {
+	if err := reconciler.bindGateway(context.Background(), gateway); !errors.Is(err, errGatewayChanged) {
 		t.Fatalf("bindGateway() error = %v, want %v", err, errGatewayChanged)
 	}
 	var got gatewayv1.Gateway

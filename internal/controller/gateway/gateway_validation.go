@@ -20,15 +20,17 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 type gatewayValidationError struct {
-	message           string
-	invalidRouteKinds bool
-	gatewayReason     gatewayv1.GatewayConditionReason
+	message             string
+	gatewayReason       gatewayv1.GatewayConditionReason
+	listenerDiagnostics map[gatewayv1.SectionName][]model.Diagnostic
 }
 
 func (e *gatewayValidationError) Error() string { return e.message }
@@ -45,59 +47,78 @@ func (r *Reconciler) getGatewayClass(ctx context.Context, gateway *gatewayv1.Gat
 	return &gatewayClass, gatewayClass.Spec.ControllerName == r.Config.ControllerName, nil
 }
 
-// Validate checks whether a Gateway can be represented by the current HTTP
-// profile and returns its single supported listener.
-func Validate(gateway *gatewayv1.Gateway) (*gatewayv1.Listener, error) {
-	if len(gateway.Spec.Addresses) != 0 {
-		return nil, &gatewayValidationError{
-			message:       "spec.addresses is not supported",
-			gatewayReason: gatewayv1.GatewayReasonUnsupportedAddress,
+// Validate returns the listeners that can contribute to the HTTP graph.
+// A rejected sibling cannot authorize deleting a valid listener's resources.
+func Validate(gateway *gatewayv1.Gateway) ([]gatewayv1.Listener, error) {
+	evaluation := evaluateGatewayListeners(model.Input{Gateway: gateway})
+	return evaluation.listeners, evaluation.err
+}
+
+type gatewayListenerEvaluation struct {
+	listeners   []gatewayv1.Listener
+	diagnostics map[gatewayv1.SectionName][]model.Diagnostic
+	err         error
+}
+
+func evaluateGatewayListeners(input model.Input) gatewayListenerEvaluation {
+	gateway := input.Gateway
+	evaluation := gatewayListenerEvaluation{}
+	if err := validateGatewayFields(gateway); err != nil {
+		evaluation.err = err
+		return evaluation
+	}
+	logical, err := model.Compile(input)
+	if err != nil {
+		evaluation.err = err
+		return evaluation
+	}
+	evaluation.diagnostics = make(map[gatewayv1.SectionName][]model.Diagnostic)
+	accepted := make(map[gatewayv1.SectionName]bool)
+	for _, listener := range logical.Listeners {
+		diagnostics := listener.Diagnostics
+		if listener.Protocol != gatewayv1.HTTPProtocolType {
+			diagnostics = append(diagnostics, model.Diagnostic{
+				Condition: string(gatewayv1.ListenerConditionAccepted), Reason: string(gatewayv1.ListenerReasonUnsupportedProtocol),
+				Message: "only plain HTTP listeners can be programmed",
+			})
 		}
+		if len(diagnostics) != 0 {
+			evaluation.diagnostics[listener.Name] = diagnostics
+			continue
+		}
+		accepted[listener.Name] = true
+	}
+	for _, listener := range gateway.Spec.Listeners {
+		if accepted[listener.Name] {
+			evaluation.listeners = append(evaluation.listeners, listener)
+		}
+	}
+	if len(evaluation.listeners) == 0 {
+		evaluation.err = &gatewayValidationError{
+			message:             "Gateway has no valid HTTP listeners",
+			listenerDiagnostics: evaluation.diagnostics,
+		}
+	}
+	return evaluation
+}
+
+func validateGatewayFields(gateway *gatewayv1.Gateway) error {
+	if len(gateway.Spec.Addresses) != 0 {
+		return &gatewayValidationError{message: "spec.addresses is not supported", gatewayReason: gatewayv1.GatewayReasonUnsupportedAddress}
 	}
 	if gateway.Spec.Infrastructure != nil {
-		return nil, &gatewayValidationError{
-			message:       "spec.infrastructure is not supported",
-			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
-		}
+		return &gatewayValidationError{message: "spec.infrastructure is not supported", gatewayReason: gatewayv1.GatewayReasonInvalidParameters}
 	}
 	if gateway.Spec.AllowedListeners != nil {
-		return nil, &gatewayValidationError{
-			message:       "spec.allowedListeners and ListenerSet attachment are not supported",
-			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
-		}
+		return &gatewayValidationError{message: "spec.allowedListeners and ListenerSet attachment are not supported", gatewayReason: gatewayv1.GatewayReasonInvalidParameters}
 	}
 	if gateway.Spec.TLS != nil {
-		return nil, &gatewayValidationError{
-			message:       "gateway-wide spec.tls is not supported",
-			gatewayReason: gatewayv1.GatewayReasonInvalidParameters,
-		}
+		return &gatewayValidationError{message: "gateway-wide spec.tls is not supported", gatewayReason: gatewayv1.GatewayReasonInvalidParameters}
 	}
-	if len(gateway.Spec.Listeners) != 1 {
-		return nil, fmt.Errorf("exactly one listener is supported")
+	if len(gateway.Spec.Listeners) == 0 {
+		return fmt.Errorf("at least one HTTP listener is required")
 	}
-	listener := &gateway.Spec.Listeners[0]
-	if listener.Protocol != gatewayv1.HTTPProtocolType || listener.TLS != nil {
-		return nil, fmt.Errorf("only a plain HTTP listener is supported")
-	}
-	if listener.Hostname != nil {
-		return nil, fmt.Errorf("listener hostname is not supported. Set an exact hostname on HTTPRoute")
-	}
-	if listener.AllowedRoutes != nil && listener.AllowedRoutes.Namespaces != nil &&
-		listener.AllowedRoutes.Namespaces.From != nil &&
-		*listener.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSame {
-		return nil, fmt.Errorf("only same-namespace HTTPRoutes are supported")
-	}
-	if listener.AllowedRoutes != nil && len(listener.AllowedRoutes.Kinds) != 0 {
-		for _, kind := range listener.AllowedRoutes.Kinds {
-			if !isHTTPRouteGroupKind(kind) {
-				return nil, &gatewayValidationError{
-					message:           "only HTTPRoute is supported in listener allowedRoutes.kinds",
-					invalidRouteKinds: true,
-				}
-			}
-		}
-	}
-	return listener, nil
+	return nil
 }
 
 func listenerAllowsHTTPRoute(listener gatewayv1.Listener) bool {

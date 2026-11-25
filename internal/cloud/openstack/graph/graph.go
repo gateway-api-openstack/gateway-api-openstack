@@ -31,16 +31,17 @@ import (
 )
 
 type desiredGatewayGraph struct {
-	spec     cloud.GatewayGraphSpec
-	identity Identity
-	routes   []desiredRoute
+	spec       cloud.GatewayGraphSpec
+	identity   Identity
+	routes     [][]desiredRoute
+	identities []Identity
 }
 
 type observedGatewayGraph struct {
 	loadBalancer *octavia.LoadBalancer
-	listener     *listeners.Listener
+	listeners    map[cloud.ListenerKey]*listeners.Listener
 	floatingIP   *floatingips.FloatingIP
-	routes       []observedRouteGraph
+	routes       observedRoutes
 	deletion     gatewayDeletionPlan
 	state        cloud.GatewayState
 	outcome      cloud.Outcome
@@ -64,6 +65,10 @@ const (
 type graphMutation struct {
 	kind       graphMutationKind
 	routeIndex int
+	ruleIndex  int
+	priority   int32
+	listener   cloud.ListenerKey
+	resourceID string
 	route      routeMutation
 	deletion   gatewayDeletionStep
 	message    string
@@ -102,10 +107,10 @@ func (p *Provider) ReconcileGatewayGraph(ctx context.Context, spec cloud.Gateway
 		return result, nil
 	}
 	if spec.Gateway.Disposition == cloud.GraphEnsure {
-		routes := make([]cloud.RouteSpec, 0, len(desired.routes))
-		for index, route := range desired.routes {
-			if desired.spec.Routes[index].Disposition == cloud.GraphEnsure {
-				routes = append(routes, route.spec)
+		routes := make([]cloud.RouteSpec, 0, len(desired.spec.Routes))
+		for _, node := range desired.spec.Routes {
+			if node.Disposition == cloud.GraphEnsure {
+				routes = append(routes, node.Spec)
 			}
 		}
 		if err := p.topology.ValidateGatewaySecurity(ctx, desired.spec.Gateway.Spec, routes); err != nil {
@@ -122,7 +127,7 @@ func (p *Provider) ReconcileGatewayGraph(ctx context.Context, spec cloud.Gateway
 	step := plan[0]
 	if err := p.executeGraphMutation(ctx, desired, actual, step); err != nil {
 		if step.kind == graphRouteMutation {
-			return result, &cloud.GraphError{Identity: desired.routes[step.routeIndex].spec.Identity, Err: err}
+			return result, &cloud.GraphError{Identity: desired.spec.Routes[step.routeIndex].Spec.Identity, Err: err}
 		}
 		return result, err
 	}
@@ -144,22 +149,35 @@ func (p *Provider) buildDesiredGatewayGraph(spec cloud.GatewayGraphSpec) (desire
 	if !validGraphDisposition(spec.Gateway.Disposition) {
 		return invalid("Gateway graph disposition is invalid")
 	}
+	listenerKeys := make(map[cloud.ListenerKey]struct{})
 	if spec.Gateway.Disposition == cloud.GraphEnsure {
 		if !sameGatewayIdentity(spec.Identity, spec.Gateway.Spec.Identity) {
 			return desiredGatewayGraph{}, fmt.Errorf("%w: Gateway model and graph identities differ", cloud.ErrOwnershipConflict)
 		}
-		if spec.Gateway.Spec.Provider != "amphora" || strings.TrimSpace(spec.Gateway.Spec.VIPSubnetID) == "" ||
-			spec.Gateway.Spec.ListenerPort < 1 || spec.Gateway.Spec.ListenerPort > 65535 {
-			return invalid("Gateway requires Amphora, a VIP subnet, and an HTTP listener port within 1-65535")
+		if spec.Gateway.Spec.Provider != "amphora" || strings.TrimSpace(spec.Gateway.Spec.VIPSubnetID) == "" || len(spec.Gateway.Spec.Listeners) == 0 {
+			return invalid("Gateway requires Amphora, a VIP subnet, and HTTP listeners")
 		}
-		for _, role := range []string{roleLoadBalancer, roleListener} {
-			if _, err := identity.GatewayTags(role); err != nil {
-				return desiredGatewayGraph{}, err
+		for _, listener := range spec.Gateway.Spec.Listeners {
+			if err := listener.Key.Validate(); err != nil {
+				return invalid(err.Error())
+			}
+			if _, duplicate := listenerKeys[listener.Key]; duplicate {
+				return invalid("duplicate physical listener key")
+			}
+			listenerKeys[listener.Key] = struct{}{}
+			if _, err := identity.ChildTags(roleListener, cloud.ResourceKey{Kind: cloud.ResourceListener, Listener: listener.Key}); err != nil {
+				return invalid(err.Error())
 			}
 		}
+		if _, err := identity.GatewayTags(roleLoadBalancer); err != nil {
+			return invalid(err.Error())
+		}
 	}
-	// Copy before sorting: callers can reuse their immutable reconciliation input.
-	spec.Routes = append([]cloud.RouteGraphNode(nil), spec.Routes...)
+	spec.Gateway.Spec.Listeners = slices.Clone(spec.Gateway.Spec.Listeners)
+	sort.Slice(spec.Gateway.Spec.Listeners, func(i, j int) bool {
+		return spec.Gateway.Spec.Listeners[i].Key.String() < spec.Gateway.Spec.Listeners[j].Key.String()
+	})
+	spec.Routes = slices.Clone(spec.Routes)
 	sort.Slice(spec.Routes, func(i, j int) bool {
 		a, b := spec.Routes[i].Spec.Identity, spec.Routes[j].Spec.Identity
 		if a.RouteNamespace != b.RouteNamespace {
@@ -170,10 +188,11 @@ func (p *Provider) buildDesiredGatewayGraph(spec cloud.GatewayGraphSpec) (desire
 		}
 		return a.RouteUID < b.RouteUID
 	})
-	desired := desiredGatewayGraph{spec: spec, identity: identity}
+	desired := desiredGatewayGraph{spec: spec, identity: identity, routes: make([][]desiredRoute, len(spec.Routes))}
 	identities := make(map[string]struct{}, len(spec.Routes))
-	ensured := 0
-	for _, node := range spec.Routes {
+	priorities := make(map[cloud.ListenerKey]map[int]struct{})
+	policies := make(map[cloud.ListenerKey][]*desiredPolicy)
+	for index, node := range spec.Routes {
 		id := node.Spec.Identity
 		if !validGraphDisposition(node.Disposition) {
 			return invalid("HTTPRoute graph disposition is invalid")
@@ -185,38 +204,76 @@ func (p *Provider) buildDesiredGatewayGraph(spec cloud.GatewayGraphSpec) (desire
 			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute belongs to a different Gateway graph", cloud.ErrOwnershipConflict)}
 		}
 		if _, duplicate := identities[id.RouteUID]; duplicate {
-			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: duplicate HTTPRoute fragment", cloud.ErrOwnershipConflict)}
+			return desiredGatewayGraph{}, fmt.Errorf("%w: duplicate HTTPRoute fragment", cloud.ErrOwnershipConflict)
 		}
 		identities[id.RouteUID] = struct{}{}
 		routeIdentity, err := p.identity(id)
 		if err != nil {
 			return desiredGatewayGraph{}, err
 		}
-		route := desiredRoute{identity: routeIdentity, spec: node.Spec}
-		if node.Disposition == cloud.GraphEnsure {
-			ensured++
-			if spec.Gateway.Disposition != cloud.GraphEnsure {
-				return invalid("an ensured HTTPRoute requires an ensured Gateway")
+		desired.identities = append(desired.identities, routeIdentity)
+		if node.Disposition != cloud.GraphEnsure {
+			continue
+		}
+		if spec.Gateway.Disposition != cloud.GraphEnsure {
+			return invalid("an ensured HTTPRoute requires an ensured Gateway")
+		}
+		if !node.Spec.GatewayRequirements.Equal(gatewayRequirements(spec.Gateway.Spec)) {
+			return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute and Gateway infrastructure requirements differ", cloud.ErrOwnershipConflict)}
+		}
+		if len(node.Spec.Rules) == 0 {
+			return invalid("ensured HTTPRoute requires forwarding rules")
+		}
+		ruleIndexes := make(map[int]struct{})
+		for _, rule := range node.Spec.Rules {
+			if _, duplicate := ruleIndexes[rule.Index]; duplicate {
+				return invalid("duplicate HTTPRoute rule index")
 			}
-			if !node.Spec.GatewayRequirements.Equal(gatewayRequirements(spec.Gateway.Spec)) {
-				return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: fmt.Errorf("%w: HTTPRoute and Gateway infrastructure requirements differ", cloud.ErrOwnershipConflict)}
+			ruleIndexes[rule.Index] = struct{}{}
+			for _, match := range rule.Matches {
+				if _, present := listenerKeys[match.Listener]; !present {
+					return invalid("route match references an unknown physical listener")
+				}
+				if priorities[match.Listener] == nil {
+					priorities[match.Listener] = make(map[int]struct{})
+				}
+				if _, duplicate := priorities[match.Listener][match.Priority]; duplicate {
+					return invalid("listener matches must have distinct priorities")
+				}
+				priorities[match.Listener][match.Priority] = struct{}{}
 			}
-			route, err = p.buildDesiredRoute(node.Spec)
+			compiled, err := p.buildDesiredRule(node.Spec, rule)
 			if err != nil {
 				return desiredGatewayGraph{}, &cloud.GraphError{Identity: id, Err: err}
 			}
+			for policyIndex := range compiled.policies {
+				policy := &compiled.policies[policyIndex]
+				if _, err := routeIdentity.ChildTags(policy.role, policy.key); err != nil {
+					return invalid(err.Error())
+				}
+				for _, predicate := range rulesFor(*policy) {
+					if _, err := routeIdentity.ChildTags(predicate.role, predicate.key); err != nil {
+						return invalid(err.Error())
+					}
+				}
+				policies[policy.key.Listener] = append(policies[policy.key.Listener], policy)
+			}
+			desired.routes[index] = append(desired.routes[index], compiled)
 		}
-		desired.routes = append(desired.routes, route)
+		sort.Slice(desired.routes[index], func(i, j int) bool { return desired.routes[index][i].rule.Index < desired.routes[index][j].rule.Index })
 	}
-	if ensured > 1 {
-		return invalid("the current HTTP profile supports one ensured HTTPRoute")
+	for _, items := range policies {
+		sort.SliceStable(items, func(i, j int) bool { return items[i].match.Priority < items[j].match.Priority })
+		for index, policy := range items {
+			policy.position = int32(index + 1)
+		}
 	}
 	return desired, nil
 }
 
 func observedGatewayResult(desired desiredGatewayGraph, actual observedGatewayGraph, pending cloud.Outcome) cloud.GatewayResult {
 	result := cloud.GatewayResult{State: actual.state, Outcome: pending}
-	if actual.loadBalancer == nil || actual.listener == nil || !actual.loadBalancer.AdminStateUp || !actual.listener.AdminStateUp {
+	if actual.loadBalancer == nil || !gatewayListenersReady(desired.spec.Gateway.Spec, actual) || !actual.loadBalancer.AdminStateUp {
 		return result
 	}
 	if desired.spec.Gateway.Disposition == cloud.GraphEnsure {
@@ -240,7 +297,7 @@ func sameGatewayIdentity(a, b cloud.Identity) bool {
 
 func gatewayRequirements(spec cloud.GatewaySpec) cloud.GatewayRequirements {
 	return cloud.GatewayRequirements{Provider: spec.Provider, VIPSubnetID: spec.VIPSubnetID, ExternalNetworkID: spec.ExternalNetworkID,
-		FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone, ListenerPort: spec.ListenerPort, VIPSecurityGroupIDs: spec.VIPSecurityGroupIDs}
+		FlavorID: spec.FlavorID, AvailabilityZone: spec.AvailabilityZone, VIPSecurityGroupIDs: spec.VIPSecurityGroupIDs}
 }
 
 func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatewayGraph) (observedGatewayGraph, error) {
@@ -300,21 +357,21 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 		actual.deletion, err = p.buildGatewayDeletionPlan(ctx, desired.identity, lb.ID)
 		return actual, err
 	}
-	actual.listener, err = p.findManagedGatewayListener(ctx, desired.identity, lb.ID)
+	actual.listeners, err = p.findManagedGatewayListeners(ctx, desired.identity, lb.ID)
 	if err != nil {
 		return actual, err
 	}
-	if actual.listener != nil {
-		if actual.listener.Protocol != string(listeners.ProtocolHTTP) {
-			return actual, fmt.Errorf("%w: Gateway listener does not use HTTP", cloud.ErrOwnershipConflict)
-		}
-		actual.state.ListenerID = actual.listener.ID
-		if desired.spec.Gateway.Disposition == cloud.GraphEnsure && actual.listener.ProtocolPort != desired.spec.Gateway.Spec.ListenerPort {
-			return actual, fmt.Errorf("%w: Gateway listener port differs from its binding", cloud.ErrOwnershipConflict)
-		}
-		if len(lb.VIPSecurityGroupIDs) > 0 && len(actual.listener.AllowedCIDRs) > 0 {
+	keys := make([]cloud.ListenerKey, 0, len(actual.listeners))
+	for key := range actual.listeners {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+	for _, key := range keys {
+		listener := actual.listeners[key]
+		if len(lb.VIPSecurityGroupIDs) > 0 && len(listener.AllowedCIDRs) > 0 {
 			return actual, fmt.Errorf("%w: custom VIP security groups cannot be combined with listener allowed CIDRs", cloud.ErrOwnershipConflict)
 		}
+		actual.state.Listeners = append(actual.state.Listeners, cloud.ListenerState{Key: key, ID: listener.ID})
 	}
 	// Octavia's parent provisioning status also covers route mutations. Observe
 	// the immutable Gateway component without changing it so member progress does
@@ -322,11 +379,7 @@ func (p *Provider) observeGatewayGraph(ctx context.Context, desired desiredGatew
 	if observation.phase == loadBalancerPhasePending {
 		return actual, nil
 	}
-	identities := make([]Identity, len(desired.routes))
-	for index, route := range desired.routes {
-		identities[index] = route.identity
-	}
-	actual.routes, err = p.observeGatewayRoutes(ctx, identities, actual.state)
+	actual.routes, err = p.observeGatewayRoutes(ctx, desired.identities, actual.state)
 	return actual, err
 }
 
@@ -365,8 +418,8 @@ func validateGraphLoadBalancer(lb *octavia.LoadBalancer, requirements cloud.Gate
 
 func pendingGraphResult(desired desiredGatewayGraph, outcome cloud.Outcome) cloud.GatewayGraphResult {
 	result := cloud.GatewayGraphResult{Outcome: outcome, Gateway: cloud.GatewayResult{Outcome: outcome}}
-	for _, route := range desired.routes {
-		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: route.spec.Identity, Result: cloud.RouteResult{Outcome: outcome}})
+	for _, node := range desired.spec.Routes {
+		result.Routes = append(result.Routes, cloud.RouteGraphResult{Identity: node.Spec.Identity, Result: cloud.RouteResult{Outcome: outcome}})
 	}
 	return result
 }

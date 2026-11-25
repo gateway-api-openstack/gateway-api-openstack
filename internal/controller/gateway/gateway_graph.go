@@ -17,10 +17,10 @@ limitations under the License.
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -30,8 +30,6 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/graph"
 )
 
-const openStackResourceNamePrefix = "gateway-api-openstack"
-
 func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gateway) (cloud.GatewayGraphResult, error) {
 	if r.Writer == nil {
 		return cloud.GatewayGraphResult{}, fmt.Errorf("gateway graph writer is required")
@@ -39,24 +37,21 @@ func (r *Reconciler) ensureGateway(ctx context.Context, expected *gatewayv1.Gate
 	return r.Writer.ReconcileGraph(ctx, graph.Request{Identity: controller.GatewayIdentity(r.Config, expected), Action: graph.Ensure, Gateway: expected})
 }
 
-func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listener *gatewayv1.Listener, topology classconfig.Resolved) cloud.GatewaySpec {
+func (r *Reconciler) gatewaySpec(gateway *gatewayv1.Gateway, listeners []gatewayv1.Listener, topology classconfig.Resolved) cloud.GatewaySpec {
+	physical := make([]cloud.ListenerSpec, 0, len(listeners))
+	for _, listener := range listeners {
+		physical = append(physical, cloud.ListenerSpec{Key: cloud.ListenerKey{Protocol: string(listener.Protocol), Port: int(listener.Port)}})
+	}
+	slices.SortFunc(physical, func(a, b cloud.ListenerSpec) int { return cmp.Compare(a.Key.String(), b.Key.String()) })
+	physical = slices.Compact(physical)
 	return cloud.GatewaySpec{
 		Identity:            controller.GatewayIdentity(r.Config, gateway),
 		Provider:            "amphora",
 		VIPSubnetID:         topology.Topology.VIPSubnetID,
 		ExternalNetworkID:   topology.Topology.ExternalNetworkID,
-		ListenerName:        resourceDisplayName(gateway.Namespace, gateway.Name, string(listener.Name)),
-		ListenerPort:        int(listener.Port),
+		Listeners:           physical,
 		FlavorID:            topology.Topology.FlavorID,
 		AvailabilityZone:    topology.Topology.AvailabilityZone,
 		VIPSecurityGroupIDs: slices.Clone(topology.Topology.VIPSecurityGroupIDs),
 	}
-}
-
-func resourceDisplayName(parts ...string) string {
-	name := strings.Join(append([]string{openStackResourceNamePrefix}, parts...), "-")
-	if len(name) > 200 {
-		return name[:200]
-	}
-	return name
 }

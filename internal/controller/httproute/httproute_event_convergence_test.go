@@ -102,7 +102,9 @@ func newMemberBurstFixture(t *testing.T, count int) *memberBurstFixture {
 		gateway.UID = types.UID(gateway.Name)
 		route := mapperTestHTTPRoute("default", fmt.Sprintf("route-%02d", index), gatewayv1.ParentReference{Name: gatewayv1.ObjectName(gateway.Name)}, service.Name)
 		route.UID, route.Generation = types.UID(route.Name), 1
-		(&Reconciler{Config: cfg}).applyRouteBinding(route, gateway)
+		if err := (&Reconciler{Config: cfg}).applyRouteBinding(route, gateway); err != nil {
+			t.Fatal(err)
+		}
 		fixture.routes[client.ObjectKeyFromObject(route)] = route.UID
 		provider.members[string(route.UID)] = map[cloud.Member]string{
 			fixture.unchanged: "unchanged-member",
@@ -252,9 +254,9 @@ func (p *memberSetProvider) ReconcileGatewayGraph(_ context.Context, spec cloud.
 		return cloud.GatewayGraphResult{}, fmt.Errorf("expected one complete ensured Gateway and route")
 	}
 	route := spec.Routes[0].Spec
-	p.lastMembers = slices.Clone(route.Members)
+	p.lastMembers = slices.Clone(route.Rules[0].Members)
 	// Provider identity is read-only validation metadata, not an Octavia member key.
-	desiredMembers := slices.Clone(route.Members)
+	desiredMembers := slices.Clone(route.Rules[0].Members)
 	for i := range desiredMembers {
 		desiredMembers[i].ProviderID = ""
 	}
@@ -286,9 +288,9 @@ func (p *memberSetProvider) ReconcileGatewayGraph(_ context.Context, spec cloud.
 	}
 	return cloud.GatewayGraphResult{
 		Outcome: outcome,
-		Gateway: cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-" + spec.Identity.GatewayUID, ListenerID: "listener-" + spec.Identity.GatewayUID}),
+		Gateway: cloud.GatewayReadyResult(cloud.GatewayState{LoadBalancerID: "lb-" + spec.Identity.GatewayUID, Listeners: []cloud.ListenerState{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, ID: "listener-" + spec.Identity.GatewayUID}}}),
 		Routes: []cloud.RouteGraphResult{{Identity: route.Identity, Result: cloud.RouteResult{
-			Outcome: outcome, State: cloud.RouteState{PoolID: "pool-" + route.Identity.RouteUID},
+			Outcome: outcome, State: cloud.RouteState{Rules: []cloud.RouteRuleState{{Index: 0, PoolID: "pool-" + route.Identity.RouteUID}}},
 		}}},
 	}, nil
 }

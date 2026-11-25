@@ -36,6 +36,10 @@ const (
 	IndexGatewayClassByParameters = "spec.openStackParameters"
 	// IndexGatewayByClass indexes Gateways by GatewayClass name.
 	IndexGatewayByClass = "spec.gatewayClassName"
+	// IndexGatewayByCertificateSecret indexes normalized certificate references.
+	IndexGatewayByCertificateSecret = "spec.certificateSecret"
+	// IndexGatewayByCertificateNamespace indexes cross-namespace certificate references.
+	IndexGatewayByCertificateNamespace = "spec.certificateNamespace"
 	// IndexHTTPRouteByParentGateway indexes HTTPRoutes by parent Gateway key.
 	IndexHTTPRouteByParentGateway = "spec.parentGateway"
 	// IndexHTTPRouteByStatusGateway indexes HTTPRoutes by status parent Gateway key.
@@ -46,8 +50,8 @@ const (
 	IndexHTTPRouteByBackendNamespace = "spec.backendNamespace"
 	// IndexHTTPRouteByBoundGateway indexes HTTPRoutes by bound Gateway key.
 	IndexHTTPRouteByBoundGateway = "metadata.boundGateway"
-	// indexHTTPRouteByBoundGatewayUID indexes HTTPRoutes by bound Gateway UID.
-	indexHTTPRouteByBoundGatewayUID = "metadata.boundGatewayUID"
+	// IndexHTTPRouteByBoundGatewayUID indexes HTTPRoutes by bound Gateway UID.
+	IndexHTTPRouteByBoundGatewayUID = "metadata.boundGatewayUID"
 	// IndexHTTPRouteByNodeBackend indexes routes that use Node backends.
 	IndexHTTPRouteByNodeBackend = "spec.nodeBackend"
 	// IndexEndpointSliceByService indexes EndpointSlices by Service key.
@@ -76,6 +80,8 @@ func SetupIndexes(ctx context.Context, indexer client.FieldIndexer, config Confi
 func controllerFieldIndexes(config Config) []controllerFieldIndex {
 	return []controllerFieldIndex{
 		{object: &gatewayv1.GatewayClass{}, field: IndexGatewayClassByParameters, extract: gatewayClassParametersKeys},
+		{object: &gatewayv1.Gateway{}, field: IndexGatewayByCertificateSecret, extract: gatewayCertificateSecretKeys},
+		{object: &gatewayv1.Gateway{}, field: IndexGatewayByCertificateNamespace, extract: gatewayCertificateNamespaceKeys},
 		{
 			object: &gatewayv1.GatewayClass{},
 			field:  IndexGatewayClassByController,
@@ -144,22 +150,26 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 				if !ok {
 					return nil
 				}
-				key := boundGatewayKey(config, route)
-				if key == "" {
-					return nil
-				}
-				return []string{key}
+				return boundGatewayKeys(config, route)
 			},
 		},
 		{
 			object: &gatewayv1.HTTPRoute{},
-			field:  indexHTTPRouteByBoundGatewayUID,
+			field:  IndexHTTPRouteByBoundGatewayUID,
 			extract: func(object client.Object) []string {
 				route, ok := object.(*gatewayv1.HTTPRoute)
-				if !ok || boundGatewayKey(config, route) == "" {
+				if !ok {
 					return nil
 				}
-				return []string{route.Annotations[config.RouteGatewayUIDAnnotation()]}
+				bindings, err := StoredRouteBindings(config, route)
+				if err != nil {
+					return nil
+				}
+				var keys []string
+				for _, binding := range bindings {
+					keys = append(keys, binding.Identity.GatewayUID)
+				}
+				return keys
 			},
 		},
 		{
@@ -192,6 +202,44 @@ func controllerFieldIndexes(config Config) []controllerFieldIndex {
 			},
 		},
 	}
+}
+
+func gatewayCertificateSecretKeys(object client.Object) []string {
+	keys := make(map[string]struct{})
+	for _, key := range gatewayCertificateReferences(object) {
+		keys[ObjectKeyString(key)] = struct{}{}
+	}
+	return sortedIndexKeys(keys)
+}
+
+func gatewayCertificateNamespaceKeys(object client.Object) []string {
+	keys := make(map[string]struct{})
+	for _, key := range gatewayCertificateReferences(object) {
+		if key.Namespace != object.GetNamespace() {
+			keys[key.Namespace] = struct{}{}
+		}
+	}
+	return sortedIndexKeys(keys)
+}
+
+func gatewayCertificateReferences(object client.Object) []types.NamespacedName {
+	gateway, ok := object.(*gatewayv1.Gateway)
+	if !ok {
+		return nil
+	}
+	var keys []types.NamespacedName
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType || listener.TLS == nil {
+			continue
+		}
+		for _, reference := range listener.TLS.CertificateRefs {
+			key, supported := model.CertificateSecretReference(gateway.Namespace, reference)
+			if supported && key.Namespace != "" && key.Name != "" {
+				keys = append(keys, key)
+			}
+		}
+	}
+	return keys
 }
 
 // ObjectKeyString returns the stable namespace and name representation used by
@@ -290,15 +338,16 @@ func hasCoreServiceBackend(route *gatewayv1.HTTPRoute) bool {
 	return false
 }
 
-func boundGatewayKey(config Config, route *gatewayv1.HTTPRoute) string {
-	annotations := route.GetAnnotations()
-	namespace := annotations[config.RouteGatewayNamespaceAnnotation()]
-	name := annotations[config.RouteGatewayNameAnnotation()]
-	uid := annotations[config.RouteGatewayUIDAnnotation()]
-	if namespace == "" || name == "" || uid == "" {
-		return ""
+func boundGatewayKeys(config Config, route *gatewayv1.HTTPRoute) []string {
+	bindings, err := StoredRouteBindings(config, route)
+	if err != nil {
+		return nil
 	}
-	return ObjectKeyString(types.NamespacedName{Namespace: namespace, Name: name})
+	keys := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		keys[ObjectKeyString(types.NamespacedName{Namespace: binding.Identity.GatewayNamespace, Name: binding.Identity.GatewayName})] = struct{}{}
+	}
+	return sortedIndexKeys(keys)
 }
 
 func sortedIndexKeys(keys map[string]struct{}) []string {

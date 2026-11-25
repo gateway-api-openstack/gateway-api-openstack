@@ -19,11 +19,11 @@ package inventory
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	openstackidentity "github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/identity"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack/internal/openstacktest"
 	"github.com/gophercloud/gophercloud/v2"
 )
 
@@ -49,6 +49,9 @@ func safetyTestIdentity(t *testing.T) openstackidentity.Identity {
 func safetyGatewayTags(t *testing.T, identity openstackidentity.Identity, role string) []string {
 	t.Helper()
 	tags, err := identity.GatewayTags(role)
+	if role == roleListener {
+		tags, err = identity.ChildTags(role, testChildKey(role))
+	}
 	if err != nil {
 		t.Fatalf("GatewayTags(%q) error = %v", role, err)
 	}
@@ -57,32 +60,15 @@ func safetyGatewayTags(t *testing.T, identity openstackidentity.Identity, role s
 
 func safetyRouteTags(t *testing.T, identity openstackidentity.Identity, role string) []string {
 	t.Helper()
-	tags, err := identity.RouteTags(role)
+	tags, err := identity.ChildTags(role, testChildKey(role))
 	if err != nil {
 		t.Fatalf("RouteTags(%q) error = %v", role, err)
 	}
 	return tags
 }
 
-type safetyRoundTripper func(*http.Request) (*http.Response, error)
-
-func (roundTrip safetyRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	return roundTrip(request)
-}
-
 func safetyServiceClient(handler http.Handler) *gophercloud.ServiceClient {
-	providerClient := &gophercloud.ProviderClient{TokenID: "test-token"}
-	providerClient.HTTPClient.Transport = safetyRoundTripper(func(request *http.Request) (*http.Response, error) {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		result := response.Result()
-		result.Request = request
-		return result, nil
-	})
-	return &gophercloud.ServiceClient{
-		ProviderClient: providerClient,
-		Endpoint:       "http://openstack.test/",
-	}
+	return openstacktest.ServiceClient(handler)
 }
 
 func safetyWriteJSON(t *testing.T, writer http.ResponseWriter, value any) {
@@ -91,4 +77,27 @@ func safetyWriteJSON(t *testing.T, writer http.ResponseWriter, value any) {
 	if err := json.NewEncoder(writer).Encode(value); err != nil {
 		t.Errorf("encode test response: %v", err)
 	}
+}
+
+func testChildKey(role string) cloud.ResourceKey {
+	key := cloud.ResourceKey{Kind: cloud.ResourceRule}
+	switch role {
+	case roleListener:
+		key.Kind, key.Listener = cloud.ResourceListener, cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}
+	case rolePolicyExact, rolePolicyPrefix, roleRulePath, roleRuleHost, roleRuleHeader:
+		key.Kind, key.Listener, key.Variant = cloud.ResourcePolicy, cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}, "exact"
+		if role == rolePolicyPrefix {
+			key.Variant = "prefix"
+		}
+		if role == roleRulePath {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "path"
+		}
+		if role == roleRuleHost {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "host"
+		}
+		if role == roleRuleHeader {
+			key.Kind, key.Predicate = cloud.ResourcePredicate, "header-0"
+		}
+	}
+	return key
 }

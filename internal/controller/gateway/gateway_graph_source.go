@@ -74,11 +74,11 @@ func (r *Reconciler) ObserveGatewayGraph(ctx context.Context, request graph.Requ
 	if request.Action != graph.Ensure {
 		return graph.GatewayInput{}, errors.New("invalid Gateway graph action")
 	}
-	snapshot, err := r.observeGatewayMutationSnapshot(ctx, request.Gateway, gatewayBindingRequired, "")
+	snapshot, err := r.observeGatewayMutationSnapshot(ctx, request.Gateway, gatewayBindingRequired)
 	if err != nil {
 		return graph.GatewayInput{}, err
 	}
-	desired := r.gatewaySpec(snapshot.gateway, snapshot.listener, snapshot.topology)
+	desired := r.gatewaySpec(snapshot.gateway, snapshot.listeners, snapshot.topology)
 	return graph.GatewayInput{
 		Object: snapshot.gateway, Node: cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure, Spec: desired},
 		Validate: func(ctx context.Context) error { return r.sealGatewayMutationSnapshot(ctx, snapshot) },

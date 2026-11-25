@@ -40,6 +40,7 @@ type gatewayScope struct {
 	original     *gatewayv1.Gateway
 	gatewayClass *gatewayv1.GatewayClass
 	managed      bool
+	listeners    *gatewayListenerEvaluation
 	skipPatch    bool
 	warnings     []gatewayProviderWarning
 	patchCause   error
@@ -92,6 +93,9 @@ func (s *gatewayScope) statusChanged() bool {
 func (r *Reconciler) patchGateway(ctx context.Context, scope *gatewayScope) error {
 	if scope.skipPatch {
 		return nil
+	}
+	if scope.listeners != nil && gatewayStatusEvaluated(scope.gateway) {
+		r.summarizeRejectedListeners(scope)
 	}
 	desired := scope.gateway.DeepCopy()
 	if !equality.Semantic.DeepEqual(scope.original.Status, desired.Status) {
@@ -174,7 +178,6 @@ func copyGatewayOwnedMetadata(config controller.Config, target, desired *gateway
 func gatewayBindingAnnotationKeys(config controller.Config) []string {
 	return []string{
 		config.GatewayTopologyAnnotation(),
-		config.GatewayListenerPortAnnotation(),
 		config.GatewayClusterIDAnnotation(),
 		config.GatewayProjectIDAnnotation(),
 	}

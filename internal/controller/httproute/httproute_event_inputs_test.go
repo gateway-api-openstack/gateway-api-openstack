@@ -111,3 +111,18 @@ func TestEndpointDeletionStillEnqueuesLocalBackends(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeMapperIncludesRoutesWithSeveralGatewayParents(t *testing.T) {
+	r, reader, node := nodeFanoutFixture(t, 1, corev1.ServiceExternalTrafficPolicyCluster)
+	var route gatewayv1.HTTPRoute
+	if err := reader.Get(t.Context(), client.ObjectKey{Namespace: "default", Name: "route-0000"}, &route); err != nil {
+		t.Fatal(err)
+	}
+	route.Spec.ParentRefs = append([]gatewayv1.ParentReference{{Name: "missing-parent"}}, route.Spec.ParentRefs...)
+	if err := reader.Update(t.Context(), &route); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.enqueueHTTPRoutesForNode(t.Context(), node); len(got) != 1 || got[0].NamespacedName != client.ObjectKeyFromObject(&route) {
+		t.Fatalf("requests=%v", got)
+	}
+}

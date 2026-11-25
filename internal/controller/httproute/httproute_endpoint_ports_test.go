@@ -26,6 +26,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 )
@@ -141,10 +142,15 @@ func TestUnrelatedEndpointSlicesCannotEstablishBackendReadiness(t *testing.T) {
 	otherService.Name, otherService.Labels[discoveryv1.LabelServiceName] = "other-service", "other"
 	otherNamespace.Namespace = "other"
 	selected.Ports = nil
-	reader := &fanoutCountingClient{Client: indexedFakeClientBuilder(testScheme(t), testConfig()).WithObjects(selected, otherService, otherNamespace, node).Build()}
-	members, err := nodePortMembersFromReader(t.Context(), reader, service, &service.Spec.Ports[0], corev1.NodeInternalIP)
+	cfg := testConfig()
+	_, gateway := providerRouteParentObjects(cfg)
+	route := mapperTestHTTPRoute(service.Namespace, "api", gatewayv1.ParentReference{Name: gatewayv1.ObjectName(gateway.Name)}, service.Name)
+	route.UID = "route-uid"
+	reader := &fanoutCountingClient{Client: indexedFakeClientBuilder(testScheme(t), cfg).WithObjects(service, selected, otherService, otherNamespace, node).Build()}
+	reconciler := &Reconciler{Config: cfg}
+	desired, err := reconciler.buildRouteModelWithReader(t.Context(), reader, route, gateway)
 	var pending *routeBuildError
-	if !errors.As(err, &pending) || pending.kind != routeErrorPending || len(members) != 0 || reader.lists != 1 {
-		t.Fatalf("unrelated slices established readiness or triggered Node reads: members=%v error=%v lists=%d", members, err, reader.lists)
+	if !errors.As(err, &pending) || pending.kind != routeErrorPending || len(desired.Rules) != 0 || reader.lists != 1 {
+		t.Fatalf("unrelated slices established readiness or triggered Node reads: rules=%v error=%v lists=%d", desired.Rules, err, reader.lists)
 	}
 }

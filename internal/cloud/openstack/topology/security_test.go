@@ -158,7 +158,11 @@ func TestGatewaySecurityObservesExternalRepairs(t *testing.T) {
 	f.resolver.clients.LoadBalancer.Microversion = "2.29"
 	f.responses["/"] = fixtureResponse{body: `{"versions":[{"id":"v2.29","status":"CURRENT"}]}`}
 	f.responses["/v2.0/security-groups/sg-a"] = fixtureResponse{body: `{"security_group":{"id":"sg-a","project_id":"project-a","security_group_rules":[]}}`}
-	spec := cloud.GatewaySpec{VIPSubnetID: "vip-subnet", ListenerPort: 80, VIPSecurityGroupIDs: []string{"sg-a"}}
+	spec := cloud.GatewaySpec{VIPSubnetID: "vip-subnet", VIPSecurityGroupIDs: []string{"sg-a"}, Listeners: []cloud.
+		ListenerSpec{
+		{Key: cloud.
+			ListenerKey{Protocol: cloud.
+			HTTPProtocol, Port: 80}}}}
 	if err := f.resolver.ValidateGatewaySecurity(context.Background(), spec, nil); !errors.Is(err, cloud.ErrDependencyNotReady) {
 		t.Fatalf("missing ingress must be rechecked: %v", err)
 	}
@@ -180,7 +184,13 @@ func TestBackendSecurityChecksPortAndScopesFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.responses["/v2.0/ports"] = fixtureResponse{body: string(body)}
-	route := cloud.RouteSpec{Identity: cloud.Identity{RouteUID: "route-a"}, MemberSubnetID: "member-subnet", BackendSecurityGroupIDs: []string{"sg-a"}, Members: []cloud.Member{{Address: "198.51.100.7", Port: 30080, ProviderID: "openstack:///" + testServerID}}}
+	route := cloud.RouteSpec{Identity: cloud.Identity{RouteUID: "route-a"}, MemberSubnetID: "member-subnet", BackendSecurityGroupIDs: []string{"sg-a"}, Rules: []cloud.
+		RouteRuleSpec{
+		{Members: []cloud.Member{{Address: "198.51.100.7", Port: 30080, ProviderID: "openstack:///" + testServerID}}, Matches: []cloud.
+			RouteMatchSpec{
+			{Listener: cloud.
+				ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}}}}},
+	}
 	if err := f.resolver.ValidateGatewaySecurity(context.Background(), cloud.GatewaySpec{}, []cloud.RouteSpec{route}); err != nil {
 		t.Fatal(err)
 	}

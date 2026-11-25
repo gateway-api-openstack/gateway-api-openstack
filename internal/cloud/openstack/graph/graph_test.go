@@ -46,7 +46,7 @@ func completeGraphSpec(identity Identity) cloud.GatewayGraphSpec {
 func completeGraphProvider(t *testing.T, handler http.Handler, requests *gatewayTransitionRequests) *Provider {
 	t.Helper()
 	return newTestProvider(t, ServiceClients{
-		LoadBalancer: safetyServiceClient(handler), Network: safetyServiceClient(routeTransitionEmptyFloatingIPHandler(t, requests)), ProjectID: "project-a",
+		LoadBalancer: safetyServiceClient(handler), Network: safetyServiceClient(emptyFloatingIPHandler(t, requests)), ProjectID: "project-a",
 	}, ProviderConfig{})
 }
 
@@ -57,7 +57,7 @@ func TestReconcileGatewayGraphValidatesAllDesiredComponentsBeforeCloudReads(t *t
 		change func(*cloud.GatewayGraphSpec)
 		want   error
 	}{
-		{name: "invalid backend", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.Members[0].Port = 0 }, want: cloud.ErrTerminalValidation},
+		{name: "invalid backend", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.Rules[0].Members[0].Port = 0 }, want: cloud.ErrTerminalValidation},
 		{name: "duplicate fragment", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes = append(spec.Routes, spec.Routes[0]) }, want: cloud.ErrOwnershipConflict},
 		{name: "different topology", change: func(spec *cloud.GatewayGraphSpec) { spec.Routes[0].Spec.GatewayRequirements.VIPSubnetID = "other" }, want: cloud.ErrOwnershipConflict},
 		{name: "invalid monitor", change: func(spec *cloud.GatewayGraphSpec) {
@@ -242,7 +242,7 @@ func TestReconcileGatewayGraphReplacesAllMembersAcrossFreshObservations(t *testi
 	requests := &gatewayTransitionRequests{}
 	base := convergedRouteGraphHandler(t, requests, identity, true, true)
 	spec := completeGraphSpec(identity)
-	spec.Routes[0].Spec.Members = []cloud.Member{{Address: "10.0.0.20", Port: 30081}, {Address: "10.0.0.30", Port: 30081}}
+	spec.Routes[0].Spec.Rules[0].Members = []cloud.Member{{Address: "10.0.0.20", Port: 30081}, {Address: "10.0.0.30", Port: 30081}}
 	members := []map[string]any{
 		{"id": "member-old-a", "address": "10.0.0.10", "protocol_port": 30080, "subnet_id": "member-subnet", "admin_state_up": true, "tags": safetyRouteTags(t, identity, roleMember)},
 		{"id": "member-old-b", "address": "10.0.0.11", "protocol_port": 30080, "subnet_id": "member-subnet", "admin_state_up": true, "tags": safetyRouteTags(t, identity, roleMember)},
@@ -297,7 +297,7 @@ func TestReconcileGatewayGraphReplacesAllMembersAcrossFreshObservations(t *testi
 		if got := len(requests.mutationPaths()) - before; got != wantMutations {
 			t.Fatalf("step %d mutations = %d, want %d", step, got, wantMutations)
 		}
-		if result.Gateway.Outcome.State != cloud.OutcomeReady || result.Routes[0].Result.State.PoolID != "pool-1" || !reflect.DeepEqual(result.Routes[0].Result.State.L7PolicyIDs, []string{"policy-1"}) {
+		if result.Gateway.Outcome.State != cloud.OutcomeReady || result.Routes[0].Result.State.Rules[0].PoolID != "pool-1" || !reflect.DeepEqual(result.Routes[0].Result.State.Rules[0].L7PolicyIDs, []string{"policy-1"}) {
 			t.Fatalf("step %d changed stable Gateway, pool or policy: %#v", step, result)
 		}
 		if step == 4 && result.Outcome.State != cloud.OutcomeReady {
@@ -312,12 +312,12 @@ func TestGatewayGraphPlanDetachesBeforeEnsuringAndRestoresParentsLast(t *testing
 	old := route
 	old.spec.Identity.RouteUID = "old-route"
 	desired := desiredGatewayGraph{spec: cloud.GatewayGraphSpec{
-		Gateway: cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure},
-		Routes:  []cloud.RouteGraphNode{{Disposition: cloud.GraphEnsure}, {Disposition: cloud.GraphDelete}},
-	}, routes: []desiredRoute{route, old}}
+		Gateway: cloud.GatewayGraphNode{Disposition: cloud.GraphEnsure, Spec: cloud.GatewaySpec{Listeners: []cloud.ListenerSpec{{Key: cloud.ListenerKey{Protocol: cloud.HTTPProtocol, Port: 80}}}}},
+		Routes:  []cloud.RouteGraphNode{{Disposition: cloud.GraphEnsure, Spec: route.spec}, {Disposition: cloud.GraphDelete, Spec: old.spec}},
+	}, routes: [][]desiredRoute{{route}, {old}}}
 	actual := observedGatewayGraph{
-		loadBalancer: &octavia.LoadBalancer{}, listener: &listeners.Listener{},
-		routes: []observedRouteGraph{{}, actualRoute},
+		loadBalancer: &octavia.LoadBalancer{},
+		routes:       observedRoutes{"old-route": {0: &actualRoute}}, listeners: map[cloud.ListenerKey]*listeners.Listener{{Protocol: cloud.HTTPProtocol, Port: 80}: {}},
 	}
 	plan, _, err := provider.buildGatewayGraphPlan(desired, actual)
 	if err != nil {
@@ -411,13 +411,13 @@ func TestReconcileGatewayGraphDeletionValidatesEveryChildBeforeOneMutation(t *te
 	requests := &gatewayTransitionRequests{}
 	base := convergedRouteGraphHandler(t, requests, identity, true, true)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodDelete {
+		if request.Method == http.MethodPut {
 			requests.record(request)
-			if request.URL.Path != "/lbaas/l7policies/policy-1/rules/rule-host" {
-				t.Errorf("first deletion = %s", request.URL.Path)
+			if request.URL.Path != "/lbaas/l7policies/policy-1" {
+				t.Errorf("first policy disable = %s", request.URL.Path)
 			}
 			if requests.count(http.MethodGet, "/lbaas/pools/pool-1/members") != 1 {
-				t.Error("deleted rule before validating pool descendants")
+				t.Error("disabled policy before validating pool descendants")
 			}
 			w.WriteHeader(http.StatusNotFound)
 			return

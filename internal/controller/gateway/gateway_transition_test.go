@@ -43,7 +43,7 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 			Generation:        1,
 			DeletionTimestamp: &now,
 			Finalizers:        []string{cfg.GatewayFinalizer()},
-			Annotations:       gatewayBindingAnnotations(cfg, "80"),
+			Annotations:       gatewayBindingAnnotations(cfg),
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "openstack",
@@ -57,7 +57,8 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 		WithObjects(gateway).
 		Build()
 	progressing := cloud.ProgressingOutcome("Deleting controller-owned listener", time.Hour)
-	provider := &recordingProvider{gatewayDeleteOut: &progressing}
+	provider := &recordingProvider{}
+	provider.setGatewayResponse(cloud.GatewayResult{Outcome: progressing}, nil)
 	reconciler := *newTestReconciler(Reconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
@@ -75,8 +76,8 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 	if result.RequeueAfter != wantRequeue {
 		t.Fatalf("Reconcile() RequeueAfter = %s, want %s", result.RequeueAfter, wantRequeue)
 	}
-	if len(provider.deletedGateways) != 1 {
-		t.Fatalf("DeleteGateway calls = %d, want 1", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 1 {
+		t.Fatalf("Gateway Delete requests = %d, want 1", len(provider.DeletedGateways()))
 	}
 
 	current := &gatewayv1.Gateway{}
@@ -86,7 +87,7 @@ func TestGatewayDeletionProgressRetainsFinalizerAndBinding(t *testing.T) {
 	if !controllerutil.ContainsFinalizer(current, cfg.GatewayFinalizer()) {
 		t.Fatal("progressing deletion removed the Gateway finalizer")
 	}
-	for annotation, want := range gatewayBindingAnnotations(cfg, "80") {
+	for annotation, want := range gatewayBindingAnnotations(cfg) {
 		if got := current.Annotations[annotation]; got != want {
 			t.Errorf("Gateway annotation %q = %q, want %q", annotation, got, want)
 		}

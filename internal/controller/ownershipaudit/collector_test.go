@@ -31,6 +31,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
 func TestCollectOwnershipSnapshot(t *testing.T) {
@@ -131,7 +132,7 @@ func TestCollectOwnershipSnapshotReportsInvalidBindings(t *testing.T) {
 		UID:        "partial-route-uid",
 		Finalizers: []string{cfg.RouteFinalizer()},
 	}}
-	partialRoute.Annotations = map[string]string{cfg.RouteGatewayNameAnnotation(): "edge"}
+	partialRoute.Annotations = map[string]string{cfg.RouteBindingsAnnotation(): "["}
 	wrongProjectRoute := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "default",
 		Name:      "wrong-project-route",
@@ -139,7 +140,9 @@ func TestCollectOwnershipSnapshotReportsInvalidBindings(t *testing.T) {
 	}}
 	gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "edge", UID: "gateway-uid"}}
 	applyRouteBinding(cfg, wrongProjectRoute, gateway)
-	wrongProjectRoute.Annotations[cfg.RouteProjectIDAnnotation()] = "another-project"
+	identity := controller.RouteIdentity(cfg, gateway, wrongProjectRoute)
+	identity.OpenStackProjectID = "another-project"
+	wrongProjectRoute.Annotations[cfg.RouteBindingsAnnotation()] = routeBindingJSON(cfg, identity, controller.RouteAttached, "")
 	unbound := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "unbound", UID: "unbound-uid"}}
 
 	reader := fake.NewClientBuilder().
@@ -172,7 +175,7 @@ func TestCollectOwnershipSnapshotReportsInvalidBindings(t *testing.T) {
 	}
 }
 
-func TestCollectOwnershipSnapshotAcceptsCompleteAnnotationsWithoutFinalizers(t *testing.T) {
+func TestCollectOwnershipSnapshotRejectsRouteBindingWithoutFinalizers(t *testing.T) {
 	cfg := testConfig()
 	gateway := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
 		Namespace:   "default",
@@ -184,12 +187,11 @@ func TestCollectOwnershipSnapshotAcceptsCompleteAnnotationsWithoutFinalizers(t *
 		Namespace: "default",
 		Name:      "app",
 		UID:       "route-uid",
-		Annotations: map[string]string{
-			cfg.RouteGatewayNamespaceAnnotation(): gateway.Namespace,
-			cfg.RouteGatewayNameAnnotation():      gateway.Name,
-			cfg.RouteGatewayUIDAnnotation():       string(gateway.UID),
-			cfg.RouteClusterIDAnnotation():        cfg.ClusterID,
-			cfg.RouteProjectIDAnnotation():        cfg.OpenStackProjectID,
+		Annotations: map[string]string{cfg.
+			RouteBindingsAnnotation(): routeBindingJSON(cfg, cloud.Identity{OpenStackProjectID: cfg.OpenStackProjectID, ClusterID: cfg.ClusterID, GatewayNamespace: gateway.Namespace, GatewayName: gateway.Name, GatewayUID: string(gateway.
+			UID), RouteNamespace: "default", RouteName: "app", RouteUID: string("route-uid")}, "Attached",
+
+			""),
 		},
 	}}
 	reader := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(gateway, route).Build()
@@ -198,8 +200,8 @@ func TestCollectOwnershipSnapshotAcceptsCompleteAnnotationsWithoutFinalizers(t *
 	if err != nil {
 		t.Fatalf("CollectOwnershipSnapshot() error = %v", err)
 	}
-	if len(snapshot.Records) != 2 || len(snapshot.Issues) != 0 {
-		t.Fatalf("CollectOwnershipSnapshot() = %#v, want two records and no issues", snapshot)
+	if len(snapshot.Records) != 1 || len(snapshot.Issues) != 1 {
+		t.Fatalf("CollectOwnershipSnapshot() = %#v, want one Gateway record and an invalid Route binding", snapshot)
 	}
 }
 

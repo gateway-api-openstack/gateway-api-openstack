@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/listeners"
@@ -75,25 +76,25 @@ func (p *Provider) GetGateway(
 		return cloud.GatewayProgressingResult("Octavia load balancer is administratively disabled", p.pollInterval), true, nil
 	}
 
-	listener, err := p.findManagedGatewayListener(ctx, identity, loadBalancer.ID)
+	listeners, err := p.findManagedGatewayListeners(ctx, identity, loadBalancer.ID)
 	if err != nil {
 		return cloud.GatewayResult{}, false, err
 	}
-	if listener == nil {
-		return cloud.GatewayProgressingResult("Octavia listener has not been created", p.pollInterval), true, nil
+	state := cloud.GatewayState{LoadBalancerID: loadBalancer.ID, VIPPortID: loadBalancer.VipPortID, VIPAddress: loadBalancer.VipAddress}
+	keys := make([]cloud.ListenerKey, 0, len(listeners))
+	for key := range listeners {
+		keys = append(keys, key)
 	}
-	if listener.Protocol != string(listeners.ProtocolHTTP) {
-		return cloud.GatewayResult{}, false, fmt.Errorf("%w: listener %s has protocol %s", cloud.ErrOwnershipConflict, listener.ID, listener.Protocol)
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+	for _, key := range keys {
+		listener := listeners[key]
+		state.Listeners = append(state.Listeners, cloud.ListenerState{Key: key, ID: listener.ID})
+		if !listener.AdminStateUp {
+			return cloud.GatewayResult{State: state, Outcome: p.progressingOutcome("Octavia listener is administratively disabled")}, true, nil
+		}
 	}
-	if !listener.AdminStateUp {
-		return cloud.GatewayProgressingResult("Octavia listener is administratively disabled", p.pollInterval), true, nil
-	}
-
-	state := cloud.GatewayState{
-		LoadBalancerID: loadBalancer.ID,
-		VIPPortID:      loadBalancer.VipPortID,
-		VIPAddress:     loadBalancer.VipAddress,
-		ListenerID:     listener.ID,
+	if len(listeners) == 0 {
+		return cloud.GatewayResult{State: state, Outcome: p.progressingOutcome("Octavia listeners have not been created")}, true, nil
 	}
 	floatingIP, err := p.findGatewayFloatingIP(ctx, identity, loadBalancer.VipPortID, loadBalancer.VipAddress)
 	if err != nil {
@@ -109,11 +110,11 @@ func (p *Provider) GetGateway(
 	return cloud.GatewayReadyResult(state), true, nil
 }
 
-func (p *Provider) findManagedGatewayListener(
+func (p *Provider) findManagedGatewayListeners(
 	ctx context.Context,
 	identity Identity,
 	loadBalancerID string,
-) (*listeners.Listener, error) {
+) (map[cloud.ListenerKey]*listeners.Listener, error) {
 	listenerList, err := p.octavia.ListListeners(ctx, listeners.ListOpts{
 		LoadbalancerID: loadBalancerID,
 		ProjectID:      p.projectID,
@@ -121,7 +122,7 @@ func (p *Provider) findManagedGatewayListener(
 	if err != nil {
 		return nil, fmt.Errorf("list Gateway listeners: %w", err)
 	}
-	var owned *listeners.Listener
+	owned := make(map[cloud.ListenerKey]*listeners.Listener)
 	for index := range listenerList {
 		listener := &listenerList[index]
 		if err := p.validateOptionalProject("listener", listener.ID, listener.ProjectID); err != nil {
@@ -130,15 +131,22 @@ func (p *Provider) findManagedGatewayListener(
 		if !identity.MatchesGatewayDiscovery(listener.Tags, roleListener) || !identity.MatchesGateway(listener.Tags, roleListener) {
 			return nil, fmt.Errorf("%w: load balancer %s contains listener %s with an incomplete or foreign identity", cloud.ErrOwnershipConflict, loadBalancerID, listener.ID)
 		}
-		if owned != nil {
-			return nil, fmt.Errorf("%w: found multiple listeners for one Gateway", cloud.ErrOwnershipConflict)
+		key, err := validatedChildKey(listener.Tags, cloud.ResourceListener)
+		if err != nil || listener.Protocol != key.Listener.Protocol || listener.ProtocolPort != key.Listener.Port {
+			return nil, fmt.Errorf("%w: listener differs from its child key", cloud.ErrOwnershipConflict)
+		}
+		if owned[key.Listener] != nil {
+			return nil, fmt.Errorf("%w: duplicate physical listener key", cloud.ErrOwnershipConflict)
+		}
+		if listener.DefaultPoolID != "" {
+			return nil, fmt.Errorf("%w: managed listener has an unexpected default pool", cloud.ErrOwnershipConflict)
 		}
 		for _, parent := range listener.Loadbalancers {
 			if parent.ID != loadBalancerID {
 				return nil, fmt.Errorf("%w: listener %s reports load balancer %s instead of %s", cloud.ErrOwnershipConflict, listener.ID, parent.ID, loadBalancerID)
 			}
 		}
-		owned = listener
+		owned[key.Listener] = listener
 	}
 	return owned, nil
 }

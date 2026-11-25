@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +36,7 @@ import (
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/audit"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud/openstack"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
 )
 
 const (
@@ -269,29 +269,33 @@ func TestExecuteAuditPropagatesContextAndScannerInputs(t *testing.T) {
 	oldVersion := version
 	version = "v0.2.0-test"
 	t.Cleanup(func() { version = oldVersion })
+	config := controller.Config{
+		ControllerName:     testAuditController,
+		ControllerVersion:  version,
+		ClusterID:          testAuditCluster,
+		OpenStackProjectID: testAuditProject,
+	}
 
 	gateway := gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "gateways",
 		Name:      "edge",
 		UID:       "gateway-uid",
 		Annotations: map[string]string{
-			testBindingKey(testAuditController, "gateway-listener-port"): "80",
-			testBindingKey(testAuditController, "gateway-cluster-id"):    testAuditCluster,
-			testBindingKey(testAuditController, "gateway-project-id"):    testAuditProject,
+			config.GatewayClusterIDAnnotation(): testAuditCluster,
+			config.GatewayProjectIDAnnotation(): testAuditProject,
 		},
 	}}
 	route := gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "apps",
 		Name:      "app",
 		UID:       "route-uid",
-		Annotations: map[string]string{
-			testBindingKey(testAuditController, "route-gateway-namespace"): gateway.Namespace,
-			testBindingKey(testAuditController, "route-gateway-name"):      gateway.Name,
-			testBindingKey(testAuditController, "route-gateway-uid"):       string(gateway.UID),
-			testBindingKey(testAuditController, "route-cluster-id"):        testAuditCluster,
-			testBindingKey(testAuditController, "route-project-id"):        testAuditProject,
-		},
 	}}
+	if err := controller.SetRouteBinding(config, &route, controller.RouteBinding{
+		Identity:  controller.RouteIdentity(config, &gateway, &route),
+		Lifecycle: controller.RouteAttached,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	type contextKey string
 	const requestKey contextKey = "request"
 	valueContext := context.WithValue(context.Background(), requestKey, "audit-request")
@@ -502,12 +506,6 @@ func testOrphanFinding() audit.ResourceFinding {
 		Message:     "No current Kubernetes binding matches this resource",
 		Objects:     []audit.ObjectReference{},
 	}
-}
-
-func testBindingKey(controllerName, name string) string {
-	domain := strings.SplitN(controllerName, "/", 2)[0]
-	digest := sha256.Sum256([]byte(controllerName))
-	return fmt.Sprintf("%s/%s-%x", domain, name, digest[:6])
 }
 
 type scannerFunc func(context.Context, audit.Scope, []audit.OwnershipRecord) (audit.Inventory, error)

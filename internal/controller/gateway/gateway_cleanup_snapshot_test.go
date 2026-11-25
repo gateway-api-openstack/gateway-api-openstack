@@ -48,7 +48,7 @@ func TestGatewayCleanupRejectsTopologyWithoutIdentityBinding(t *testing.T) {
 	if err == nil {
 		t.Fatal("cleanup accepted topology without its immutable identity binding")
 	}
-	if len(provider.deletedGateways) != 0 || len(provider.gatewaySpecs) != 0 {
+	if len(provider.DeletedGateways()) != 0 || len(provider.GatewaySpecs()) != 0 {
 		t.Fatal("incomplete identity authorized a provider call")
 	}
 	var current gatewayv1.Gateway
@@ -60,7 +60,7 @@ func TestGatewayCleanupRejectsTopologyWithoutIdentityBinding(t *testing.T) {
 	}
 }
 
-func TestGatewayReplacementRechecksRevisionAfterProviderConfirmsAbsence(t *testing.T) {
+func TestGatewayInvalidSpecCleanupRechecksRevisionAfterProviderConfirmsAbsence(t *testing.T) {
 	tests := []struct {
 		name   string
 		change func(*gatewayv1.Gateway)
@@ -77,7 +77,7 @@ func TestGatewayReplacementRechecksRevisionAfterProviderConfirmsAbsence(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			cfg := testConfig()
 			gateway := programmedTestGateway(cfg)
-			gateway.Spec.Listeners[0].Port = 8080
+			gateway.Spec.Listeners[0].Protocol = gatewayv1.HTTPSProtocolType
 			gateway.Generation++
 			class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "openstack"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: cfg.ControllerName}}
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).WithStatusSubresource(gateway).WithObjects(class, gateway).Build()
@@ -94,23 +94,22 @@ func TestGatewayReplacementRechecksRevisionAfterProviderConfirmsAbsence(t *testi
 			if result, err := r.Reconcile(context.Background(), request); err != nil || result != (ctrl.Result{Requeue: true}) {
 				t.Fatalf("replacement status checkpoint = %#v, %v", result, err)
 			}
-			if len(provider.deletedGateways) != 0 {
+			if len(provider.DeletedGateways()) != 0 {
 				t.Fatal("replacement started before the status checkpoint")
 			}
 			_, err := r.Reconcile(context.Background(), request)
 			if !errors.Is(err, errGatewayChanged) {
 				t.Fatalf("replacement after concurrent change = %v, want stale snapshot rejection", err)
 			}
-			if len(provider.deletedGateways) != 1 || len(provider.gatewaySpecs) != 0 {
-				t.Fatalf("provider calls = deletes %d, ensures %d", len(provider.deletedGateways), len(provider.gatewaySpecs))
+			if len(provider.DeletedGateways()) != 1 || len(provider.GatewaySpecs()) != 0 {
+				t.Fatalf("provider calls = deletes %d, ensures %d", len(provider.DeletedGateways()), len(provider.GatewaySpecs()))
 			}
 			var current gatewayv1.Gateway
 			if err := kubeClient.Get(context.Background(), request.NamespacedName, &current); err != nil {
 				t.Fatal(err)
 			}
 			if !controllerutil.ContainsFinalizer(&current, cfg.GatewayFinalizer()) ||
-				!controller.GatewayTopologyMetadataEqual(cfg, gateway, &current) ||
-				current.Annotations[cfg.GatewayListenerPortAnnotation()] != "80" {
+				!controller.GatewayTopologyMetadataEqual(cfg, gateway, &current) {
 				t.Fatal("stale replacement released or rewrote the frozen binding")
 			}
 			want := gateway.DeepCopy()

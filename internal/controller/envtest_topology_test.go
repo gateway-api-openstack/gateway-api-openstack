@@ -140,8 +140,11 @@ func testGatewayClassTopologyIsolation(t *testing.T, apiClient, cacheClient clie
 		waitForGatewayClassResourceVersion(t, cacheClient, item.class.Name, item.class.ResourceVersion)
 		reconcileClass(item.class, metav1.ConditionTrue)
 		item.gateway = createEnvtestGateway(t, apiClient, cacheClient, namespace.Name, item.class.Name, item.class.Name)
-		if result := reconcileGateway(item.gateway); !result.Requeue || len(provider.graphSpecs) != 0 {
-			t.Fatalf("Gateway %s binding result = %#v, graph calls = %d, want a durable checkpoint before cloud calls", item.gateway.Name, result, len(provider.graphSpecs))
+		if result := reconcileGateway(item.gateway); result != (ctrl.Result{Requeue: true}) || len(provider.Calls) != 0 {
+			t.Fatalf("Gateway %s binding result = %#v, graph calls = %d, want a durable checkpoint before cloud calls", item.gateway.Name, result, len(provider.Calls))
+		}
+		if result := reconcileGateway(item.gateway); result != (ctrl.Result{Requeue: true}) || len(provider.Calls) != 0 {
+			t.Fatalf("Gateway %s status checkpoint = %#v, graph calls = %d", item.gateway.Name, result, len(provider.Calls))
 		}
 	}
 
@@ -150,12 +153,12 @@ func testGatewayClassTopologyIsolation(t *testing.T, apiClient, cacheClient clie
 		// Reverse creation order while sharing the same reconciler and provider.
 		for index := len(classes) - 1; index >= 0; index-- {
 			item := &classes[index]
-			before := len(provider.graphSpecs)
+			before := len(provider.Calls)
 			reconcileGateway(item.gateway)
-			if len(provider.graphSpecs) != before+1 {
-				t.Fatalf("Gateway %s issued %d graph calls, want one", item.gateway.Name, len(provider.graphSpecs)-before)
+			if len(provider.Calls) != before+1 {
+				t.Fatalf("Gateway %s issued %d graph calls, want one", item.gateway.Name, len(provider.Calls)-before)
 			}
-			call := provider.graphSpecs[before]
+			call := provider.Calls[before]
 			identity := controller.GatewayIdentity(config, item.gateway)
 			wantTopology := item.want.Topology
 			if call.Identity != identity || call.Gateway.Spec.Identity != identity || call.Gateway.Disposition != cloud.GraphEnsure || len(call.Routes) != 0 {

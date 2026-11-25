@@ -50,7 +50,9 @@ func TestHTTPRouteMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithObjects(gatewayClass, gateway, route, service, endpointSlice, node).
@@ -69,8 +71,8 @@ func TestHTTPRouteMutationBoundaryChecksLiveGatewayAPIVersion(t *testing.T) {
 	if !errors.Is(err, controller.ErrUnsupportedGatewayAPIVersion) {
 		t.Fatalf("ensureRouteGraph() error = %v, want unsupported Gateway API version", err)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls = %d, want 0", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls = %d, want 0", len(provider.RouteSpecs()))
 	}
 }
 
@@ -84,7 +86,9 @@ func TestHTTPRouteReconcileChecksLiveVersionBeforeDetach(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	route.Spec.ParentRefs = append(route.Spec.ParentRefs, gatewayv1.ParentReference{Name: "edge"})
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -107,8 +111,8 @@ func TestHTTPRouteReconcileChecksLiveVersionBeforeDetach(t *testing.T) {
 	if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("first Reconcile() result = %#v, want status checkpoint", result)
 	}
-	if len(provider.deletedRoutes) != 0 || len(provider.routeSpecs) != 0 {
-		t.Fatalf("provider calls before status checkpoint = deletes %d, ensures %d; want none", len(provider.deletedRoutes), len(provider.routeSpecs))
+	if len(provider.DeletedRoutes()) != 0 || len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("provider calls before status checkpoint = deletes %d, ensures %d; want none", len(provider.DeletedRoutes()), len(provider.RouteSpecs()))
 	}
 
 	result, err = reconciler.Reconcile(context.Background(), request)
@@ -118,8 +122,8 @@ func TestHTTPRouteReconcileChecksLiveVersionBeforeDetach(t *testing.T) {
 	if result.RequeueAfter == 0 {
 		t.Fatal("live Gateway API version mismatch did not schedule a fallback recheck")
 	}
-	if len(provider.deletedRoutes) != 0 || len(provider.routeSpecs) != 0 {
-		t.Fatalf("provider calls = deletes %d, ensures %d; want none", len(provider.deletedRoutes), len(provider.routeSpecs))
+	if len(provider.DeletedRoutes()) != 0 || len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("provider calls = deletes %d, ensures %d; want none", len(provider.DeletedRoutes()), len(provider.RouteSpecs()))
 	}
 	var got gatewayv1.HTTPRoute
 	if err := cachedClient.Get(context.Background(), client.ObjectKeyFromObject(route), &got); err != nil {
@@ -138,7 +142,9 @@ func TestUnsupportedGatewayAPIVersionFreezesBoundGraph(t *testing.T) {
 	route.UID = "route-uid"
 	route.Generation = 1
 	routeBinder := newTestReconciler(Reconciler{Config: cfg}, nil)
-	routeBinder.applyRouteBinding(route, gateway)
+	if err := routeBinder.applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	route.Status.Parents = []gatewayv1.RouteParentStatus{{
 		ParentRef:      route.Spec.ParentRefs[0],
 		ControllerName: cfg.ControllerName,
@@ -174,11 +180,11 @@ func TestUnsupportedGatewayAPIVersionFreezesBoundGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPRoute Reconcile() error = %v", err)
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.routeSpecs) != 0 ||
-		len(provider.deletedGateways) != 0 || len(provider.deletedRoutes) != 0 {
+	if len(provider.GatewaySpecs()) != 0 || len(provider.RouteSpecs()) != 0 ||
+		len(provider.DeletedGateways()) != 0 || len(provider.DeletedRoutes()) != 0 {
 		t.Fatalf(
 			"provider calls = EnsureGateway %d, EnsureRoute %d, DeleteGateway %d, DeleteRoute %d; want none",
-			len(provider.gatewaySpecs), len(provider.routeSpecs), len(provider.deletedGateways), len(provider.deletedRoutes),
+			len(provider.GatewaySpecs()), len(provider.RouteSpecs()), len(provider.DeletedGateways()), len(provider.DeletedRoutes()),
 		)
 	}
 
@@ -316,15 +322,15 @@ func TestUnsupportedGatewayAPIVersionDoesNotCreateBindings(t *testing.T) {
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), &gotRoute); err != nil {
 		t.Fatal(err)
 	}
-	_, routeBindingPresent, err := routeReconciler.storedRouteIdentity(&gotRoute)
+	_, routeBindingPresent, err := routeReconciler.storedRouteIdentity(&gotRoute, string(gateway.UID))
 	if err != nil {
 		t.Fatalf("storedRouteIdentity() error = %v", err)
 	}
 	if controllerutil.ContainsFinalizer(&gotRoute, cfg.RouteFinalizer()) || routeBindingPresent {
 		t.Fatalf("HTTPRoute binding = finalizers %#v, annotations %#v; want none", gotRoute.Finalizers, gotRoute.Annotations)
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.routeSpecs) != 0 {
-		t.Fatalf("provider ensures = gateways %d, routes %d; want none", len(provider.gatewaySpecs), len(provider.routeSpecs))
+	if len(provider.GatewaySpecs()) != 0 || len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("provider ensures = gateways %d, routes %d; want none", len(provider.GatewaySpecs()), len(provider.RouteSpecs()))
 	}
 }
 
@@ -362,8 +368,8 @@ func TestUnsupportedGatewayAPIVersionAllowsDeletion(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Gateway Reconcile() error = %v", err)
 	}
-	if len(provider.deletedRoutes) != 1 || len(provider.deletedGateways) != 1 {
-		t.Fatalf("provider deletions = routes %d, gateways %d; want one each", len(provider.deletedRoutes), len(provider.deletedGateways))
+	if len(provider.DeletedRoutes()) != 1 || len(provider.DeletedGateways()) != 1 {
+		t.Fatalf("provider deletions = routes %d, gateways %d; want one each", len(provider.DeletedRoutes()), len(provider.DeletedGateways()))
 	}
 }
 
@@ -377,7 +383,9 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway, route).
 		WithObjects(otherClass, gateway, route).
@@ -399,13 +407,13 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	} else if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("first HTTPRoute Reconcile() result = %#v, want status checkpoint", result)
 	}
-	if len(provider.deletedRoutes) != 0 {
-		t.Fatalf("route deletions before status checkpoint = %d, want 0", len(provider.deletedRoutes))
+	if len(provider.DeletedRoutes()) != 0 {
+		t.Fatalf("route deletions before status checkpoint = %d, want 0", len(provider.DeletedRoutes()))
 	}
 	if _, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
 		t.Fatalf("second HTTPRoute Reconcile() error = %v", err)
 	}
-	if len(provider.deletedRoutes) != 0 {
+	if len(provider.DeletedRoutes()) != 0 {
 		t.Fatal("HTTPRoute deleted resources before its durable detach checkpoint")
 	}
 	if _, err := routeReconciler.Reconcile(context.Background(), routeRequest); err != nil {
@@ -419,8 +427,8 @@ func TestUnsupportedGatewayAPIVersionAllowsControllerHandoffCleanup(t *testing.T
 	}); err != nil {
 		t.Fatalf("Gateway Reconcile() error = %v", err)
 	}
-	if len(provider.deletedRoutes) != 1 || len(provider.deletedGateways) != 1 {
-		t.Fatalf("provider deletions = routes %d, gateways %d; want one each", len(provider.deletedRoutes), len(provider.deletedGateways))
+	if len(provider.DeletedRoutes()) != 1 || len(provider.DeletedGateways()) != 1 {
+		t.Fatalf("provider deletions = routes %d, gateways %d; want one each", len(provider.DeletedRoutes()), len(provider.DeletedGateways()))
 	}
 }
 
@@ -436,7 +444,9 @@ func TestVersionMismatchDoesNotTrustCachedControllerHandoff(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	cachedClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(gateway, route).
 		WithObjects(cachedClass, gateway, route).
@@ -454,16 +464,16 @@ func TestVersionMismatchDoesNotTrustCachedControllerHandoff(t *testing.T) {
 
 	if _, err := routeReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(route),
-	}); !errors.Is(err, errHTTPRouteChanged) {
-		t.Fatalf("HTTPRoute Reconcile() error = %v, want live ownership change", err)
+	}); err != nil {
+		t.Fatalf("HTTPRoute Reconcile() error = %v", err)
 	}
 	if _, err := gatewayReconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKeyFromObject(gateway),
 	}); err != nil {
 		t.Fatalf("Gateway Reconcile() error = %v", err)
 	}
-	if len(provider.deletedRoutes) != 0 || len(provider.deletedGateways) != 0 {
-		t.Fatalf("provider deletions = routes %d, gateways %d; want none", len(provider.deletedRoutes), len(provider.deletedGateways))
+	if len(provider.DeletedRoutes()) != 0 || len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("provider deletions = routes %d, gateways %d; want none", len(provider.DeletedRoutes()), len(provider.DeletedGateways()))
 	}
 	var gotGateway gatewayv1.Gateway
 	if err := cachedClient.Get(context.Background(), client.ObjectKeyFromObject(gateway), &gotGateway); err != nil {
@@ -633,8 +643,8 @@ func TestHTTPRouteBindingChecksControllerOwnershipAgainAfterEnsure(t *testing.T)
 	if !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("Reconcile() error = %v, want %v", err, errHTTPRouteChanged)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls = %d, want 0 before the binding checkpoint", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls = %d, want 0 before the binding checkpoint", len(provider.RouteSpecs()))
 	}
 	var got gatewayv1.HTTPRoute
 	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), &got); err != nil {
@@ -657,7 +667,9 @@ func TestHTTPRouteProviderMutationRechecksControllerOwnership(t *testing.T) {
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -675,8 +687,8 @@ func TestHTTPRouteProviderMutationRechecksControllerOwnership(t *testing.T) {
 	if _, err := reconciler.ensureRouteGraph(context.Background(), route, gateway); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("ensureRouteGraph() error = %v, want %v", err, errHTTPRouteChanged)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls = %d, want 0 after live controller handoff", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls = %d, want 0 after live controller handoff", len(provider.RouteSpecs()))
 	}
 }
 
@@ -688,11 +700,13 @@ func TestHTTPRouteProviderMutationRechecksGatewayBinding(t *testing.T) {
 	}
 	gateway := programmedTestGateway(cfg)
 	changedGateway := gateway.DeepCopy()
-	changedGateway.Annotations[cfg.GatewayListenerPortAnnotation()] = "443"
+	changedGateway.Annotations[cfg.GatewayProjectIDAnnotation()] = "another-project"
 	route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 	route.UID = "route-uid"
 	route.Generation = 1
-	(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway)
+	if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, gateway); err != nil {
+		t.Fatal(err)
+	}
 	service, endpointSlice, node := validNodePortBackend("default", "backend")
 	kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 		WithStatusSubresource(route).
@@ -708,8 +722,8 @@ func TestHTTPRouteProviderMutationRechecksGatewayBinding(t *testing.T) {
 	if _, err := reconciler.ensureRouteGraph(context.Background(), route, gateway); !errors.Is(err, errHTTPRouteChanged) {
 		t.Fatalf("ensureRouteGraph() error = %v, want %v", err, errHTTPRouteChanged)
 	}
-	if len(provider.routeSpecs) != 0 {
-		t.Fatalf("EnsureRoute calls = %d, want 0 after the Gateway binding changed", len(provider.routeSpecs))
+	if len(provider.RouteSpecs()) != 0 {
+		t.Fatalf("EnsureRoute calls = %d, want 0 after the Gateway binding changed", len(provider.RouteSpecs()))
 	}
 }
 
@@ -787,7 +801,9 @@ func TestHTTPRouteCleanupRebuildsLiveDesiredState(t *testing.T) {
 			route := mapperTestHTTPRoute("default", "api", gatewayv1.ParentReference{Name: "edge"}, "backend")
 			route.UID = "route-uid"
 			route.Generation = 1
-			(newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, liveGateway)
+			if err := (newTestReconciler(Reconciler{Config: cfg}, nil)).applyRouteBinding(route, liveGateway); err != nil {
+				t.Fatal(err)
+			}
 			kubeClient := indexedFakeClientBuilder(testScheme(t), cfg).
 				WithStatusSubresource(route).
 				WithObjects(gatewayClass, cachedGateway, route, cachedService, endpointSlice, node).
@@ -815,16 +831,16 @@ func TestHTTPRouteCleanupRebuildsLiveDesiredState(t *testing.T) {
 			if result != (ctrl.Result{Requeue: true}) {
 				t.Fatalf("first Reconcile() result = %#v, want status checkpoint", result)
 			}
-			if len(provider.deletedRoutes) != 0 {
-				t.Fatalf("DeleteRoute calls before status checkpoint = %d, want 0", len(provider.deletedRoutes))
+			if len(provider.DeletedRoutes()) != 0 {
+				t.Fatalf("DeleteRoute calls before status checkpoint = %d, want 0", len(provider.DeletedRoutes()))
 			}
 
 			_, err = reconciler.Reconcile(context.Background(), request)
 			if !errors.Is(err, errHTTPRouteChanged) {
 				t.Fatalf("second Reconcile() error = %v, want %v", err, errHTTPRouteChanged)
 			}
-			if len(provider.deletedRoutes) != 0 {
-				t.Fatalf("DeleteRoute calls = %d, want 0", len(provider.deletedRoutes))
+			if len(provider.DeletedRoutes()) != 0 {
+				t.Fatalf("DeleteRoute calls = %d, want 0", len(provider.DeletedRoutes()))
 			}
 			var got gatewayv1.HTTPRoute
 			if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(route), &got); err != nil {

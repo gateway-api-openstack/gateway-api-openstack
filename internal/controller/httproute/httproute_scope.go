@@ -18,6 +18,7 @@ package httproute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -29,7 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 type routeStatusPlanKind int
@@ -47,6 +50,8 @@ type routeStatusPlan struct {
 	policy              controller.ProviderFailurePolicy
 	referencesEvaluated bool
 	validateOwnership   bool
+	managedParents      []gatewayv1.ParentReference
+	cleanupIdentity     cloud.Identity
 }
 
 type routeProviderWarning struct {
@@ -57,11 +62,15 @@ type routeProviderWarning struct {
 }
 
 type httpRouteScope struct {
-	route      *gatewayv1.HTTPRoute
-	statusPlan *routeStatusPlan
-	warning    *routeProviderWarning
-	patchCause error
-	skipPatch  bool
+	identity    cloud.Identity
+	parents     []managedRouteParent
+	attachments []model.ParentAttachment
+	children    []*httpRouteScope
+	route       *gatewayv1.HTTPRoute
+	statusPlan  *routeStatusPlan
+	warning     *routeProviderWarning
+	patchCause  error
+	skipPatch   bool
 }
 
 func (r *Reconciler) newHTTPRouteScope(
@@ -82,7 +91,7 @@ func (r *Reconciler) newHTTPRouteScope(
 func (s *httpRouteScope) setStatuses(updates []parentStatusUpdate) {
 	s.statusPlan = &routeStatusPlan{
 		kind:              routeStatusPlanReplace,
-		updates:           append([]parentStatusUpdate(nil), updates...),
+		updates:           s.expandParentStatuses(updates),
 		validateOwnership: true,
 	}
 }
@@ -94,7 +103,7 @@ func (s *httpRouteScope) setProviderFailureStatuses(
 ) {
 	s.statusPlan = &routeStatusPlan{
 		kind:                routeStatusPlanProviderFailure,
-		updates:             append([]parentStatusUpdate(nil), updates...),
+		updates:             s.expandParentStatuses(updates),
 		policy:              policy,
 		referencesEvaluated: referencesEvaluated,
 		validateOwnership:   true,
@@ -103,12 +112,14 @@ func (s *httpRouteScope) setProviderFailureStatuses(
 
 func (s *httpRouteScope) setDeletingFailureStatus(
 	parent gatewayv1.ParentReference,
+	identity cloud.Identity,
 	policy controller.ProviderFailurePolicy,
 ) {
 	s.statusPlan = &routeStatusPlan{
-		kind:   routeStatusPlanDeletingFailure,
-		parent: parent,
-		policy: policy,
+		kind:            routeStatusPlanDeletingFailure,
+		parent:          parent,
+		cleanupIdentity: identity,
+		policy:          policy,
 	}
 }
 
@@ -117,22 +128,28 @@ func (s *httpRouteScope) queueWarning(warning routeProviderWarning) {
 }
 
 func (r *Reconciler) patchHTTPRoute(ctx context.Context, scope *httpRouteScope) error {
+	var childErr error
+	for _, child := range scope.children {
+		if err := r.patchHTTPRoute(ctx, child); err != nil {
+			childErr = errors.Join(childErr, err, child.patchCause)
+		}
+	}
 	if scope.skipPatch {
-		return nil
+		return childErr
 	}
 	applied, changed, transitioned := true, false, false
 	if scope.statusPlan != nil {
 		var err error
 		applied, changed, transitioned, err = r.patchHTTPRouteStatus(ctx, scope.route, scope.statusPlan)
 		if err != nil {
-			return fmt.Errorf("patch HTTPRoute status: %w", err)
+			return errors.Join(childErr, fmt.Errorf("patch HTTPRoute status: %w", err))
 		}
 	}
 	if applied && scope.warning != nil &&
 		(scope.warning.cleanupCheckpointSaved || transitioned || scope.warning.recordOnStatusChange && changed) {
 		controller.RecordProviderWarning(r.Recorder, scope.route, scope.warning.policy, scope.warning.action)
 	}
-	return nil
+	return childErr
 }
 
 func (r *Reconciler) patchHTTPRouteStatus(
@@ -156,8 +173,23 @@ func (r *Reconciler) patchHTTPRouteStatus(
 			return errHTTPRouteChanged
 		}
 		if plan.validateOwnership {
-			if err := r.validateRouteStatusOwnership(ctx, current, plan.updates); err != nil {
+			if err := r.validateRouteStatusOwnership(ctx, current, plan); err != nil {
 				return err
+			}
+		}
+		if plan.kind == routeStatusPlanDeletingFailure {
+			identity := plan.cleanupIdentity
+			var gateway gatewayv1.Gateway
+			err := r.routePatchReader().Get(ctx, client.ObjectKey{Namespace: identity.GatewayNamespace, Name: identity.GatewayName}, &gateway)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("read Gateway before HTTPRoute cleanup status: %w", err)
+			}
+			if err == nil && string(gateway.UID) != identity.GatewayUID {
+				// ParentStatus names a Gateway, not its UID. Keep the old graph's
+				// failure in its binding without changing its replacement's status.
+				*route = *current
+				applied = true
+				return nil
 			}
 		}
 
@@ -199,7 +231,7 @@ func (r *Reconciler) routeStatusCheckpointNeeded(
 		return false, errHTTPRouteChanged
 	}
 	if scope.statusPlan.validateOwnership {
-		if err := r.validateRouteStatusOwnership(ctx, current, scope.statusPlan.updates); err != nil {
+		if err := r.validateRouteStatusOwnership(ctx, current, scope.statusPlan); err != nil {
 			return false, err
 		}
 	}
@@ -261,13 +293,17 @@ func (r *Reconciler) routeCleanupStatusCheckpointNeeded(
 func (r *Reconciler) validateRouteStatusOwnership(
 	ctx context.Context,
 	route *gatewayv1.HTTPRoute,
-	updates []parentStatusUpdate,
+	plan *routeStatusPlan,
 ) error {
 	parents, err := r.managedParentsWithReader(ctx, r.routePatchReader(), route)
 	if err != nil {
 		return err
 	}
-	for _, update := range updates {
+	plan.managedParents = nil
+	for _, parent := range parents {
+		plan.managedParents = append(plan.managedParents, parent.ref)
+	}
+	for _, update := range plan.updates {
 		owned := false
 		for _, parent := range parents {
 			if controller.ParentRefsEqual(parent.ref, route.Namespace, update.parent, route.Namespace) {
@@ -276,18 +312,6 @@ func (r *Reconciler) validateRouteStatusOwnership(
 			}
 		}
 		if !owned {
-			return errHTTPRouteChanged
-		}
-	}
-	for _, parent := range parents {
-		planned := false
-		for _, update := range updates {
-			if controller.ParentRefsEqual(parent.ref, route.Namespace, update.parent, route.Namespace) {
-				planned = true
-				break
-			}
-		}
-		if !planned {
 			return errHTTPRouteChanged
 		}
 	}
@@ -302,6 +326,22 @@ func (r *Reconciler) routePatchReader() client.Reader {
 }
 
 func (p *routeStatusPlan) apply(config controller.Config, route *gatewayv1.HTTPRoute) bool {
+	if p.validateOwnership {
+		parents := route.Status.Parents[:0]
+		for _, status := range route.Status.Parents {
+			keep := status.ControllerName != config.ControllerName
+			for _, ref := range p.managedParents {
+				if controller.ParentRefsEqual(status.ParentRef, route.Namespace, ref, route.Namespace) {
+					keep = true
+					break
+				}
+			}
+			if keep {
+				parents = append(parents, status)
+			}
+		}
+		route.Status.Parents = parents
+	}
 	switch p.kind {
 	case routeStatusPlanReplace:
 		applyRouteParentStatuses(config, route, p.updates)
@@ -325,7 +365,7 @@ func applyRouteParentStatuses(config controller.Config, route *gatewayv1.HTTPRou
 	existing := append([]gatewayv1.RouteParentStatus(nil), route.Status.Parents...)
 	parents := make([]gatewayv1.RouteParentStatus, 0, len(existing)+len(updates))
 	for _, parent := range existing {
-		if parent.ControllerName != config.ControllerName {
+		if retainParentStatus(config, route, parent, updates) {
 			parents = append(parents, parent)
 		}
 	}
@@ -339,7 +379,7 @@ func applyRouteParentStatuses(config controller.Config, route *gatewayv1.HTTPRou
 		controller.SetCondition(&parentStatus.Conditions, controller.Condition(config.Domain()+"/Programmed", update.status.programmed, update.status.programmedReason, update.status.programmedMessage, route.Generation))
 		parents = append(parents, parentStatus)
 	}
-	route.Status.Parents = parents
+	route.Status.Parents = preserveParentStatusOrder(route.Namespace, existing, parents)
 }
 
 func applyRouteProviderFailureStatuses(
@@ -352,7 +392,7 @@ func applyRouteProviderFailureStatuses(
 	existing := append([]gatewayv1.RouteParentStatus(nil), route.Status.Parents...)
 	parents := make([]gatewayv1.RouteParentStatus, 0, len(existing)+len(updates))
 	for _, parent := range existing {
-		if parent.ControllerName != config.ControllerName {
+		if retainParentStatus(config, route, parent, updates) {
 			parents = append(parents, parent)
 		}
 	}
@@ -387,7 +427,7 @@ func applyRouteProviderFailureStatuses(
 		controller.SetCondition(&parentStatus.Conditions, controller.Condition(config.Domain()+"/Programmed", update.status.programmed, update.status.programmedReason, update.status.programmedMessage, programmedGeneration))
 		parents = append(parents, parentStatus)
 	}
-	route.Status.Parents = parents
+	route.Status.Parents = preserveParentStatusOrder(route.Namespace, existing, parents)
 	return transitioned
 }
 
@@ -415,20 +455,21 @@ func applyDeletingRouteProviderFailure(
 	parent gatewayv1.ParentReference,
 	policy controller.ProviderFailurePolicy,
 ) bool {
-	parentInSpec := false
-	for _, candidate := range route.Spec.ParentRefs {
-		if controller.ParentRefsEqual(candidate, route.Namespace, parent, route.Namespace) {
-			parentInSpec = true
-			break
-		}
-	}
-	if !parentInSpec {
-		return false
-	}
+	transitioned := false
 	for index := range route.Status.Parents {
 		candidate := &route.Status.Parents[index]
 		if candidate.ControllerName != config.ControllerName ||
-			!controller.ParentRefsEqual(candidate.ParentRef, route.Namespace, parent, route.Namespace) {
+			!controller.SameGatewayTarget(candidate.ParentRef, route.Namespace, parent, route.Namespace) {
+			continue
+		}
+		parentInSpec := false
+		for _, ref := range route.Spec.ParentRefs {
+			if controller.ParentRefsEqual(candidate.ParentRef, route.Namespace, ref, route.Namespace) {
+				parentInSpec = true
+				break
+			}
+		}
+		if !parentInSpec {
 			continue
 		}
 		programmedGeneration := controller.ConditionObservedGeneration(
@@ -437,14 +478,14 @@ func applyDeletingRouteProviderFailure(
 			route.Generation,
 			policy.AdvancesObservedGeneration,
 		)
-		transitioned := controller.ConditionTransitioned(
+		transitioned = controller.ConditionTransitioned(
 			candidate.Conditions,
 			config.Domain()+"/Programmed",
 			policy.ConditionStatus,
 			policy.Reason,
 			policy.Message,
 			programmedGeneration,
-		)
+		) || transitioned
 		controller.SetCondition(&candidate.Conditions, controller.Condition(
 			config.Domain()+"/Programmed",
 			policy.ConditionStatus,
@@ -452,9 +493,8 @@ func applyDeletingRouteProviderFailure(
 			policy.Message,
 			programmedGeneration,
 		))
-		return transitioned
 	}
-	return false
+	return transitioned
 }
 
 func routeParentStatus(
@@ -473,4 +513,84 @@ func routeParentStatus(
 		break
 	}
 	return status
+}
+
+func retainParentStatus(config controller.Config, route *gatewayv1.HTTPRoute, parent gatewayv1.RouteParentStatus, updates []parentStatusUpdate) bool {
+	if parent.ControllerName != config.ControllerName {
+		return true
+	}
+	for _, update := range updates {
+		if controller.ParentRefsEqual(parent.ParentRef, route.Namespace, update.parent, route.Namespace) {
+			return false
+		}
+	}
+	for _, ref := range route.Spec.ParentRefs {
+		if controller.ParentRefsEqual(parent.ParentRef, route.Namespace, ref, route.Namespace) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *httpRouteScope) expandParentStatuses(updates []parentStatusUpdate) []parentStatusUpdate {
+	if len(updates) == 0 || len(s.parents) == 0 {
+		return append([]parentStatusUpdate(nil), updates...)
+	}
+	result := make([]parentStatusUpdate, 0, len(s.parents))
+	for _, parent := range s.parents {
+		status := updates[0].status
+		for _, update := range updates {
+			if controller.ParentRefsEqual(update.parent, s.route.Namespace, parent.ref, s.route.Namespace) {
+				status = update.status
+				break
+			}
+		}
+		if err := s.parentAttachmentError(parent.ref); err != nil {
+			status = statusForRouteBuildError(err)
+		}
+		result = append(result, parentStatusUpdate{parent: parent.ref, status: status})
+	}
+	return result
+}
+
+func (s *httpRouteScope) parentAttachmentError(ref gatewayv1.ParentReference) error {
+	for _, attachment := range s.attachments {
+		if controller.ParentRefsEqual(attachment.Reference, s.route.Namespace, ref, s.route.Namespace) {
+			if attachment.State == model.AttachmentAccepted {
+				return nil
+			}
+			if len(attachment.Diagnostics) > 0 {
+				return routeAttachmentError(attachment.Diagnostics[0])
+			}
+			return newRouteBuildError(routeErrorNoMatchingParent, "no listener accepts the parent reference")
+		}
+	}
+	for _, parent := range s.parents {
+		if controller.ParentRefsEqual(parent.ref, s.route.Namespace, ref, s.route.Namespace) {
+			return validateRouteParent(s.route, parent)
+		}
+	}
+	return nil
+}
+
+// Keep existing entries in place so independently evaluated parents do not
+// reorder the list and cause status writes on every successful resync.
+func preserveParentStatusOrder(namespace string, existing, desired []gatewayv1.RouteParentStatus) []gatewayv1.RouteParentStatus {
+	result := make([]gatewayv1.RouteParentStatus, 0, len(desired))
+	used := make([]bool, len(desired))
+	for _, previous := range existing {
+		for i, current := range desired {
+			if !used[i] && previous.ControllerName == current.ControllerName && controller.ParentRefsEqual(previous.ParentRef, namespace, current.ParentRef, namespace) {
+				result = append(result, current)
+				used[i] = true
+				break
+			}
+		}
+	}
+	for i, current := range desired {
+		if !used[i] {
+			result = append(result, current)
+		}
+	}
+	return result
 }

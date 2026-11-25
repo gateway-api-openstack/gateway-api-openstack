@@ -30,13 +30,11 @@ import (
 func (r *Reconciler) bindGateway(
 	ctx context.Context,
 	expected *gatewayv1.Gateway,
-	desiredListenerPort string,
 ) error {
 	snapshot, err := r.observeGatewayMutationSnapshot(
 		ctx,
 		expected,
 		gatewayBindingOptional,
-		desiredListenerPort,
 	)
 	if err != nil {
 		return err
@@ -50,7 +48,6 @@ func (r *Reconciler) bindGateway(
 	if gateway.Annotations == nil {
 		gateway.Annotations = map[string]string{}
 	}
-	gateway.Annotations[r.Config.GatewayListenerPortAnnotation()] = desiredListenerPort
 	gateway.Annotations[r.Config.GatewayClusterIDAnnotation()] = r.Config.ClusterID
 	gateway.Annotations[r.Config.GatewayProjectIDAnnotation()] = r.Config.OpenStackProjectID
 	controllerutil.AddFinalizer(gateway, r.Config.GatewayFinalizer())

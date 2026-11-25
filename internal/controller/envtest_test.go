@@ -137,6 +137,9 @@ func TestControllerEnvtest(t *testing.T) {
 	testServicePortUpdatePredicate(t, apiClient, namespace.Name)
 	gatewayClass := createEnvtestGatewayClass(t, apiClient, cacheClient, config)
 	testGatewayClassStatusSubresource(t, apiClient, cacheClient, config, gatewayClass)
+	t.Run("Gateway certificate inputs", func(t *testing.T) {
+		testGatewayCertificateInputs(t, apiClient, cacheClient, config, gatewayClass.Name)
+	})
 	testGatewayBindingConflict(t, apiClient, cacheClient, config, namespace.Name, gatewayClass.Name)
 
 	gateway := createEnvtestGateway(t, apiClient, cacheClient, namespace.Name, "edge", gatewayClass.Name)
@@ -145,6 +148,9 @@ func TestControllerEnvtest(t *testing.T) {
 	testCacheFieldIndexes(t, apiClient, cacheClient, gateway)
 	t.Run("HTTPRoute reference index updates", func(t *testing.T) {
 		testHTTPRouteReferenceIndexUpdates(t, apiClient, cacheClient)
+	})
+	t.Run("HTTPRoute binding conflicts and indexes", func(t *testing.T) {
+		testHTTPRouteBindingConflictsAndIndexes(t, apiClient, cacheClient, config)
 	})
 	testGraphWriterTriggerEquivalence(t, apiClient, cacheClient, config, gateway)
 	testFinalizersWithNewReconciler(t, apiClient, cacheClient, config, gatewayClass, gateway)
@@ -319,8 +325,8 @@ func testGatewayBindingConflict(
 	if !conflictClient.injected {
 		t.Fatal("binding test did not submit a stale patch to the API server")
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.deletedGateways) != 0 {
-		t.Fatalf("provider mutations after binding conflict = ensures %d, deletes %d", len(provider.gatewaySpecs), len(provider.deletedGateways))
+	if len(provider.GatewaySpecs()) != 0 || len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("provider mutations after binding conflict = ensures %d, deletes %d", len(provider.GatewaySpecs()), len(provider.DeletedGateways()))
 	}
 
 	current := &gatewayv1.Gateway{}
@@ -332,8 +338,7 @@ func testGatewayBindingConflict(
 	}
 	if controllerutil.ContainsFinalizer(current, config.GatewayFinalizer()) ||
 		current.Annotations[config.GatewayClusterIDAnnotation()] != "" ||
-		current.Annotations[config.GatewayProjectIDAnnotation()] != "" ||
-		current.Annotations[config.GatewayListenerPortAnnotation()] != "" {
+		current.Annotations[config.GatewayProjectIDAnnotation()] != "" {
 		t.Fatalf("stale binding was persisted: finalizers %#v, annotations %#v", current.Finalizers, current.Annotations)
 	}
 	if err := apiClient.Delete(t.Context(), current); err != nil {
@@ -360,8 +365,8 @@ func testGatewayBindingCheckpoint(
 	if result != (ctrl.Result{Requeue: true}) {
 		t.Fatalf("Gateway binding result = %#v, want immediate requeue", result)
 	}
-	if len(provider.gatewaySpecs) != 0 || len(provider.deletedGateways) != 0 {
-		t.Fatalf("provider mutations before binding checkpoint = ensures %d, deletes %d", len(provider.gatewaySpecs), len(provider.deletedGateways))
+	if len(provider.GatewaySpecs()) != 0 || len(provider.DeletedGateways()) != 0 {
+		t.Fatalf("provider mutations before binding checkpoint = ensures %d, deletes %d", len(provider.GatewaySpecs()), len(provider.DeletedGateways()))
 	}
 
 	current := &gatewayv1.Gateway{}
@@ -371,10 +376,17 @@ func testGatewayBindingCheckpoint(
 	if !controllerutil.ContainsFinalizer(current, config.GatewayFinalizer()) {
 		t.Fatal("Gateway finalizer was not persisted")
 	}
-	if current.Annotations[config.GatewayListenerPortAnnotation()] != "80" ||
-		current.Annotations[config.GatewayClusterIDAnnotation()] != config.ClusterID ||
+	if current.Annotations[config.GatewayClusterIDAnnotation()] != config.ClusterID ||
 		current.Annotations[config.GatewayProjectIDAnnotation()] != config.OpenStackProjectID {
 		t.Fatalf("Gateway binding annotations = %#v", current.Annotations)
+	}
+	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(current), current.ResourceVersion, false)
+	result, err = reconciler.Reconcile(t.Context(), request)
+	if err != nil || result != (ctrl.Result{Requeue: true}) || len(provider.GatewaySpecs()) != 0 {
+		t.Fatalf("initial Gateway status checkpoint: result=%#v error=%v provider calls=%d", result, err, len(provider.GatewaySpecs()))
+	}
+	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), current); err != nil {
+		t.Fatal(err)
 	}
 	waitForGatewayResourceVersion(t, cacheClient, client.ObjectKeyFromObject(current), current.ResourceVersion, false)
 	*gateway = *current
@@ -451,7 +463,12 @@ func testFinalizersWithNewReconciler(
 
 	progressing := cloud.ProgressingOutcome("OpenStack cleanup is progressing", time.Second)
 	provider := &recordingProvider{}
-	provider.gatewayDeleteOut = &progressing
+	provider.Respond = func(_ context.Context, spec cloud.GatewayGraphSpec) (cloud.GatewayGraphResult, error) {
+		if spec.Gateway.Disposition != cloud.GraphDelete {
+			t.Fatalf("cleanup requested Gateway disposition %s", spec.Gateway.Disposition)
+		}
+		return cloud.GatewayGraphResult{Outcome: progressing, Gateway: cloud.GatewayResult{Outcome: progressing}}, nil
+	}
 	firstReconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}
 	result, err := firstReconciler.Reconcile(t.Context(), request)
@@ -470,18 +487,17 @@ func testFinalizersWithNewReconciler(
 		t.Fatalf("progressing deletion dropped Gateway ownership: finalizers %#v, annotations %#v", currentGateway.Finalizers, currentGateway.Annotations)
 	}
 
-	ready := cloud.ReadyOutcome()
-	provider.gatewayDeleteOut = &ready
+	provider.Respond = nil
 	secondReconciler := newEnvtestGatewayReconciler(cacheClient, apiClient, provider, config)
 	if _, err := secondReconciler.Reconcile(t.Context(), request); err != nil {
 		t.Fatalf("resume Gateway finalization with a new reconciler: %v", err)
 	}
-	if len(provider.deletedGateways) != 2 {
-		t.Fatalf("DeleteGateway calls = %d, want 2", len(provider.deletedGateways))
+	if len(provider.DeletedGateways()) != 2 {
+		t.Fatalf("DeleteGateway calls = %d, want 2", len(provider.DeletedGateways()))
 	}
-	if provider.deletedGateways[0] != provider.deletedGateways[1] ||
-		provider.deletedGateways[0].GatewayUID != string(gateway.UID) {
-		t.Fatalf("Gateway deletion identities = %#v", provider.deletedGateways)
+	if provider.DeletedGateways()[0] != provider.DeletedGateways()[1] ||
+		provider.DeletedGateways()[0].GatewayUID != string(gateway.UID) {
+		t.Fatalf("Gateway deletion identities = %#v", provider.DeletedGateways())
 	}
 	waitForGatewayDeletion(t, apiClient, client.ObjectKeyFromObject(gateway))
 	waitForGatewayClassIndexEmpty(t, cacheClient, gatewayClass.Name)
@@ -781,8 +797,8 @@ func testGatewayTopologySnapshot(t *testing.T, apiClient, cacheClient client.Cli
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gateway)}); err != nil {
 		t.Fatalf("reconcile after class parameters changed and disappeared: %v", err)
 	}
-	if len(provider.gatewaySpecs) != 1 || provider.gatewaySpecs[0].VIPSubnetID != before.Topology.VIPSubnetID {
-		t.Fatalf("Gateway did not use persisted topology: %#v", provider.gatewaySpecs)
+	if len(provider.GatewaySpecs()) != 1 || provider.GatewaySpecs()[0].VIPSubnetID != before.Topology.VIPSubnetID {
+		t.Fatalf("Gateway did not use persisted topology: %#v", provider.GatewaySpecs())
 	}
 	current := &gatewayv1.Gateway{}
 	if err := apiClient.Get(t.Context(), client.ObjectKeyFromObject(gateway), current); err != nil {
@@ -839,14 +855,15 @@ func testGraphWriterTriggerEquivalence(t *testing.T, apiClient, cacheClient clie
 	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
 		t.Fatalf("bind real HTTPRoute: %v", err)
 	}
-	if len(provider.graphSpecs) != 0 {
+	if len(provider.Calls) != 0 {
 		t.Fatal("route binding mutated the cloud before persistence")
 	}
 	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
 		t.Fatal(err)
 	}
-	if route.Annotations[config.RouteLifecycleAnnotation()] != controller.RouteAttached {
-		t.Fatalf("route lifecycle=%q", route.Annotations[config.RouteLifecycleAnnotation()])
+	binding, present, err := controller.StoredRouteBinding(config, route, string(gateway.UID))
+	if err != nil || !present || binding.Lifecycle != controller.RouteAttached {
+		t.Fatalf("route binding=%#v present=%t error=%v", binding, present, err)
 	}
 	waitForEnvtest(t, func(ctx context.Context) (bool, error) {
 		cached := &gatewayv1.HTTPRoute{}
@@ -863,11 +880,11 @@ func testGraphWriterTriggerEquivalence(t *testing.T, apiClient, cacheClient clie
 	if _, err := routeReconciler.Reconcile(t.Context(), routeRequest); err != nil {
 		t.Fatalf("HTTPRoute-triggered complete graph: %v", err)
 	}
-	if len(provider.graphSpecs) != 2 || !reflect.DeepEqual(provider.graphSpecs[0], provider.graphSpecs[1]) {
-		t.Fatalf("writer triggers produced different graphs: %#v", provider.graphSpecs)
+	if len(provider.Calls) != 2 || !reflect.DeepEqual(provider.Calls[0], provider.Calls[1]) {
+		t.Fatalf("writer triggers produced different graphs: %#v", provider.Calls)
 	}
-	if len(provider.graphSpecs[0].Routes) != 1 || provider.graphSpecs[0].Gateway.Disposition != cloud.GraphEnsure || provider.graphSpecs[0].Routes[0].Disposition != cloud.GraphEnsure {
-		t.Fatalf("writer did not build complete graph: %#v", provider.graphSpecs[0])
+	if len(provider.Calls[0].Routes) != 1 || provider.Calls[0].Gateway.Disposition != cloud.GraphEnsure || provider.Calls[0].Routes[0].Disposition != cloud.GraphEnsure {
+		t.Fatalf("writer did not build complete graph: %#v", provider.Calls[0])
 	}
 	if err := apiClient.Get(t.Context(), routeKey, route); err != nil {
 		t.Fatal(err)

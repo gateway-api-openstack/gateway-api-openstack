@@ -29,6 +29,7 @@ import (
 
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/cloud"
 	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller"
+	"github.com/gateway-api-openstack/gateway-api-openstack/internal/controller/model"
 )
 
 func (r *Reconciler) isSelectedRoute(ctx context.Context, route *gatewayv1.HTTPRoute, parent managedRouteParent) (bool, error) {
@@ -43,7 +44,7 @@ func (r *Reconciler) isSelectedRouteWithReader(
 	useCacheIndex bool,
 ) (bool, error) {
 	var routes gatewayv1.HTTPRouteList
-	listOptions := []client.ListOption{client.InNamespace(route.Namespace)}
+	listOptions := []client.ListOption{}
 	if useCacheIndex {
 		listOptions = append(listOptions, client.MatchingFields{
 			controller.IndexHTTPRouteByParentGateway: controller.ObjectKeyString(client.ObjectKeyFromObject(parent.gateway)),
@@ -53,6 +54,13 @@ func (r *Reconciler) isSelectedRouteWithReader(
 		return false, fmt.Errorf("list HTTPRoutes for attachment selection: %w", err)
 	}
 	return selectRouteCandidate(route, parent, routes.Items, func(candidate *gatewayv1.HTTPRoute) (routeSlotDecision, error) {
+		attachments, err := routeParentAttachments(ctx, reader, candidate, parent.gateway)
+		if err != nil {
+			return routeSlotDecision{}, err
+		}
+		if !hasAcceptedAttachment(attachments) {
+			return routeSlotDecision{}, nil
+		}
 		return r.evaluateRouteSlotWithReader(ctx, reader, candidate, parent.gateway)
 	})
 }
@@ -61,12 +69,18 @@ func selectRouteCandidate(route *gatewayv1.HTTPRoute, parent managedRouteParent,
 	winner := route
 	for index := range routes {
 		candidate := &routes[index]
-		if candidate.Name == route.Name || !candidate.DeletionTimestamp.IsZero() || len(candidate.Spec.ParentRefs) != 1 {
+		if candidate.Namespace == route.Namespace && candidate.Name == route.Name || !candidate.DeletionTimestamp.IsZero() || !structurallySupportedRoute(candidate) {
 			continue
 		}
-		candidateParent := managedRouteParent{ref: candidate.Spec.ParentRefs[0], gateway: parent.gateway, listener: parent.listener}
-		if !controller.SameGatewayTarget(candidateParent.ref, candidate.Namespace, parent.ref, route.Namespace) ||
-			validateRouteParent(candidate, candidateParent) != nil || !structurallySupportedRoute(candidate) {
+		attached := false
+		for _, ref := range candidate.Spec.ParentRefs {
+			candidateParent := managedRouteParent{ref: ref, gateway: parent.gateway}
+			if parentTargetsGateway(ref, candidate.Namespace, parent.gateway) && validateRouteParent(candidate, candidateParent) == nil {
+				attached = true
+				break
+			}
+		}
+		if !attached {
 			continue
 		}
 		decision, err := evaluate(candidate)
@@ -80,7 +94,7 @@ func selectRouteCandidate(route *gatewayv1.HTTPRoute, parent managedRouteParent,
 			winner = candidate
 		}
 	}
-	return winner.Name == route.Name, nil
+	return winner.UID == route.UID && winner.Namespace == route.Namespace && winner.Name == route.Name, nil
 }
 
 type routeSlotDecision struct {
@@ -104,8 +118,24 @@ func (r *Reconciler) evaluateRouteSlotWithReader(
 		return routeSlotDecision{}, err
 	}
 	backend := route.Spec.Rules[0].BackendRefs[0]
+	namespace := route.Namespace
+	if backend.Namespace != nil {
+		namespace = string(*backend.Namespace)
+	}
+	key := types.NamespacedName{Namespace: namespace, Name: string(backend.Name)}
+	if namespace != route.Namespace {
+		var grants gatewayv1.ReferenceGrantList
+		if err := reader.List(ctx, &grants, client.InNamespace(namespace)); err != nil {
+			return routeSlotDecision{}, fmt.Errorf("list candidate backend ReferenceGrants: %w", err)
+		}
+		if !model.BackendReferenceAllowed(route.Namespace, key, grants.Items) {
+			// A denied backend retains its position until the Route changes. Do
+			// not inspect the Service or allow a different Route to take over.
+			return routeSlotDecision{canReserve: true}, nil
+		}
+	}
 	var service corev1.Service
-	if err := reader.Get(ctx, types.NamespacedName{Namespace: route.Namespace, Name: string(backend.Name)}, &service); err != nil {
+	if err := reader.Get(ctx, key, &service); err != nil {
 		if apierrors.IsNotFound(err) {
 			return routeSlotDecision{canReserve: true}, nil
 		}
@@ -118,7 +148,7 @@ func routeSlotForService(service *corev1.Service, port gatewayv1.PortNumber, mod
 	if service == nil {
 		return routeSlotDecision{canReserve: true}
 	}
-	if _, err := servicePortForBackend(service, port, mode); err != nil {
+	if err := validateBackendServicePort(service, port, mode); err != nil {
 		var buildError *routeBuildError
 		if errors.As(err, &buildError) && buildError.kind == routeErrorPending {
 			return routeSlotDecision{canReserve: true}
@@ -133,4 +163,25 @@ func routePrecedes(left, right *gatewayv1.HTTPRoute) bool {
 		return left.CreationTimestamp.Before(&right.CreationTimestamp)
 	}
 	return left.Namespace+"/"+left.Name < right.Namespace+"/"+right.Name
+}
+
+func parentTargetsGateway(ref gatewayv1.ParentReference, namespace string, gateway *gatewayv1.Gateway) bool {
+	if !controller.IsGatewayParentRef(ref) {
+		return false
+	}
+	if ref.Namespace != nil {
+		namespace = string(*ref.Namespace)
+	}
+	return namespace == gateway.Namespace && string(ref.Name) == gateway.Name
+}
+
+// Keep the activated profile within the available error-response contract.
+// The pure compiler and provider can model several rules, but an invalid more
+// specific rule must not fall through to another until Octavia can retain its
+// required HTTP 500 response at the original priority.
+func validateRuntimeRouteProfile(route *gatewayv1.HTTPRoute) error {
+	if len(route.Spec.Rules) != 1 {
+		return newRouteBuildError(routeErrorUnsupported, "exactly one HTTPRoute rule is supported until HTTP error and action-ordering support is available")
+	}
+	return nil
 }

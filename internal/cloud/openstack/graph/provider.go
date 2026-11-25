@@ -48,6 +48,7 @@ const (
 	rolePolicyPrefix = openstackidentity.RolePolicyPrefix
 	roleRulePath     = openstackidentity.RoleRulePath
 	roleRuleHost     = openstackidentity.RoleRuleHost
+	roleRuleHeader   = openstackidentity.RoleRuleHeader
 )
 
 // ServiceClients is an internal alias used by the graph tests and

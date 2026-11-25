@@ -86,15 +86,17 @@ func CollectOwnershipSnapshot(ctx context.Context, reader client.Reader, config 
 			continue
 		}
 		object := routeAuditReference(route)
-		identity, present, err := controller.StoredRouteIdentity(config, route)
-		if err != nil || !present {
+		bindings, err := controller.StoredRouteBindings(config, route)
+		if err != nil || len(bindings) == 0 {
 			snapshot.Issues = append(snapshot.Issues, invalidBindingIssue(object))
 			continue
 		}
-		snapshot.Records = append(snapshot.Records, audit.OwnershipRecord{
-			Identity: identity,
-			Objects:  []audit.ObjectReference{object},
-		})
+		for _, binding := range bindings {
+			snapshot.Records = append(snapshot.Records, audit.OwnershipRecord{
+				Identity: binding.Identity,
+				Objects:  []audit.ObjectReference{object},
+			})
+		}
 	}
 
 	sortOwnershipSnapshot(&snapshot)
