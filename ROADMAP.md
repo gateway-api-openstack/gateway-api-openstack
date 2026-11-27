@@ -32,7 +32,7 @@ The [architecture](docs/design/architecture.md) defines the ownership and reconc
 | 2: Reconciliation | Development milestone complete | Reliability foundations for the HTTP and NodePort path | Baseline OpenStack E2E passed, with remaining work carried into Phase 3 |
 | 3: Class API | Implemented, with validation remaining | Typed topology configuration, one graph writer, and worker members | Broader live coverage and artifacts for outside testing |
 | 4: Connectivity and Core design | Connectivity implemented, Core blocked | Safe connectivity and validated Core mappings | Accepted designs, resolved Core API blockers, and scoped OpenStack evidence |
-| 5: HTTP/HTTPS conformance | Planned, can overlap Phase 4 after scoped design acceptance | Complete GATEWAY-HTTP Core implementation | All Core and declared Extended tests pass, with safe resource lifecycle |
+| 5: HTTP/HTTPS conformance | In progress, overlapping scoped Phase 4 work | Complete GATEWAY-HTTP Core implementation | All Core and declared Extended tests pass, with safe resource lifecycle |
 | 6: Production candidate | Later | Repeatable operations and community evidence | Two independent clouds, hardened releases, and an eligible successful conformance report |
 | 7: Stable | Later | Supported, upgradeable Amphora contract | Stable API, adopter upgrades, upstream Conformant listing, and release evidence |
 
@@ -198,6 +198,9 @@ Before choosing a pool layout, verify unequal endpoint counts, overlapping endpo
 If the current API cannot express that model, scope the necessary upstream primitive from the failed proof rather than adding approximate forwarding behavior.
 Cross-action ordering and API input limits remain design questions until their proof cases establish the required behavior.
 Do not assume that each gap needs a separate Octavia API extension.
+The [upstream work list](docs/design/conformance-feasibility.md#upstream-work) separates the existing REJECT-code reviews from additional behavior and conditional extensions.
+Review action ordering before dependent HTTP actions, and evaluate weighted selection independently.
+Certificate ownership and SNI selection have separate proofs, so a successful certificate upload does not establish the complete HTTPS mapping.
 
 Retain one logical writer per Gateway as concurrency grows.
 First measure and tune bounded workers for different Gateway UIDs under one active leader and a shared OpenStack request budget.
@@ -262,120 +265,87 @@ Activating scheduled validation still requires an approved dedicated environment
 
 ## Phase 5 - Complete GATEWAY-HTTP conformance
 
-**Status:** In progress, with the [logical HTTP model](docs/design/architecture.md#logical-http-model) and opt-in IPv4 Endpoint mode implemented locally.
-Gateway input collection preserves backend groups and follows Service, EndpointSlice, ReferenceGrant, and Namespace changes within the current inventory scope.
-Endpoint traffic verification remains pending.
-Each feature requires its corresponding Phase 4 design to be accepted before implementation.
-Unreleased Octavia dependencies can be used for development integration under the sequence above, while phase completion remains blocked on the required releases and evidence.
+**Status:** In progress, with the [logical HTTP model](docs/design/architecture.md#logical-http-model), HTTP listener mapping, per-Gateway Route bindings, and opt-in IPv4 Endpoint mode implemented locally.
+The controller supports multiple valid HTTP listeners, multiple parent Gateways, namespace-based attachment, and authorized Service references across namespaces.
+It retains one selected Route per Gateway and one rule per Route until the required error responses and action ordering are available.
+The expanded mapping and Endpoint mode still need live traffic verification.
 
 **Milestone:** `v0.5.0`
 
-Phase 5 implements every Core requirement of the pinned GATEWAY-HTTP profile after the corresponding Phase 4 design is validated.
-It does not wait for unrelated Phase 4 work to finish.
-The profile includes Gateway, HTTPRoute, ReferenceGrant, and HTTPS termination.
-Completion requires all Core tests and all tests for declared Extended features to pass.
-Known Core failures, skipped required tests, and setup blockers prevent completion.
+### Development scope
 
-### Listener and route compiler
+Complete the pinned GATEWAY-HTTP Core profile, including Gateway, HTTPRoute, ReferenceGrant, and HTTPS termination, in one documented IPv4 Amphora environment.
+Use the existing Endpoint mode for the required Service inputs and Kubernetes TLS Secrets as the certificate source.
+Preserve the existing NodePort contract without requiring a second conformance environment for this milestone.
+Additional Extended features, network profiles, and policy APIs are separate follow-up work.
+Every feature that the controller does declare still needs its full conformance coverage.
 
-Support multiple Gateway listeners, attached HTTPRoutes, parent Gateways, rules, matches, and route hostnames.
-Enforce `allowedRoutes`, namespace selectors, `parentRef.sectionName`, listener and route hostname intersections, and accurate `attachedRoutes` status.
-Handle listener addition and removal and update all evaluated conditions with the correct observed generation.
-Keep valid listeners and rules working in the invalid-reference and unsupported-protocol cases required by Core.
-Follow the specification's separate conflict rules instead of applying one blanket rejection policy.
+Accept each unresolved physical mapping from [ADR 0005](docs/design/adr/0005-core-resource-mapping.md) before implementing it.
+This does not require unrelated Phase 4 work to finish first.
+Reuse the logical model, input collection, and reference watches already implemented under ADRs 0006 and 0007.
+The logical compiler includes Core request header and redirect filters and validates supplied TLS Secrets.
+The HTTP lowerer and adapter cover multiple listeners, Routes, and rules in local tests, while runtime activation of concurrent Routes and rules still requires the error handling below.
 
-The compiler owns the entire listener L7 graph.
-Gateway API matches in a rule are alternatives, while conditions inside a match are conjunctive.
-Octavia L7 policies are ordered alternatives whose rules are conjunctive.
-All attached routes therefore contribute to one deterministic policy order.
-Precedence, tie-breaking, and Octavia policy positions must be stable across restarts and map iteration.
+### Remaining work
 
-Gateway API PathPrefix matches complete path elements, while Octavia `STARTS_WITH` is a raw string prefix.
-`/foo` continues to compile into an exact `/foo` policy and a `/foo/` prefix policy so it does not match `/foobar`.
+Continue with required response behavior and rule partial validity before enabling concurrent Routes and rules.
+Endpoint traffic validation and certificate ownership design can proceed in parallel.
+Follow the [implementation sequence in ADR 0005](docs/design/adr/0005-core-resource-mapping.md#capability-and-implementation-gates), accepting each scoped decision before implementation.
+Typed child identities, per-Gateway Route bindings, complete live inventory, indexed reference events, and ordinary HTTP forwarding are implemented locally.
+Unit, adapter, and API server tests cover ownership, binding conflicts, parent removal, listener replacement, restart, and converged no-op behavior.
+Listener partial validity, authorized Secret input observation, HTTP and Endpoint E2E scenarios, and the pinned conformance runner are implemented locally.
 
-When valid Gateway listeners share a port, use the accepted mapping to preserve their protocol, hostname, certificate, attachment, and status semantics.
-Octavia does not allow a separate physical listener for every logical listener on the same port.
-An unresolved mapping for a required combination blocks completion.
-The additional `GatewayHTTPListenerIsolation` behavior is Extended and becomes mandatory only if declared.
+- [ ] Connect the logical HTTP model to multiple listeners, routes, parents, rules, and matches in Octavia.
+  Physical listener grouping, child identity, multiple parents and matches, exact and wildcard hostnames, complete-path-element paths, exact headers, and deterministic forwarding order have local coverage.
+  Enable concurrent Routes and rules after their backend failure behavior is representable.
+  Listener partial validity has local coverage, while invalid rules and backend shares still need their required response behavior.
+  Verify listener conditions, `attachedRoutes`, and observed generations through real cloud updates and deletion.
+- [ ] Complete cross-namespace inventory, bindings, provisioning, and status.
+  The [binding design](docs/design/adr/0005-core-resource-mapping.md#parent-bindings-and-live-inventory), `allowedRoutes`, namespace selectors, parent sections, and Service ReferenceGrants are implemented for ordinary HTTP forwarding.
+  Service and certificate reference observation now follows grant changes.
+  Complete the required backend error response after grant revocation and the certificate publication lifecycle.
+  Verify that these transitions preserve unrelated traffic in OpenStack.
+- [ ] Map Service backend groups to Octavia forwarding resources.
+  Preserve backend weights, weight zero, and the required error share for invalid references as endpoint membership changes.
+  Use the [precision allowance in the pinned specification](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.1/apis/v1/shared_types.go#L300) and a documented test tolerance rather than requiring exact integer weights for every ratio.
+  Validate unequal endpoint counts, overlapping endpoints, empty groups, and health changes without adding a general failover policy engine.
+- [ ] Implement Core HTTP actions and their ordering.
+  Add route-level RequestHeaderModifier operations and Core RequestRedirect behavior, including hostname replacement and 301 and 302 responses.
+  Preserve request fields that the filter does not replace.
+  Return 404 for unmatched requests, 500 for forwarding rules with omitted or empty backend reference lists, and the required 500 share for invalid references, with the corresponding conditions.
+  Resolve the [Octavia API blockers](docs/design/conformance-feasibility.md#current-api-blockers) for each action and verify its precedence against forwarding rules.
+- [ ] Implement Secret-based terminated HTTPS and safe certificate lifecycle.
+  Secret metadata watches, authorized payload reads, validation, and change diagnostics have local coverage.
+  Connect the accepted certificate publication design to one reference per logical listener and the SNI needed when physical listeners are shared.
+  Prefer one PKCS12 Secret per Gateway certificate revision, subject to the [certificate ownership design](docs/design/conformance-feasibility.md#certificate-transport-and-ownership).
+  Evaluate ownership inside the PKCS12 payload before requiring atomic initial metadata in Barbican, and prove recovery through the actual storage backend.
+  Cover payload redaction, discoverable ownership, replacement, grant revocation, recovery after a lost create response, and deletion of only owned revisions before enabling publication.
+  Verify hostname-to-certificate selection with overlapping SANs and exact and wildcard listeners sharing a port before settling any SNI API extension.
+  Verify traffic during certificate replacement and document interruption limits without promising uninterrupted connections under every failure or upgrade.
+- [ ] Verify Endpoint forwarding in one approved IPv4 environment.
+  Run the reusable `endpointBackends` scenario for ClusterIP, headless, and manually managed EndpointSlice backends under ADR 0007.
+  Verify forward and return traffic, resolved ports, endpoint replacement, draining, and cleanup.
+  Document the CNI, routing, and security prerequisites without changing user Services, foreign network resources, or OCCM graphs.
+  Additional CNIs, IPv6, and managed backend security are outside this milestone.
+- [ ] Complete the profile through the [pinned conformance runner](docs/testing-conformance.md#run-the-pinned-suite).
+  The runner has local configuration, isolation, report, and cleanup tests, but upstream setup still needs the missing controller features and an approved dedicated environment.
+  Run all Core tests and all tests for declared Extended features, retaining the unmodified report and reproducible configuration.
+  Reuse the existing E2E lifecycle checks for feature changes rather than creating a separate test framework.
 
-### Supported HTTP behavior
+### Optional follow-up work
 
-Implement exact and wildcard hostnames, Exact and PathPrefix paths, default routes, and exact header matches with the required precedence.
-Implement route-level RequestHeaderModifier add, set, and remove operations and Core RequestRedirect hostname and 301/302 behavior.
-Redirects must preserve the fields the filter does not replace.
-Request header modification and redirects that retain an arbitrary request hostname depend on resolving the Octavia API blockers identified in Phase 4.
+The following items do not block Phase 5 unless they are explicitly added to the release scope:
 
-Return HTTP 404 when no attached rule matches.
-Return HTTP 500 for forwarding rules with omitted or empty backend references and for invalid backends as required by the specification, with the corresponding Accepted and ResolvedRefs conditions.
-A rejected or empty Octavia pool is not a substitute for the required response.
-These responses also depend on resolving the Phase 4 API blocker.
-
-Implement multiple Service backends, proportional weights, weight zero, and the required distribution of failures when only part of the backend configuration is invalid.
-Preserve Service-level behavior as endpoint counts and health change.
-The accepted design and pinned tests must establish this behavior rather than infer it from Octavia member weights.
-The local model retains those groups through input collection, but the Octavia mapping and traffic behavior remain unimplemented.
-
-Method and query matching, response header modification, backendRef-level request header modification, URLRewrite, mirroring, and route timeouts or retries are outside the initial Extended claim.
-Optional requested addresses, listener isolation, or other Extended features require an explicit claim and every corresponding test to pass before publication.
-Project-specific policies and arbitrary ExtensionRef support do not replace Core behavior.
-
-### Required Service backend inputs
-
-Accept ordinary ClusterIP Services, headless Services, and Services backed by manually managed EndpointSlices through the forwarding design selected in Phase 4.
-Support the required endpoint and port resolution without requiring users to change their Service type.
-Do not modify user Services, take over OCCM resources, or create tenant network routes implicitly.
-The development implementation in ADR 0007 provides explicit Endpoint selection, frozen mode, resolved ports, endpoint conditions, and incremental membership.
-Verify forward and return traffic, draining, and cleanup in the environment selected under ADR 0006 before treating this requirement as complete.
-NodePort forwarding may remain available, but a NodePort-only user contract cannot satisfy this phase.
-
-### Cross-namespace references
-
-Service authorization checks and reference watches are implemented for the logical model.
-Complete cross-namespace inventory, provisioning, and status before enabling Service references across namespaces, and add Secret references with the HTTPS implementation.
-Removal of a grant must revoke the reference and safely converge the dependent graph.
-Include `ReferenceGrant` in `supportedFeatures` only after every applicable combination with the controller's other reported features passes conformance.
-Attachment of a route in another namespace to a Gateway follows Gateway API's `allowedRoutes` rules and is not treated as a generic object reference grant.
-
-### Terminated HTTPS
-
-Use Kubernetes TLS Secrets as the default certificate source for terminated HTTPS.
-The source does not determine the cloud transport: stock Amphora receives key manager references rather than inline Kubernetes Secret payloads.
-The [certificate assessment](docs/design/conformance-feasibility.md#certificate-transport-and-ownership) describes the existing PKCS12 path and the unresolved ownership boundary.
-Support the required certificate reference for each logical listener.
-When logical listeners share a physical listener, include the SNI certificates needed to preserve those Core configurations.
-Do not defer that mapping as optional multiple-certificate support.
-
-Prefer one PKCS12 Secret per Gateway certificate revision over legacy certificate Containers, subject to an accepted ownership mechanism.
-The TLS design must cover validation, payload redaction, cross-namespace authorization, publication with discoverable ownership, rotation without downtime, restart after a lost create response, and deletion of only owned certificate revisions.
-Investigate atomic ownership metadata at creation together with idempotent recovery, and determine whether existing APIs suffice or a Barbican change is needed.
-Do not enable managed upload while identity cannot be proved safely.
-
-Evaluate explicit references to operator-managed Barbican certificates as a separate optional input.
-Define authorization, project scope, missing-reference behavior, and removal in an ADR before adding the API.
-The controller would change only its Listener references, not the external certificate or its ACL.
-This option cannot replace the standard Secret path for Core HTTPS, and does not make a key manager optional for stock Amphora TLS.
-
-The conformance environment must provide the certificate service required by the accepted HTTPS design.
-An HTTP-only development environment can still run selected diagnostics, but it cannot establish GATEWAY-HTTP completion.
-
-### Addresses and backend policy
-
-Support representable `Gateway.spec.addresses` requests as Octavia VIP addresses: dynamic allocation or a requested IP inside the validated VIP subnet.
-Reject an unsupported address type, an address outside the binding, or an address already in use.
-The class Floating IP policy remains a separate choice for the external address.
-The API contract must state whether `Allocate` adds a new FIP to a requested VIP or rejects that combination before mutation.
-
-Introduce a namespaced OpenStackBackendPolicy only when documented use cases require health monitor settings for individual Services.
-If added, the first version will be an experimental `v1alpha1` Direct Policy Attachment.
-Follow ADR 0006 with a `targetRef` to a Service in the same namespace, or to a named Service port through `sectionName`, and contain only health monitor settings.
-Settle whole-Service and port-specific overlap in the API review, and keep inherited defaults, overrides, and field merging outside the first version.
-The CRD carries the `gateway.networking.k8s.io/policy: Direct` label and reports standard `Accepted`, `Conflicted`, and `TargetNotFound` reasons through `PolicyAncestorStatus` entries for each Gateway and controller.
-Session persistence, pool algorithms, and connection limits do not belong in the first version without separate evidence.
-
-No particular internal member mode is required by Gateway API.
-The mode selected in Phase 4 must accept the required Service inputs and pass the complete Core behavior in the supported environment.
-If it uses endpoint IPs, verify routing, EndpointSlice ready, serving, and terminating conditions, draining, CNI compatibility, security, and source IP behavior.
-Any additional member mode needs its own compatibility evidence.
+- Requested VIP addresses through `Gateway.spec.addresses`.
+  Define subnet validation and the interaction with the class Floating IP allocation policy before adding this Extended feature.
+- OpenStackBackendPolicy for Service health monitor settings.
+  Use the Direct Policy Attachment direction in ADR 0006 only after a concrete use case and API review settle whole-Service and port-specific conflicts.
+  Policy inheritance, field merging, session persistence, and additional pool controls remain separate proposals.
+- References to operator-managed Barbican certificates.
+  Define authorization and project scope without changing the external certificate or its ACL.
+  This optional input cannot replace Kubernetes Secret support for Core HTTPS.
+- Other Extended HTTP behavior, including method and query matching, response or backendRef header modification, URLRewrite, mirroring, retries, timeouts, and `GatewayHTTPListenerIsolation`.
+  Each additional claim requires its own complete conformance results.
 
 ### Phase 5 exit criteria
 
@@ -390,6 +360,7 @@ Any additional member mode needs its own compatibility evidence.
 - The suite produces an unmodified successful profile report with reproducible instructions and an immutable implementation version.
 - The final run uses the named released Octavia dependencies required by Phase 4.
   Results from development patches remain integration evidence and must be revalidated on those releases.
+  This is a project release gate, separate from upstream implementation-list eligibility.
 - Any unresolved Core API limitation keeps this phase incomplete.
   Publish the blocker and diagnostic evidence without weakening the completion condition.
 - Experimental backend policies or additional member modes, if shipped, have a separate contract and evidence.
@@ -397,7 +368,7 @@ Any additional member mode needs its own compatibility evidence.
 ### Upstream implementation listing
 
 During Phase 5 development, seek a Partially Conformant listing once an immutable evaluation release can run the upstream profile and produce an eligible report with explicit gaps.
-The required setup and reusable report runner must work first.
+The required setup must succeed in the reusable report runner first.
 The current adapted single-test diagnostic is not a submission artifact.
 Recheck the upstream version window, skip limits, feature declaration requirements, and implementation-list generator at submission time.
 The [conformance publication guide](docs/testing-conformance.md#publish-results) records those requirements.
